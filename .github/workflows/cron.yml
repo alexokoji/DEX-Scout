@@ -1,0 +1,37 @@
+name: DEX Scout background jobs
+
+# Vercel Hobby's built-in Cron only fires once a day, which is nowhere near enough for a live scanner/trading bot.
+# This workflow is the free substitute: it calls the same /api/cron/<job> endpoints the paid Vercel Cron would.
+#
+# GitHub's scheduler does not reliably run more often than every 5 minutes (see docs), so if you need the ~1 minute
+# cadence the app was designed for, use the cron-job.org setup in VERCEL.md instead (or alongside this, as a backup).
+#
+# Setup (Settings -> Secrets and variables -> Actions -> New repository secret):
+#   APP_URL      e.g. https://dex-scout.vercel.app  (no trailing slash)
+#   CRON_SECRET  the same value as the CRON_SECRET env var set on the Vercel project
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {} # lets you trigger a run manually from the Actions tab to test the secrets
+
+concurrency:
+  group: dexscout-cron
+  cancel-in-progress: false
+
+jobs:
+  run-jobs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: scan (scanner + analysis + signals)
+        continue-on-error: true
+        run: |
+          curl -sS -f -m 90 -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" "${{ secrets.APP_URL }}/api/cron/scan"
+      - name: monitor (position health + profit targets + emergency handling)
+        continue-on-error: true
+        run: |
+          curl -sS -f -m 90 -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" "${{ secrets.APP_URL }}/api/cron/monitor"
+      - name: execute (bot cycle + live-trade reconciliation)
+        continue-on-error: true
+        run: |
+          curl -sS -f -m 90 -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" "${{ secrets.APP_URL }}/api/cron/execute"
