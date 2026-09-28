@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Suspense } from "react";
 import { Card } from "@/components/ui/card";
-import { db } from "@/lib/db";
+import { collections } from "@/lib/db";
 import { cn } from "@/lib/utils";
 import { listTokens, tokenQuerySchema } from "@/services/queries";
 import { FilterBar } from "./FilterBar";
@@ -21,8 +21,9 @@ export async function TokenListPage({ searchParams, basePath, title, subtitle, d
     ...flat,
   });
   const query = parsed.success ? parsed.data : tokenQuerySchema.parse({});
-  const [result, dexRows] = await Promise.all([listTokens(query), db.token.findMany({ distinct: ["dex"], select: { dex: true } })]);
-  const dexes = dexRows.map((d) => d.dex).sort();
+  const tokensCol = await collections.tokens();
+  const [result, dexes] = await Promise.all([listTokens(query), tokensCol.distinct("dex")]);
+  dexes.sort();
   const params: Record<string, string | undefined> = Object.fromEntries(Object.entries(flat).filter(([k]) => k !== "page"));
   const tab = (label: string, passing: string) => {
     const sp = new URLSearchParams(Object.entries(params).filter(([, v]) => v) as [string, string][]);

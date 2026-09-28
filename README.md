@@ -18,7 +18,7 @@ npm run dev
 ```
 
 Open http://localhost:3000 and choose **Continue with demo account**. `npm run dev` will:
-1. start an embedded local PostgreSQL (port 5433) if `DATABASE_URL` points there,
+1. start an embedded local MongoDB replica set (port 27117) if `MONGODB_URI` points there,
 2. apply migrations and seed the demo user,
 3. start the background workers (scanner, analysis, signals, position monitor, trade executor),
 4. start Next.js.
@@ -32,7 +32,7 @@ Open http://localhost:3000 and choose **Continue with demo account**. `npm run d
 | `npm run dev` | DB + migrations + workers + Next.js |
 | `npm run dev:next` | Next.js only |
 | `npm run workers` / `worker:scanner`, `worker:analysis`, `worker:signal`, `worker:monitor`, `worker:executor` | Run workers (all or individually) |
-| `npm run db:start` | Embedded dev PostgreSQL only |
+| `npm run db:start` | Embedded dev MongoDB only |
 | `npm run db:migrate` / `db:deploy` | Create / apply migrations |
 | `npm test` | Unit + integration tests (integration needs the DB) |
 | `npm run typecheck`, `npm run lint`, `npm run build` | Quality gates |

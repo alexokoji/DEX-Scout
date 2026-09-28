@@ -1,5 +1,5 @@
-import type { Prisma } from "@prisma/client";
-import { db } from "./db";
+import { collections, newId } from "./db";
+import type { EventLevel, Json } from "./models";
 
 export type EventType =
   | "SCANNER_STARTED"
@@ -36,20 +36,21 @@ export async function logEvent(e: {
   type: EventType;
   source: string;
   message: string;
-  level?: "DEBUG" | "INFO" | "WARN" | "ERROR";
+  level?: EventLevel;
   userId?: string | null;
-  data?: Prisma.InputJsonValue;
+  data?: Json;
 }): Promise<void> {
   try {
-    await db.systemEvent.create({
-      data: {
-        type: e.type,
-        source: e.source,
-        message: e.message.slice(0, 500),
-        level: e.level ?? "INFO",
-        userId: e.userId ?? null,
-        data: e.data,
-      },
+    const events = await collections.systemEvents();
+    await events.insertOne({
+      _id: newId(),
+      ts: new Date(),
+      type: e.type,
+      source: e.source,
+      message: e.message.slice(0, 500),
+      level: e.level ?? "INFO",
+      userId: e.userId ?? null,
+      data: e.data ?? null,
     });
   } catch (err) {
     console.error("[events] failed to write system event", e.type, err instanceof Error ? err.message : err);

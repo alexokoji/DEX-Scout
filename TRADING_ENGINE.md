@@ -9,7 +9,7 @@
 Quote expiry, critical safety issues, sell simulation, price impact, slippage cap, min liquidity/volume, non-zero output; automatic entries also need min score and max risk level.
 
 ## Capital (`core/trading/capital.ts`)
-`allocate()` clamps to max position, available capital (min of capital and max deployed) and open-position slots; rejects below min position. Runs inside `withUserLock` (Postgres advisory lock) so concurrent workers cannot over-allocate.
+`allocate()` clamps to max position, available capital (min of capital and max deployed) and open-position slots; rejects below min position. Runs inside `withUserLock` (a real MongoDB multi-document transaction, auto-retried on conflict) so concurrent workers cannot over-allocate.
 
 ## Profit taking (`core/trading/targets.ts`)
 Targets are snapshotted on the position when opened. Single (+10% sell 100%) or multi (+8/+15/+25 sell 25% each, +40% sell the rest). Each target sells a share of the **initial** amount; the last sells the remainder. Gaps across several targets fire each in order. Only price **gain** is evaluated.

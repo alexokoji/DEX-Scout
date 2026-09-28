@@ -9,7 +9,7 @@ Vercel has to call those three URLs on a schedule instead. This file sets that u
 cron-job.org (free, ~1/min)  -\
 GitHub Actions (free, ~5/min) -+-> GET /api/cron/scan | /monitor | /execute -> same service layer as the local workers
                                /       (Authorization: Bearer CRON_SECRET)
-Browser -> Next.js pages / API routes -> PostgreSQL (Neon, via Vercel Marketplace)
+Browser -> Next.js pages / API routes -> MongoDB (Atlas, via Vercel Marketplace)
 ```
 
 Nothing in the app code cares who calls these routes — only that the caller sends the right bearer token. Each job
@@ -20,11 +20,9 @@ second one just reports `"skipped: another run is still in progress"` instead of
 `vercel.json` asks for more than daily crons, so cron scheduling here is 100% external.
 
 ## 1. Database
-1. Vercel dashboard → **Storage → Create → Neon (Postgres)** → connect it to the project. This injects connection strings as project env vars automatically.
-2. Set/confirm:
-   - `DATABASE_URL` = the **pooled** connection string (host contains `-pooler`), with `?sslmode=require&pgbouncer=true&connect_timeout=15`
-   - `DIRECT_URL` = the **un-pooled** connection string (used only by `prisma migrate`)
-3. Migrations run automatically during the build: `npm run vercel-build` = `prisma generate && prisma migrate deploy && next build`.
+1. Vercel dashboard → **Storage → Create → MongoDB Atlas** → connect it to the project. This injects a connection string as a project env var automatically (or create a free Atlas cluster yourself at mongodb.com/atlas and copy its connection string — either way it must be a real replica set, which every Atlas tier is).
+2. Set/confirm `MONGODB_URI` to that connection string (it already includes the database name and `retryWrites=true`, which Atlas needs).
+3. Indexes are created automatically during the build: `npm run vercel-build` = `tsx scripts/ensure-indexes.ts && next build`. Mongo has no migration engine, so there's nothing else to run.
 
 ## 2. Environment variables (Production + Preview)
 | Variable | Value |
@@ -34,6 +32,7 @@ second one just reports `"skipped: another run is still in progress"` instead of
 | `MOCK_PROVIDER` | `true` for a demo deployment (simulated data, demo login). `false` for real data |
 | `NEXT_PUBLIC_APP_URL` | your production URL, e.g. `https://dex-scout.vercel.app` |
 | `UPSTASH_REDIS_REST_URL` / `_TOKEN` | strongly recommended — serverless instances don't share memory, so the in-memory rate limiter doesn't actually limit anything across them (Vercel Marketplace has Upstash's free tier) |
+| `MONGODB_DB` | only needed if you want to override the database name baked into `MONGODB_URI` |
 | Real-data mode | `SOLANA_RPC_URL`, `NEXT_PUBLIC_SOLANA_RPC_URL`, EVM `*_RPC_URL`s, `DEX_PROVIDER_API_KEY`, `ZEROX_API_KEY`, `BIRDEYE_API_KEY`, `AI_API_KEY` (see `.env.example`) |
 | Live trading | `LIVE_TRADING_ENABLED=true` (only with `MOCK_PROVIDER=false`; read SECURITY.md first) |
 
@@ -50,19 +49,20 @@ or just import the Git repository in the Vercel dashboard. Once it's live, note 
 
 ## 4. Set up the external scheduler (pick one; cron-job.org is the simpler option)
 
-### Option A — cron-job.org (recommended: free, no code, ~1 minute granularity)
-1. Create a free account at [cron-job.org](https://cron-job.org).
-2. Create three cron jobs, one per URL:
+### Option A — cron-job.org (recommended: free, ~1 minute granularity)
+Account creation and login aren't things any automated tool should do on your behalf, so do the account part
+yourself; wiring up the three jobs afterwards can be scripted.
 
-   | Title | URL | Schedule |
-   |---|---|---|
-   | dexscout-scan | `https://<your-app>.vercel.app/api/cron/scan` | every 2 minutes |
-   | dexscout-monitor | `https://<your-app>.vercel.app/api/cron/monitor` | every 1 minute |
-   | dexscout-execute | `https://<your-app>.vercel.app/api/cron/execute` | every 1 minute |
+1. Create a free account at [cron-job.org](https://cron-job.org) and verify your email.
+2. Console → **Settings → API key** → generate one and copy it (treat it like a password — it grants full control of your cron-job.org account).
+3. Run the setup script from this repo with that key:
+   ```bash
+   CRONJOB_ORG_API_KEY=<your key> APP_URL=https://<your-app>.vercel.app CRON_SECRET=<your CRON_SECRET> npm run cron:setup
+   ```
+   This creates (or updates, if run again) three jobs — `dexscout-scan` (every 2 min), `dexscout-monitor` and `dexscout-execute` (every 1 min) — each hitting the matching `/api/cron/*` URL with the `Authorization: Bearer <CRON_SECRET>` header already attached, with failure/success/disable email notifications turned on. The key only ever goes from your shell to cron-job.org's API — it isn't logged or sent anywhere else.
+4. In the cron-job.org console, open each job and click "Run now" once to confirm you get a `200`, not a `401` (a `401` usually means `CRON_SECRET` doesn't match what's set on Vercel).
 
-3. For each job, under **Advanced → Headers**, add: `Authorization: Bearer <your CRON_SECRET>` (exact value you set in step 2 above).
-4. Method: `GET`. Save, then click "Run now" on each to confirm you get a `200` with a JSON body (not a `401`).
-5. Turn on email notifications for failures under each job's settings so you notice if the app goes down.
+Prefer doing it by hand instead? Console → **Create cronjob** → paste in the URL, set the schedule, then under **Advanced → Headers** add `Authorization: Bearer <your CRON_SECRET>`, method `GET`, and save — same three URLs/schedules as above.
 
 ### Option B — GitHub Actions (free, code-based, ~5 minute granularity)
 This repo already includes `.github/workflows/cron.yml`, which calls all three routes every 5 minutes. To enable it:
@@ -92,12 +92,12 @@ the cron-job.org jobs / GitHub Actions workflow.
 - No `npm run workers` process: the same `scan` / `monitor` / `execute` cycles run as one-shot API calls instead of a loop.
 - `scan` also runs data retention roughly once an hour (keyed off the minute of the call, so it self-paces regardless of how often the scheduler fires).
 - Functions are capped at `maxDuration: 60` (Hobby's ceiling) in `vercel.json` — comfortably enough for the mock provider; if you switch to real providers and a very large token universe pushes a run past 60s, either narrow the scanner filters or upgrade to Pro (`maxDuration` up to 300s).
-- The embedded dev Postgres from `npm run dev` is not used in production; `DATABASE_URL` must point at Neon (or any real Postgres).
+- The embedded dev MongoDB from `npm run dev` is not used in production; `MONGODB_URI` must point at Atlas (or any real MongoDB replica set).
 
 ## 7. Checklist before pointing real users at it
 - [ ] Strong `AUTH_SECRET` and `CRON_SECRET` set; demo login only if `MOCK_PROVIDER=true` is intended
 - [ ] External scheduler (cron-job.org and/or GitHub Actions) set up and confirmed returning `200`, not `401`
 - [ ] Upstash Redis configured for rate limiting
-- [ ] Neon database backups enabled
+- [ ] Atlas backups enabled
 - [ ] Vercel deployment protection / custom domain configured
 - [ ] Paper-traded for a while before enabling `LIVE_TRADING_ENABLED`

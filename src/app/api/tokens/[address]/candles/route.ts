@@ -4,7 +4,7 @@ import { analyzeMarket } from "@/core/analysis/market";
 import { providers } from "@/core/providers/registry";
 import { TIMEFRAMES, type ChainId } from "@/core/types";
 import { ApiError, protectedRoute } from "@/lib/api";
-import { db } from "@/lib/db";
+import { collections } from "@/lib/db";
 import { findToken } from "@/services/queries";
 
 const q = z.object({
@@ -36,12 +36,12 @@ export const GET = protectedRoute<{ address: string }>(async ({ req, params }) =
     if (v !== null) vw.push({ time: candles[i - 1].time, value: v });
   }
 
-  const history = await db.tokenMetric.findMany({
-    where: { tokenId: token.id },
-    orderBy: { ts: "desc" },
-    take: 240,
-    select: { ts: true, holders: true, liquidityUsd: true },
-  });
+  const tokenMetrics = await collections.tokenMetrics();
+  const history = await tokenMetrics
+    .find({ tokenId: token.id }, { projection: { ts: 1, holders: 1, liquidityUsd: 1 } })
+    .sort({ ts: -1 })
+    .limit(240)
+    .toArray();
   history.reverse();
 
   return {

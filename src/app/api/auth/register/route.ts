@@ -3,7 +3,7 @@ import { z } from "zod";
 import { DEFAULT_FILTERS, DEFAULT_TARGETS_MULTI, DEFAULT_WEIGHTS } from "@/core/config";
 import { errorResponse, parseBody } from "@/lib/api";
 import { createSession, hashPassword } from "@/lib/auth";
-import { db } from "@/lib/db";
+import { collections, newId } from "@/lib/db";
 import { logEvent } from "@/lib/events";
 import { rateLimitAsync } from "@/lib/rateLimit";
 
@@ -19,21 +19,26 @@ export async function POST(req: Request) {
     if (!(await rateLimitAsync(`register:${ip}`, 5, 60_000)).ok) return NextResponse.json({ error: "Too many attempts" }, { status: 429 });
     const { email, password, name } = await parseBody(req, schema);
     const lower = email.toLowerCase();
-    if (await db.user.findUnique({ where: { email: lower } })) {
+    const users = await collections.users();
+    if (await users.findOne({ email: lower })) {
       return NextResponse.json({ error: "An account with this email already exists" }, { status: 409 });
     }
-    const user = await db.user.create({
-      data: {
-        email: lower,
-        name,
-        passwordHash: await hashPassword(password),
-        settings: { create: { filters: JSON.parse(JSON.stringify(DEFAULT_FILTERS)), weights: JSON.parse(JSON.stringify(DEFAULT_WEIGHTS)), targets: { create: DEFAULT_TARGETS_MULTI } } },
-        bot: { create: { status: "PAUSED", environment: "PAPER" } },
-        tradingAccounts: { create: [{ environment: "PAPER" }] },
-      },
-    });
-    await createSession(user.id);
-    await logEvent({ type: "AUTH", source: "auth", userId: user.id, message: "Account created" });
+    const userId = newId();
+    const now = new Date();
+    await users.insertOne({ _id: userId, email: lower, name: name ?? null, passwordHash: await hashPassword(password), role: "USER", createdAt: now });
+    const [settings, bots, accounts] = await Promise.all([collections.tradingSettings(), collections.bots(), collections.tradingAccounts()]);
+    await Promise.all([
+      settings.insertOne({
+        _id: newId(), userId, environment: "PAPER", autoTradingEnabled: false, capitalUsd: 100, maxPositionUsd: 10, minPositionUsd: 5, maxOpenPositions: 10, maxDeployedUsd: 100,
+        minOpportunityScore: 70, minLiquidityUsd: 100_000, minVolume24hUsd: 50_000, maxPriceImpactPct: 2, maxSlippageBps: 300, maxAllowedRisk: "MODERATE", targetsMode: "MULTI",
+        maxPositionAgeHours: null, emergencyEnabled: true, emergencyAutoExit: false, emergencyLiquidityDropPct: 70,
+        filters: JSON.parse(JSON.stringify(DEFAULT_FILTERS)), weights: JSON.parse(JSON.stringify(DEFAULT_WEIGHTS)), targets: DEFAULT_TARGETS_MULTI, activeStrategyId: null, updatedAt: now,
+      }),
+      bots.insertOne({ _id: newId(), userId, status: "PAUSED", environment: "PAPER", lastRunAt: null, emergencyStoppedAt: null, createdAt: now, updatedAt: now }),
+      accounts.insertOne({ _id: newId(), userId, environment: "PAPER", realizedPnlUsd: 0, createdAt: now }),
+    ]);
+    await createSession(userId);
+    await logEvent({ type: "AUTH", source: "auth", userId, message: "Account created" });
     return NextResponse.json({ ok: true });
   } catch (e) {
     return errorResponse(e);

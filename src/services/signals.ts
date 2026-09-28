@@ -1,11 +1,11 @@
-import type { Prisma } from "@prisma/client";
 import { aiAnalysisSchema, type AiAnalysis, type AiInput } from "@/core/ai/schema";
 import { RulesAiProvider } from "@/core/providers/mock/mockProviders";
 import { providers } from "@/core/providers/registry";
 import { generateSignal } from "@/core/signals/engine";
 import type { Analysis, SignalDraft } from "@/core/types";
-import { db } from "@/lib/db";
+import { collections, newId } from "@/lib/db";
 import { logEvent, safeMessage } from "@/lib/events";
+import type { Json } from "@/lib/models";
 import { loadAnalysis } from "./analysis";
 import { touchWorker } from "./workerState";
 
@@ -66,28 +66,30 @@ export async function runSignalCycle(): Promise<{ created: number; updated: numb
   let updated = 0;
   let expired = 0;
 
+  const signalsCol = await collections.signals();
+  const tokensCol = await collections.tokens();
+
   // 1. time-based expiry
-  const timedOut = await db.signal.updateMany({ where: { status: "ACTIVE", expiresAt: { lt: now } }, data: { status: "EXPIRED" } });
-  expired += timedOut.count;
+  const timedOut = await signalsCol.updateMany({ status: "ACTIVE", expiresAt: { $lt: now } }, { $set: { status: "EXPIRED", updatedAt: now } });
+  expired += timedOut.modifiedCount;
 
   // 2. evaluate every analysed token that still passes the scanner filters (no cap on results)
-  const tokens = await db.token.findMany({
-    where: { passedFilters: true, stage: { in: ["ANALYZED", "QUALIFIED", "SIGNAL_GENERATED"] } },
-    select: { id: true, symbol: true, dataSource: true },
-  });
+  const tokens = await tokensCol
+    .find({ passedFilters: true, stage: { $in: ["ANALYZED", "QUALIFIED", "SIGNAL_GENERATED"] } }, { projection: { _id: 1, symbol: 1, dataSource: 1 } })
+    .toArray();
 
   for (const t of tokens) {
     try {
-      const analysis = await loadAnalysis(t.id);
+      const analysis = await loadAnalysis(t._id);
       if (!analysis || now.getTime() - analysis.computedAt.getTime() > ANALYSIS_MAX_AGE_MS) continue;
       const draft = generateSignal(analysis, undefined, now);
-      const active = await db.signal.findFirst({ where: { tokenId: t.id, status: "ACTIVE" }, orderBy: { createdAt: "desc" } });
+      const active = await signalsCol.findOne({ tokenId: t._id, status: "ACTIVE" }, { sort: { createdAt: -1 } });
 
       if (!draft) {
         if (active) {
-          await db.signal.update({ where: { id: active.id }, data: { status: "EXPIRED" } });
-          await db.token.update({ where: { id: t.id }, data: { stage: "QUALIFIED" } });
-          await logEvent({ type: "SIGNAL_EXPIRED", source: "signals", message: `${t.symbol} ${active.type} signal no longer qualifies`, data: { signalId: active.id } });
+          await signalsCol.updateOne({ _id: active._id }, { $set: { status: "EXPIRED", updatedAt: now } });
+          await tokensCol.updateOne({ _id: t._id }, { $set: { stage: "QUALIFIED" } });
+          await logEvent({ type: "SIGNAL_EXPIRED", source: "signals", message: `${t.symbol} ${active.type} signal no longer qualifies`, data: { signalId: active._id } });
           expired++;
         }
         continue;
@@ -106,35 +108,37 @@ export async function runSignalCycle(): Promise<{ created: number; updated: numb
         reasons: draft.reasons,
         warnings: draft.warnings,
         expiresAt: draft.expiresAt,
+        updatedAt: now,
       };
 
       if (active && active.type === draft.type) {
-        await db.signal.update({ where: { id: active.id }, data: fields });
-        await db.signalAnalysis.update({ where: { signalId: active.id }, data: { snapshot: snapshotJson(analysis) } }).catch(() => {});
+        await signalsCol.updateOne({ _id: active._id }, { $set: { ...fields, "analysis.snapshot": snapshotJson(analysis) } });
         updated++;
         continue;
       }
       if (active) {
-        await db.signal.update({ where: { id: active.id }, data: { status: "EXPIRED" } });
+        await signalsCol.updateOne({ _id: active._id }, { $set: { status: "EXPIRED", updatedAt: now } });
         expired++;
       }
 
       const { ai, provider } = await generateAiAnalysis(analysis, draft.type);
-      const sig = await db.signal.create({
-        data: {
-          tokenId: t.id,
-          type: draft.type,
-          dataSource: t.dataSource,
-          ...fields,
-          analysis: { create: { snapshot: snapshotJson(analysis), ai: ai as unknown as Prisma.InputJsonValue, aiProvider: provider } },
-        },
+      const signalId = newId();
+      await signalsCol.insertOne({
+        _id: signalId,
+        tokenId: t._id,
+        type: draft.type,
+        status: "ACTIVE",
+        dataSource: t.dataSource,
+        ...fields,
+        createdAt: now,
+        analysis: { snapshot: snapshotJson(analysis), ai, aiProvider: provider, createdAt: now },
       });
-      await db.token.update({ where: { id: t.id }, data: { stage: "SIGNAL_GENERATED" } });
+      await tokensCol.updateOne({ _id: t._id }, { $set: { stage: "SIGNAL_GENERATED" } });
       await logEvent({
         type: "SIGNAL_CREATED",
         source: "signals",
         message: `${draft.type} signal for ${t.symbol} (score ${draft.score.toFixed(0)}, ${draft.riskLevel} risk)`,
-        data: { signalId: sig.id, tokenId: t.id, type: draft.type, score: draft.score },
+        data: { signalId, tokenId: t._id, type: draft.type, score: draft.score },
       });
       created++;
     } catch (err) {
@@ -146,7 +150,7 @@ export async function runSignalCycle(): Promise<{ created: number; updated: numb
   return { created, updated, expired };
 }
 
-function snapshotJson(a: Analysis): Prisma.InputJsonValue {
+function snapshotJson(a: Analysis): Json {
   return {
     market: a.market,
     onchain: a.onchain,
@@ -157,5 +161,5 @@ function snapshotJson(a: Analysis): Prisma.InputJsonValue {
     liquidityUsd: a.snapshot.liquidityUsd,
     volume24hUsd: a.snapshot.volume24h,
     computedAt: a.computedAt.toISOString(),
-  } as unknown as Prisma.InputJsonValue;
+  } as unknown as Json;
 }

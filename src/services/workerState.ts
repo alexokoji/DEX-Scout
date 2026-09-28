@@ -1,22 +1,22 @@
-import type { Prisma } from "@prisma/client";
-import { db } from "@/lib/db";
+import { collections } from "@/lib/db";
+import type { Json } from "@/lib/models";
 
 export const WORKERS = ["scanner-worker", "analysis-worker", "signal-worker", "position-monitor-worker", "trade-executor-worker"] as const;
 export type WorkerName = (typeof WORKERS)[number];
 
 /** Heartbeat used by the UI to show whether each background worker is alive. */
-export async function touchWorker(name: WorkerName, error: string | null, stats?: Prisma.InputJsonValue): Promise<void> {
+export async function touchWorker(name: WorkerName | string, error: string | null, stats?: Json): Promise<void> {
   const now = new Date();
-  await db.workerState.upsert({
-    where: { name },
-    create: { name, lastRunAt: now, lastError: error, runs: 1, stats },
-    update: { lastRunAt: now, lastError: error, runs: { increment: 1 }, ...(stats !== undefined ? { stats } : {}) },
-  });
+  const states = await collections.workerStates();
+  const set: Partial<{ lastRunAt: Date; lastError: string | null; updatedAt: Date; stats: Json }> = { lastRunAt: now, lastError: error, updatedAt: now };
+  if (stats !== undefined) set.stats = stats;
+  await states.updateOne({ _id: name }, { $set: set, $inc: { runs: 1 }, $setOnInsert: { leaseUntil: null } }, { upsert: true });
 }
 
 export async function workerStatuses(staleAfterSec = 180) {
-  const rows = await db.workerState.findMany();
-  const map = new Map(rows.map((r) => [r.name, r]));
+  const states = await collections.workerStates();
+  const rows = await states.find({ _id: { $in: [...WORKERS] } }).toArray();
+  const map = new Map(rows.map((r) => [r._id, r]));
   return WORKERS.map((name) => {
     const r = map.get(name);
     const ageSec = r?.lastRunAt ? (Date.now() - r.lastRunAt.getTime()) / 1000 : null;

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { errorResponse, parseBody } from "@/lib/api";
 import { createSession, verifyPassword } from "@/lib/auth";
-import { db } from "@/lib/db";
+import { collections, withId } from "@/lib/db";
 import { logEvent } from "@/lib/events";
 import { rateLimitAsync } from "@/lib/rateLimit";
 
@@ -14,13 +14,14 @@ export async function POST(req: Request) {
     const rl = await rateLimitAsync(`login:${ip}`, 10, 60_000);
     if (!rl.ok) return NextResponse.json({ error: "Too many attempts. Try again shortly." }, { status: 429 });
     const { email, password } = await parseBody(req, schema);
-    const user = await db.user.findUnique({ where: { email: email.toLowerCase() } });
+    const users = await collections.users();
+    const user = await users.findOne({ email: email.toLowerCase() });
     // same message for unknown user and wrong password
     if (!user || !(await verifyPassword(password, user.passwordHash))) {
       return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
     }
-    await createSession(user.id);
-    await logEvent({ type: "AUTH", source: "auth", userId: user.id, message: "User signed in" });
+    await createSession(withId(user).id);
+    await logEvent({ type: "AUTH", source: "auth", userId: user._id, message: "User signed in" });
     return NextResponse.json({ ok: true });
   } catch (e) {
     return errorResponse(e);

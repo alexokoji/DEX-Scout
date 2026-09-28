@@ -6,9 +6,10 @@ const bool = z
   .transform((v) => v === "true" || v === "1");
 
 const schema = z.object({
-  DIRECT_URL: z.string().optional(),
+  MONGODB_URI: z.string().min(1).default("mongodb://127.0.0.1:27117/dexscout?replicaSet=rs0"),
+  /** Overrides the database name from MONGODB_URI's path when set (handy for Atlas connection strings). */
+  MONGODB_DB: z.string().optional(),
   CRON_SECRET: z.string().optional(),
-  DATABASE_URL: z.string().min(1).default("postgresql://postgres:postgres@localhost:5433/dexscout"),
   AUTH_SECRET: z.string().min(16).default("dev-only-insecure-secret-change-me-please"),
   MOCK_PROVIDER: bool,
   LIVE_TRADING_ENABLED: bool,

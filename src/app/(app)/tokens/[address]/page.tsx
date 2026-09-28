@@ -9,9 +9,9 @@ import { CHAINS } from "@/core/chains";
 import { providers } from "@/core/providers/registry";
 import type { ChainId, MarketAnalysis, OnChainAnalysis, ScoreComponent } from "@/core/types";
 import { requireUser } from "@/lib/auth";
-import { db } from "@/lib/db";
 import { liveTradingAllowed } from "@/lib/env";
 import { age, compactUsd, int, price, shortAddr, timeAgo } from "@/lib/format";
+import { getTokenDetail } from "@/services/queries";
 import { getSettings } from "@/services/settings";
 
 export default async function TokenPage({ params, searchParams }: { params: Promise<{ address: string }>; searchParams: Promise<{ chain?: string }> }) {
@@ -19,23 +19,16 @@ export default async function TokenPage({ params, searchParams }: { params: Prom
   const { address: rawAddress } = await params;
   const { chain: chainParam } = await searchParams;
   const address = rawAddress.startsWith("0x") ? rawAddress.toLowerCase() : rawAddress;
-  const token = await db.token.findFirst({
-    where: { address, ...(chainParam ? { chain: chainParam } : {}) },
-    include: {
-      safety: true,
-      analysis: true,
-      signals: { where: { status: "ACTIVE" }, orderBy: { createdAt: "desc" }, take: 1, include: { analysis: true } },
-    },
-  });
-  if (!token) notFound();
+  const detail = await getTokenDetail(address, chainParam);
+  if (!detail) notFound();
+  const { token, signal } = detail;
   const settings = await getSettings(user.id);
-  const signal = token.signals[0];
-  const ai = signal?.analysis?.ai as unknown as AiAnalysis | null | undefined;
-  const market = token.analysis?.market as unknown as MarketAnalysis | undefined;
-  const onchain = token.analysis?.onchain as unknown as OnChainAnalysis | undefined;
+  const ai = signal?.analysis?.ai as AiAnalysis | null | undefined;
+  const market = token.analysis?.market as MarketAnalysis | undefined;
+  const onchain = token.analysis?.onchain as OnChainAnalysis | undefined;
   const components = (token.analysis?.components as unknown as ScoreComponent[] | undefined) ?? [];
-  const warnings = (token.safety?.warnings as string[] | undefined) ?? [];
-  const critical = (token.safety?.criticalIssues as string[] | undefined) ?? [];
+  const warnings = token.safety?.warnings ?? [];
+  const critical = token.safety?.criticalIssues ?? [];
   const explorer = providers().chains[token.chain as ChainId].explorerTokenUrl(token.address);
 
   return (

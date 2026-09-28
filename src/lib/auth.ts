@@ -3,7 +3,7 @@ import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { cache } from "react";
-import { db } from "./db";
+import { collections, withId } from "./db";
 import { env } from "./env";
 
 const COOKIE = "dexscout_session";
@@ -44,7 +44,11 @@ export const currentUser = cache(async () => {
   try {
     const { payload } = await jwtVerify(token, key());
     if (!payload.sub) return null;
-    return await db.user.findUnique({ where: { id: payload.sub }, select: { id: true, email: true, name: true, role: true } });
+    const users = await collections.users();
+    const u = await users.findOne({ _id: payload.sub });
+    if (!u) return null;
+    const { id, email, name, role } = withId(u);
+    return { id, email, name, role };
   } catch {
     return null;
   }

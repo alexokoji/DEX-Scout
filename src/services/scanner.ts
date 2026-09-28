@@ -1,10 +1,11 @@
-import type { Prisma } from "@prisma/client";
+import type { AnyBulkWriteOperation } from "mongodb";
 import { DEFAULT_FILTERS } from "@/core/config";
 import { providers } from "@/core/providers/registry";
 import { applyFilters, mergeFilters } from "@/core/scanner/filter";
 import type { ScannerFilters, TokenSnapshot } from "@/core/types";
-import { db } from "@/lib/db";
+import { collections, newId } from "@/lib/db";
 import { logEvent, safeMessage } from "@/lib/events";
+import type { LiquidityPoolDoc, TokenDoc, TokenMetricDoc, TokenStage, PriceSnapshotDoc, VolumeSnapshotDoc } from "@/lib/models";
 import { allUserFilters } from "./settings";
 import { touchWorker } from "./workerState";
 
@@ -21,12 +22,13 @@ export async function resolveScanFilters(): Promise<ScannerFilters> {
   return mergeFilters(await allUserFilters()) ?? DEFAULT_FILTERS;
 }
 
-function tokenData(s: TokenSnapshot, passed: boolean): Prisma.TokenUncheckedUpdateInput {
+function tokenSet(s: TokenSnapshot, passed: boolean, stage: TokenStage) {
   const tx1h = s.buys1h + s.sells1h;
   return {
     name: s.name,
     symbol: s.symbol,
-    decimals: s.decimals || undefined,
+    // decimals is immutable per token (set once on insert via $setOnInsert below); including it here too
+    // would put the same path in both $set and $setOnInsert on the same upsert, which MongoDB rejects.
     dex: s.dex,
     poolAddress: s.poolAddress,
     poolCreatedAt: s.poolCreatedAt,
@@ -46,6 +48,8 @@ function tokenData(s: TokenSnapshot, passed: boolean): Prisma.TokenUncheckedUpda
     txCount1h: tx1h,
     pairCount: s.pairCount,
     passedFilters: passed,
+    stage,
+    updatedAt: new Date(),
   };
 }
 
@@ -56,93 +60,95 @@ export async function runScanCycle(): Promise<ScanResult> {
   try {
     const filters = await resolveScanFilters();
     const snaps = (await Promise.all(filters.chains.map((c) => p.data.discover(c)))).flat();
+    const now = new Date();
 
-    const existing = await db.token.findMany({
-      where: { address: { in: snaps.map((s) => s.address) } },
-      select: { id: true, address: true, chain: true, stage: true },
-    });
-    const byKey = new Map(existing.map((t) => [`${t.chain}:${t.address}`, t]));
+    const tokens = await collections.tokens();
+    const byChain = new Map<string, TokenSnapshot[]>();
+    for (const s of snaps) byChain.set(s.chain, [...(byChain.get(s.chain) ?? []), s]);
+    const existingByKey = new Map<string, { id: string; stage: TokenStage }>();
+    for (const [chain, list] of byChain) {
+      const rows = await tokens.find({ chain, address: { $in: list.map((s) => s.address) } }, { projection: { _id: 1, chain: 1, address: 1, stage: 1 } }).toArray();
+      for (const r of rows) existingByKey.set(`${r.chain}:${r.address}`, { id: r._id, stage: r.stage });
+    }
 
     let newTokens = 0;
     let passed = 0;
-    const metricRows: Prisma.TokenMetricCreateManyInput[] = [];
-    const priceRows: Prisma.PriceSnapshotCreateManyInput[] = [];
-    const volRows: Prisma.VolumeSnapshotCreateManyInput[] = [];
-    const now = new Date();
+    const tokenIdByAddress = new Map<string, string>();
+    const metricRows: TokenMetricDoc[] = [];
+    const priceRows: PriceSnapshotDoc[] = [];
+    const volRows: VolumeSnapshotDoc[] = [];
+    const ops: AnyBulkWriteOperation<TokenDoc>[] = [];
 
-    for (let i = 0; i < snaps.length; i += 25) {
-      const chunk = snaps.slice(i, i + 25);
-      const ops = chunk.map((s) => {
-        const res = applyFilters(s, filters, now);
-        if (res.passed) passed++;
-        const prev = byKey.get(`${s.chain}:${s.address}`);
-        if (!prev) newTokens++;
-        const data = tokenData(s, res.passed);
-        // keep pipeline stage monotonic for tokens already analysed; reset to FILTERED when they fall out of band
-        const stage = !res.passed ? "FILTERED" : prev && prev.stage !== "FILTERED" && prev.stage !== "DISCOVERED" ? prev.stage : "SCANNED";
-        return db.token.upsert({
-          where: { chain_address: { chain: s.chain, address: s.address } },
-          create: {
-            ...(data as Prisma.TokenUncheckedCreateInput),
-            chain: s.chain,
-            address: s.address,
-            name: s.name,
-            symbol: s.symbol,
-            decimals: s.decimals || 9,
-            dex: s.dex,
-            dataSource: s.dataSource,
-            stage,
+    for (const s of snaps) {
+      const res = applyFilters(s, filters, now);
+      if (res.passed) passed++;
+      const prev = existingByKey.get(`${s.chain}:${s.address}`);
+      if (!prev) newTokens++;
+      const id = prev?.id ?? newId();
+      tokenIdByAddress.set(`${s.chain}:${s.address}`, id);
+      // keep pipeline stage monotonic for tokens already analysed; reset to FILTERED when they fall out of band
+      const stage: TokenStage = !res.passed ? "FILTERED" : prev && prev.stage !== "FILTERED" && prev.stage !== "DISCOVERED" ? prev.stage : "SCANNED";
+
+      ops.push({
+        updateOne: {
+          filter: { chain: s.chain, address: s.address },
+          update: {
+            $set: tokenSet(s, res.passed, stage),
+            $setOnInsert: {
+              _id: id,
+              chain: s.chain,
+              address: s.address,
+              decimals: s.decimals || 9,
+              dataSource: s.dataSource,
+              logoUrl: null,
+              firstSeenAt: now,
+              opportunityScore: 0,
+              riskLevel: "MODERATE",
+              safety: null,
+              analysis: null,
+            },
           },
-          update: { ...data, stage },
-          select: { id: true },
-        });
+          upsert: true,
+        },
       });
-      const rows = await db.$transaction(ops);
-      rows.forEach((r, idx) => {
-        const s = chunk[idx];
-        if (!applyFilters(s, filters, now).passed) return;
+
+      if (res.passed) {
         metricRows.push({
-          tokenId: r.id,
-          priceUsd: s.priceUsd,
-          marketCapUsd: s.marketCapUsd,
-          fdvUsd: s.fdvUsd,
-          liquidityUsd: s.liquidityUsd,
-          volume5m: s.volume5m,
-          volume15m: s.volume15m,
-          volume30m: s.volume30m,
-          volume1h: s.volume1h,
-          volume24h: s.volume24h,
-          buys5m: s.buys5m,
-          sells5m: s.sells5m,
-          buys1h: s.buys1h,
-          sells1h: s.sells1h,
-          holders: Math.max(0, s.holders),
-          pairCount: s.pairCount,
+          _id: newId(), tokenId: id, ts: now, priceUsd: s.priceUsd, marketCapUsd: s.marketCapUsd, fdvUsd: s.fdvUsd, liquidityUsd: s.liquidityUsd,
+          volume5m: s.volume5m, volume15m: s.volume15m, volume30m: s.volume30m, volume1h: s.volume1h, volume24h: s.volume24h,
+          buys5m: s.buys5m, sells5m: s.sells5m, buys1h: s.buys1h, sells1h: s.sells1h, holders: Math.max(0, s.holders), pairCount: s.pairCount,
         });
-        priceRows.push({ tokenId: r.id, priceUsd: s.priceUsd, liquidityUsd: s.liquidityUsd });
-        volRows.push({ tokenId: r.id, volume5m: s.volume5m, volume1h: s.volume1h, volume24h: s.volume24h, buys5m: s.buys5m, sells5m: s.sells5m });
-      });
+        priceRows.push({ _id: newId(), tokenId: id, ts: now, priceUsd: s.priceUsd, liquidityUsd: s.liquidityUsd });
+        volRows.push({ _id: newId(), tokenId: id, ts: now, volume5m: s.volume5m, volume1h: s.volume1h, volume24h: s.volume24h, buys5m: s.buys5m, sells5m: s.sells5m });
+      }
     }
 
+    for (let i = 0; i < ops.length; i += 500) await tokens.bulkWrite(ops.slice(i, i + 500), { ordered: false });
+
+    const [metrics, prices, volumes, pools] = await Promise.all([collections.tokenMetrics(), collections.priceSnapshots(), collections.volumeSnapshots(), collections.liquidityPools()]);
     await Promise.all([
-      db.tokenMetric.createMany({ data: metricRows }),
-      db.priceSnapshot.createMany({ data: priceRows }),
-      db.volumeSnapshot.createMany({ data: volRows }),
+      metricRows.length ? metrics.insertMany(metricRows, { ordered: false }) : null,
+      priceRows.length ? prices.insertMany(priceRows, { ordered: false }) : null,
+      volRows.length ? volumes.insertMany(volRows, { ordered: false }) : null,
     ]);
 
     // pool records (one per token/pool)
-    const tokenIds = new Map(
-      (await db.token.findMany({ where: { address: { in: snaps.map((s) => s.address) } }, select: { id: true, address: true } })).map((t) => [t.address, t.id]),
-    );
+    const poolOps: AnyBulkWriteOperation<LiquidityPoolDoc>[] = [];
     for (const s of snaps) {
-      const tokenId = tokenIds.get(s.address);
+      const tokenId = tokenIdByAddress.get(`${s.chain}:${s.address}`);
       if (!tokenId || !s.poolAddress) continue;
-      await db.liquidityPool.upsert({
-        where: { chain_address: { chain: s.chain, address: s.poolAddress } },
-        create: { tokenId, chain: s.chain, address: s.poolAddress, dex: s.dex, liquidityUsd: s.liquidityUsd, createdAtChain: s.poolCreatedAt },
-        update: { liquidityUsd: s.liquidityUsd },
+      poolOps.push({
+        updateOne: {
+          filter: { chain: s.chain, address: s.poolAddress },
+          update: {
+            $set: { liquidityUsd: s.liquidityUsd, updatedAt: now },
+            $setOnInsert: { _id: newId(), tokenId, dex: s.dex, quoteSymbol: "SOL", createdAtChain: s.poolCreatedAt },
+          },
+          upsert: true,
+        },
       });
     }
+    for (let i = 0; i < poolOps.length; i += 500) await pools.bulkWrite(poolOps.slice(i, i + 500), { ordered: false });
 
     if (newTokens > 0) {
       await logEvent({ type: "TOKEN_DISCOVERED", source: "scanner", message: `${newTokens} new token(s) discovered`, data: { newTokens } });

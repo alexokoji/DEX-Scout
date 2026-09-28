@@ -1,4 +1,3 @@
-import type { Environment, Prisma, RiskLevel, TargetsMode } from "@prisma/client";
 import { z } from "zod";
 import {
   DEFAULT_TARGETS_MULTI,
@@ -8,8 +7,9 @@ import {
 } from "@/core/config";
 import type { ProfitTargetConfig, ScannerFilters, ScoreWeights } from "@/core/types";
 import { validateTargets } from "@/core/trading/targets";
-import { db } from "@/lib/db";
+import { collections, newId, withId } from "@/lib/db";
 import { logEvent } from "@/lib/events";
+import type { Environment, RiskLevel, TargetsMode, TradingSettingsDoc } from "@/lib/models";
 
 export const tradingSettingsInput = z
   .object({
@@ -75,51 +75,74 @@ export interface UserSettings {
   targets: ProfitTargetConfig[];
 }
 
-function hydrate(row: Prisma.TradingSettingsGetPayload<{ include: { targets: true } }>): UserSettings {
-  const targets = row.targets
-    .map((t) => ({ level: t.level, gainPct: t.gainPct, sellPct: t.sellPct }))
-    .sort((a, b) => a.level - b.level);
+function hydrate(row: TradingSettingsDoc): UserSettings {
+  const targets = [...(row.targets ?? [])].sort((a, b) => a.level - b.level);
+  const { id, ...rest } = withId(row);
   return {
-    ...row,
+    id,
+    ...rest,
     filters: scannerFiltersSchema.parse(row.filters ?? {}),
     weights: scoreWeightsSchema.parse(row.weights ?? {}),
     targets: targets.length ? targets : row.targetsMode === "SINGLE" ? DEFAULT_TARGETS_SINGLE : DEFAULT_TARGETS_MULTI,
-    maxPositionAgeHours: row.maxPositionAgeHours,
   };
 }
 
 export async function getSettings(userId: string): Promise<UserSettings> {
-  const existing = await db.tradingSettings.findUnique({ where: { userId }, include: { targets: true } });
+  const col = await collections.tradingSettings();
+  const existing = await col.findOne({ userId });
   if (existing) return hydrate(existing);
-  const created = await db.tradingSettings.create({
-    data: {
-      userId,
-      filters: scannerFiltersSchema.parse({}),
-      weights: scoreWeightsSchema.parse({}),
-      targets: { create: DEFAULT_TARGETS_MULTI },
-    },
-    include: { targets: true },
-  });
-  return hydrate(created);
+  const doc: TradingSettingsDoc = {
+    _id: newId(),
+    userId,
+    environment: "PAPER",
+    autoTradingEnabled: false,
+    capitalUsd: 100,
+    maxPositionUsd: 10,
+    minPositionUsd: 5,
+    maxOpenPositions: 10,
+    maxDeployedUsd: 100,
+    minOpportunityScore: 70,
+    minLiquidityUsd: 100_000,
+    minVolume24hUsd: 50_000,
+    maxPriceImpactPct: 2,
+    maxSlippageBps: 300,
+    maxAllowedRisk: "MODERATE",
+    targetsMode: "MULTI",
+    maxPositionAgeHours: null,
+    emergencyEnabled: true,
+    emergencyAutoExit: false,
+    emergencyLiquidityDropPct: 70,
+    filters: scannerFiltersSchema.parse({}),
+    weights: scoreWeightsSchema.parse({}),
+    targets: DEFAULT_TARGETS_MULTI,
+    activeStrategyId: null,
+    updatedAt: new Date(),
+  };
+  try {
+    await col.insertOne(doc);
+  } catch (err) {
+    // a concurrent request created it first (unique index on userId) — just read what's there
+    if (!(err instanceof Error) || !("code" in err) || (err as { code?: number }).code !== 11000) throw err;
+    const raced = await col.findOne({ userId });
+    if (!raced) throw err;
+    return hydrate(raced);
+  }
+  return hydrate(doc);
 }
 
 export async function updateSettings(userId: string, input: TradingSettingsInput): Promise<UserSettings> {
+  await getSettings(userId); // ensure a row exists
+  const col = await collections.tradingSettings();
   const { targets, filters, weights, ...rest } = input;
-  await getSettings(userId); // ensure row
-  const row = await db.$transaction(async (tx) => {
-    const cur = await tx.tradingSettings.findUniqueOrThrow({ where: { userId } });
-    await tx.profitTarget.deleteMany({ where: { settingsId: cur.id } });
-    return tx.tradingSettings.update({
-      where: { userId },
-      data: { ...rest, filters, weights, targets: { create: targets } },
-      include: { targets: true },
-    });
-  });
+  await col.updateOne({ userId }, { $set: { ...rest, filters, weights, targets, updatedAt: new Date() } });
+  const row = await col.findOne({ userId });
+  if (!row) throw new Error("Trading settings disappeared during update");
   await logEvent({ type: "SETTINGS_UPDATED", source: "settings", userId, message: "Trading settings updated", data: { environment: input.environment, autoTradingEnabled: input.autoTradingEnabled } });
   return hydrate(row);
 }
 
 export async function allUserFilters(): Promise<ScannerFilters[]> {
-  const rows = await db.tradingSettings.findMany({ select: { filters: true } });
+  const col = await collections.tradingSettings();
+  const rows = await col.find({}, { projection: { filters: 1 } }).toArray();
   return rows.map((r) => scannerFiltersSchema.parse(r.filters ?? {}));
 }

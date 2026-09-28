@@ -1,17 +1,26 @@
 import { describe, expect, it } from "vitest";
-import { db } from "@/lib/db";
+import { collections, newId } from "@/lib/db";
 
 let up = false;
-try { await db.$queryRaw`SELECT 1`; up = true; } catch { up = false; }
+try {
+  const events = await collections.systemEvents();
+  await events.findOne({});
+  up = true;
+} catch {
+  up = false;
+}
 
 (up ? describe : describe.skip)("retention", () => {
   it("prunes old debug events but keeps recent ones", async () => {
     const { pruneOldData } = await import("@/services/maintenance");
-    const old = await db.systemEvent.create({ data: { type: "SCANNER_COMPLETED", source: "test-retention", level: "DEBUG", message: "old", ts: new Date(Date.now() - 5 * 86_400_000) } });
-    const fresh = await db.systemEvent.create({ data: { type: "SCANNER_COMPLETED", source: "test-retention", level: "DEBUG", message: "fresh" } });
+    const events = await collections.systemEvents();
+    const oldId = newId();
+    const freshId = newId();
+    await events.insertOne({ _id: oldId, ts: new Date(Date.now() - 5 * 86_400_000), type: "SCANNER_COMPLETED", level: "DEBUG", source: "test-retention", message: "old", userId: null, data: null });
+    await events.insertOne({ _id: freshId, ts: new Date(), type: "SCANNER_COMPLETED", level: "DEBUG", source: "test-retention", message: "fresh", userId: null, data: null });
     await pruneOldData();
-    expect(await db.systemEvent.findUnique({ where: { id: old.id } })).toBeNull();
-    expect(await db.systemEvent.findUnique({ where: { id: fresh.id } })).not.toBeNull();
-    await db.systemEvent.delete({ where: { id: fresh.id } });
+    expect(await events.findOne({ _id: oldId })).toBeNull();
+    expect(await events.findOne({ _id: freshId })).not.toBeNull();
+    await events.deleteOne({ _id: freshId });
   });
 });

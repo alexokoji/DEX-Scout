@@ -1,9 +1,8 @@
-import type { Prisma } from "@prisma/client";
 import { buildAnalysis } from "@/core/analysis/pipeline";
 import { SIGNAL_THRESHOLDS } from "@/core/config";
 import { providers } from "@/core/providers/registry";
-import type { Analysis, ChainId, MarketAnalysis, OnChainAnalysis, OnChainRaw, SafetyResult, TokenSnapshot } from "@/core/types";
-import { db } from "@/lib/db";
+import type { Analysis, ChainId, OnChainRaw, TokenSnapshot } from "@/core/types";
+import { collections } from "@/lib/db";
 import { logEvent, safeMessage } from "@/lib/events";
 import { touchWorker } from "./workerState";
 
@@ -16,83 +15,60 @@ export async function analyzeSnapshot(s: TokenSnapshot, raw: OnChainRaw): Promis
 
 export async function persistAnalysis(tokenId: string, a: Analysis): Promise<void> {
   const qualified = a.safety.passed && a.opportunity.score >= SIGNAL_THRESHOLDS.watch;
-  await db.$transaction([
-    db.tokenSafety.upsert({
-      where: { tokenId },
-      create: {
-        tokenId,
-        riskScore: a.safety.riskScore,
-        riskLevel: a.safety.riskLevel,
-        passed: a.safety.passed,
-        warnings: a.safety.warnings,
-        criticalIssues: a.safety.criticalIssues,
-        details: a.onchainRaw as unknown as Prisma.InputJsonValue,
-      },
-      update: {
-        riskScore: a.safety.riskScore,
-        riskLevel: a.safety.riskLevel,
-        passed: a.safety.passed,
-        warnings: a.safety.warnings,
-        criticalIssues: a.safety.criticalIssues,
-        details: a.onchainRaw as unknown as Prisma.InputJsonValue,
-        checkedAt: new Date(),
-      },
-    }),
-    db.tokenAnalysis.upsert({
-      where: { tokenId },
-      create: {
-        tokenId,
-        opportunityScore: a.opportunity.score,
-        components: a.opportunity.components as unknown as Prisma.InputJsonValue,
-        market: a.market as unknown as Prisma.InputJsonValue,
-        onchain: a.onchain as unknown as Prisma.InputJsonValue,
-        snapshot: a.snapshot as unknown as Prisma.InputJsonValue,
-        raw: a.onchainRaw as unknown as Prisma.InputJsonValue,
-      },
-      update: {
-        opportunityScore: a.opportunity.score,
-        components: a.opportunity.components as unknown as Prisma.InputJsonValue,
-        market: a.market as unknown as Prisma.InputJsonValue,
-        onchain: a.onchain as unknown as Prisma.InputJsonValue,
-        snapshot: a.snapshot as unknown as Prisma.InputJsonValue,
-        raw: a.onchainRaw as unknown as Prisma.InputJsonValue,
-        computedAt: new Date(),
-      },
-    }),
-    db.token.update({
-      where: { id: tokenId },
-      data: {
+  const now = new Date();
+  const tokens = await collections.tokens();
+  await tokens.updateOne(
+    { _id: tokenId },
+    {
+      $set: {
         opportunityScore: a.opportunity.score,
         riskLevel: a.safety.riskLevel,
         stage: qualified ? "QUALIFIED" : "ANALYZED",
+        safety: {
+          riskScore: a.safety.riskScore,
+          riskLevel: a.safety.riskLevel,
+          passed: a.safety.passed,
+          warnings: a.safety.warnings,
+          criticalIssues: a.safety.criticalIssues,
+          details: a.onchainRaw,
+          checkedAt: now,
+        },
+        analysis: {
+          opportunityScore: a.opportunity.score,
+          components: a.opportunity.components,
+          market: a.market,
+          onchain: a.onchain,
+          snapshot: a.snapshot,
+          raw: a.onchainRaw,
+          computedAt: now,
+          updatedAt: now,
+        },
       },
-    }),
-  ]);
+    },
+  );
 }
 
-/** Rebuild the in-memory Analysis for a token from persisted rows (used by the signal worker and pages). */
+/** Rebuild the in-memory Analysis for a token from persisted fields (used by the signal worker and pages). */
 export async function loadAnalysis(tokenId: string): Promise<Analysis | null> {
-  const [row, safety] = await Promise.all([
-    db.tokenAnalysis.findUnique({ where: { tokenId } }),
-    db.tokenSafety.findUnique({ where: { tokenId } }),
-  ]);
-  if (!row || !safety) return null;
-  const snap = row.snapshot as unknown as TokenSnapshot;
+  const tokens = await collections.tokens();
+  const t = await tokens.findOne({ _id: tokenId }, { projection: { safety: 1, analysis: 1 } });
+  if (!t?.analysis || !t.safety) return null;
+  const snap = t.analysis.snapshot;
   const snapshot: TokenSnapshot = { ...snap, poolCreatedAt: new Date(snap.poolCreatedAt), observedAt: new Date(snap.observedAt) };
   return {
     snapshot,
-    onchainRaw: row.raw as unknown as OnChainRaw,
+    onchainRaw: t.analysis.raw,
     safety: {
-      riskScore: safety.riskScore,
-      riskLevel: safety.riskLevel,
-      passed: safety.passed,
-      warnings: safety.warnings as string[],
-      criticalIssues: safety.criticalIssues as string[],
-    } satisfies SafetyResult,
-    market: row.market as unknown as MarketAnalysis,
-    onchain: row.onchain as unknown as OnChainAnalysis,
-    opportunity: { score: row.opportunityScore, components: row.components as unknown as Analysis["opportunity"]["components"] },
-    computedAt: row.computedAt,
+      riskScore: t.safety.riskScore,
+      riskLevel: t.safety.riskLevel,
+      passed: t.safety.passed,
+      warnings: t.safety.warnings,
+      criticalIssues: t.safety.criticalIssues,
+    },
+    market: t.analysis.market,
+    onchain: t.analysis.onchain,
+    opportunity: { score: t.analysis.opportunityScore, components: t.analysis.components },
+    computedAt: t.analysis.computedAt,
   };
 }
 
@@ -103,11 +79,11 @@ async function inChunks<T>(items: T[], size: number, fn: (t: T) => Promise<void>
 /** Safety + market + on-chain analysis for every token that currently passes the scanner filters. */
 export async function runAnalysisCycle(): Promise<{ analyzed: number; failed: number }> {
   const p = providers();
-  const tokens = await db.token.findMany({
-    where: { passedFilters: true },
-    select: { id: true, address: true, chain: true },
-    orderBy: { marketCapUsd: "desc" },
-  });
+  const tokenCol = await collections.tokens();
+  const tokens = await tokenCol
+    .find({ passedFilters: true }, { projection: { _id: 1, address: 1, chain: 1 } })
+    .sort({ marketCapUsd: -1 })
+    .toArray();
   let analyzed = 0;
   let failed = 0;
   let critical = 0;
@@ -121,7 +97,7 @@ export async function runAnalysisCycle(): Promise<{ analyzed: number; failed: nu
       const raw = await p.data.getOnChain(t.chain as ChainId, t.address, snap);
       const a = await analyzeSnapshot(snap, raw);
       if (a.safety.criticalIssues.length) critical++;
-      await persistAnalysis(t.id, a);
+      await persistAnalysis(t._id, a);
       analyzed++;
     } catch (err) {
       failed++;

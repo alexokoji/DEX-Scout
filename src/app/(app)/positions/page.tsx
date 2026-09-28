@@ -4,16 +4,28 @@ import { PageHeader } from "@/components/features/PageHeader";
 import { PositionsView } from "@/components/features/PositionsView";
 import { Card, CardHeader } from "@/components/ui/card";
 import { requireUser } from "@/lib/auth";
-import { db } from "@/lib/db";
+import { collections, withIds } from "@/lib/db";
 import { positionViews } from "@/services/queries";
 import { timeAgo } from "@/lib/format";
 
 export default async function PositionsPage() {
   const user = await requireUser();
-  const [all, events] = await Promise.all([
+  const positionsCol = await collections.positions();
+  const positionEventsCol = await collections.positionEvents();
+  const tokensCol = await collections.tokens();
+
+  const [all, myPositions] = await Promise.all([
     positionViews(user.id, undefined, true),
-    db.positionEvent.findMany({ where: { position: { userId: user.id } }, orderBy: { createdAt: "desc" }, take: 15, include: { position: { include: { token: { select: { symbol: true } } } } } }),
+    positionsCol.find({ userId: user.id }, { projection: { _id: 1, tokenId: 1 } }).toArray(),
   ]);
+  const tokenIdByPosition = new Map(myPositions.map((p) => [p._id, p.tokenId]));
+  const events = withIds(
+    await positionEventsCol.find({ positionId: { $in: [...tokenIdByPosition.keys()] } }).sort({ createdAt: -1 }).limit(15).toArray(),
+  );
+  const tokenSymbols = new Map(
+    (await tokensCol.find({ _id: { $in: [...new Set(events.map((e) => tokenIdByPosition.get(e.positionId)).filter((x): x is string => !!x))] } }, { projection: { _id: 1, symbol: 1 } }).toArray()).map((t) => [t._id, t.symbol]),
+  );
+
   const open = all.filter((p) => p.status !== "CLOSED");
   const closed = all.filter((p) => p.status === "CLOSED");
   return (
@@ -29,7 +41,7 @@ export default async function PositionsPage() {
         <div className="divide-y divide-border">
           {events.map((e) => (
             <div key={e.id} className="flex items-center justify-between gap-3 px-4 py-2 text-xs">
-              <span><span className="font-medium">{e.position.token.symbol}</span> · {e.message}</span>
+              <span><span className="font-medium">{tokenSymbols.get(tokenIdByPosition.get(e.positionId) ?? "") ?? "?"}</span> · {e.message}</span>
               <span className="shrink-0 text-muted">{timeAgo(e.createdAt)}</span>
             </div>
           ))}

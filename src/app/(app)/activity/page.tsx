@@ -4,7 +4,7 @@ import { PageHeader } from "@/components/features/PageHeader";
 import { Badge } from "@/components/ui/badges";
 import { Card, EmptyState } from "@/components/ui/card";
 import { requireUser } from "@/lib/auth";
-import { db } from "@/lib/db";
+import { collections, withIds } from "@/lib/db";
 import { clockTime, timeAgo } from "@/lib/format";
 
 const TYPES = ["SCANNER_COMPLETED", "TOKEN_DISCOVERED", "SAFETY_CHECK_COMPLETED", "SIGNAL_CREATED", "SIGNAL_EXPIRED", "TRADE_REQUESTED", "TRADE_EXECUTED", "TRADE_FAILED", "TRADE_SKIPPED", "POSITION_OPENED", "TARGET_REACHED", "PROFIT_TAKEN", "EMERGENCY_WARNING", "EMERGENCY_EXIT", "POSITION_CLOSED", "PROVIDER_ERROR", "WORKER_ERROR"];
@@ -12,11 +12,14 @@ const TYPES = ["SCANNER_COMPLETED", "TOKEN_DISCOVERED", "SAFETY_CHECK_COMPLETED"
 export default async function ActivityPage({ searchParams }: { searchParams: Promise<{ type?: string; level?: string }> }) {
   const user = await requireUser();
   const sp = await searchParams;
-  const events = await db.systemEvent.findMany({
-    where: { OR: [{ userId: user.id }, { userId: null }], ...(sp.type ? { type: sp.type } : {}), ...(sp.level === "WARN" || sp.level === "ERROR" ? { level: sp.level } : {}) },
-    orderBy: { ts: "desc" },
-    take: 200,
-  });
+  const eventsCol = await collections.systemEvents();
+  const events = withIds(
+    await eventsCol
+      .find({ $or: [{ userId: user.id }, { userId: null }], ...(sp.type ? { type: sp.type } : {}), ...(sp.level === "WARN" || sp.level === "ERROR" ? { level: sp.level } : {}) })
+      .sort({ ts: -1 })
+      .limit(200)
+      .toArray(),
+  );
   const chip = (label: string, q: string, active: boolean) => (
     <Link key={label} href={q ? `/activity?${q}` : "/activity"} className={`rounded px-2 py-1 text-[11px] ${active ? "bg-accent text-white" : "bg-surface2 text-muted hover:text-foreground"}`}>{label}</Link>
   );

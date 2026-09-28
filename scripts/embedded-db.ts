@@ -1,17 +1,21 @@
 /**
- * Zero-setup local PostgreSQL for development (real Postgres binaries via the `embedded-postgres` package).
- * Not for production — point DATABASE_URL at a managed/self-hosted Postgres there.
+ * Zero-setup local MongoDB for development, as a single-node replica set (via the `mongodb-memory-server`
+ * package, which downloads and runs a real `mongod` binary — nothing is faked). A replica set — even a
+ * single-node one — is required for the multi-document transactions `withUserLock` uses; a plain standalone
+ * `mongod` cannot run them, which is why this isn't just "any" local Mongo.
+ *
+ * Not for production — point MONGODB_URI at a real replica set (e.g. MongoDB Atlas) there.
  *
  *   npm run db:start
  */
-import EmbeddedPostgres from "embedded-postgres";
+import { MongoMemoryReplSet } from "mongodb-memory-server";
 import fs from "node:fs";
 import path from "node:path";
 import net from "node:net";
 
-const PORT = Number(process.env.EMBEDDED_PG_PORT ?? 5433);
+const PORT = Number(process.env.EMBEDDED_MONGO_PORT ?? 27117);
 const DB_NAME = "dexscout";
-const dir = path.resolve(process.cwd(), ".data", "pg");
+const dir = path.resolve(process.cwd(), ".data", "mongo");
 
 function portOpen(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -21,54 +25,31 @@ function portOpen(port: number): Promise<boolean> {
   });
 }
 
-export async function startEmbeddedPostgres() {
+export async function startEmbeddedMongo() {
   if (await portOpen(PORT)) {
-    console.log(`[db] PostgreSQL already listening on :${PORT}`);
+    console.log(`[db] MongoDB already listening on :${PORT}`);
     return null;
   }
-  const pg = new EmbeddedPostgres({
-    databaseDir: dir,
-    user: "postgres",
-    password: "postgres",
-    port: PORT,
-    persistent: true,
-    // Windows would otherwise create a WIN1252 cluster that rejects characters such as arrows in event messages
-    initdbFlags: ["--encoding=UTF8", "--locale=C"],
-    onLog: () => {},
-    onError: (e) => console.error("[db]", e),
+  fs.mkdirSync(dir, { recursive: true });
+  console.log("[db] starting local MongoDB replica set (first run downloads the mongod binary; can take a minute)…");
+  const replSet = await MongoMemoryReplSet.create({
+    replSet: { name: "rs0", count: 1, storageEngine: "wiredTiger", dbName: DB_NAME },
+    instanceOpts: [{ port: PORT, dbPath: dir, storageEngine: "wiredTiger" }],
   });
-  if (!fs.existsSync(path.join(dir, "PG_VERSION"))) {
-    console.log("[db] initialising local database cluster…");
-    await pg.initialise();
-  }
-  await pg.start();
-  try {
-    await pg.createDatabase(DB_NAME);
-  } catch {
-    /* already exists */
-  }
-  try {
-    const client = pg.getPgClient();
-    await client.connect();
-    const enc = (await client.query("SHOW server_encoding")).rows[0]?.server_encoding;
-    await client.end();
-    if (enc && enc !== "UTF8") console.warn(`[db] WARNING: cluster encoding is ${enc}, expected UTF8. Delete the .data/pg folder and restart to recreate it.`);
-  } catch {
-    /* best effort */
-  }
-  console.log(`[db] PostgreSQL ready: postgresql://postgres:postgres@localhost:${PORT}/${DB_NAME}`);
+  const uri = replSet.getUri(DB_NAME);
+  console.log(`[db] MongoDB ready: ${uri}`);
   const stop = async () => {
-    await pg.stop().catch(() => {});
+    await replSet.stop().catch(() => {});
     process.exit(0);
   };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
-  return pg;
+  return replSet;
 }
 
 if (process.argv[1] && /embedded-db\.ts$/.test(process.argv[1].replace(/\\/g, "/"))) {
-  startEmbeddedPostgres().then((pg) => {
-    if (!pg) process.exit(0);
+  startEmbeddedMongo().then((rs) => {
+    if (!rs) process.exit(0);
     console.log("[db] running — press Ctrl+C to stop");
   });
 }

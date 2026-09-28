@@ -5,15 +5,16 @@ import { Badge } from "@/components/ui/badges";
 import { Card, CardBody, CardHeader, Stat } from "@/components/ui/card";
 import { CHAINS } from "@/core/chains";
 import { requireUser } from "@/lib/auth";
-import { db } from "@/lib/db";
+import { collections, withIds } from "@/lib/db";
 import { liveTradingAllowed } from "@/lib/env";
 import { shortAddr, usd } from "@/lib/format";
 import { portfolio, walletBalances } from "@/services/queries";
 
 export default async function WalletPage() {
   const user = await requireUser();
+  const walletsCol = await collections.wallets();
   const [wallets, pf, wb] = await Promise.all([
-    db.wallet.findMany({ where: { userId: user.id }, orderBy: { createdAt: "desc" } }),
+    walletsCol.find({ userId: user.id }).sort({ createdAt: -1 }).toArray().then(withIds),
     portfolio(user.id, liveTradingAllowed() ? "LIVE" : "PAPER"),
     walletBalances(user.id),
   ]);

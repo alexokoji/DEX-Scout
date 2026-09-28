@@ -5,13 +5,18 @@ import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { requireUser } from "@/lib/auth";
 import { compactUsd } from "@/lib/format";
 import { getSettings } from "@/services/settings";
-import { db } from "@/lib/db";
+import { collections } from "@/lib/db";
 import { BacktestPanel } from "@/components/features/BacktestPanel";
 
 export default async function StrategiesPage() {
   const user = await requireUser();
   const s = await getSettings(user.id);
-  const btTokens = await db.token.findMany({ where: { passedFilters: true }, orderBy: { opportunityScore: "desc" }, take: 30, select: { address: true, chain: true, symbol: true } });
+  const tokensCol = await collections.tokens();
+  const btTokens = await tokensCol
+    .find({ passedFilters: true }, { projection: { address: 1, chain: 1, symbol: 1 } })
+    .sort({ opportunityScore: -1 })
+    .limit(30)
+    .toArray();
   const w = s.weights;
   const weights = Object.entries(w) as [string, number][];
   const total = weights.reduce((a, [, v]) => a + v, 0) || 1;
@@ -51,7 +56,7 @@ export default async function StrategiesPage() {
           </CardBody>
         </Card>
       </div>
-      <BacktestPanel tokens={btTokens} />
+      <BacktestPanel tokens={btTokens.map((t) => ({ address: t.address, chain: t.chain, symbol: t.symbol }))} />
     </div>
   );
 }

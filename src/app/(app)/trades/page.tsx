@@ -5,19 +5,18 @@ import { Badge, EnvBadge, PnL } from "@/components/ui/badges";
 import { Card, CardHeader, EmptyState } from "@/components/ui/card";
 import { providers } from "@/core/providers/registry";
 import { requireUser } from "@/lib/auth";
-import { db } from "@/lib/db";
+import { collections, withIds } from "@/lib/db";
 import { price, shortAddr, timeAgo, usd } from "@/lib/format";
+import { attachTokens } from "@/services/queries";
+import type { ChainId } from "@/core/types";
 
 const STATUS_TONE = { CONFIRMED: "green", FAILED: "red", PENDING: "amber", PREPARED: "blue", EXPIRED: "gray", CANCELLED: "gray" } as const;
 
 export default async function TradesPage() {
   const user = await requireUser();
-  const trades = await db.trade.findMany({
-    where: { userId: user.id },
-    orderBy: { createdAt: "desc" },
-    take: 200,
-    include: { token: { select: { symbol: true, chain: true } }, transaction: { select: { signature: true } } },
-  });
+  const tradesCol = await collections.trades();
+  const raw = withIds(await tradesCol.find({ userId: user.id }).sort({ createdAt: -1 }).limit(200).toArray());
+  const trades = await attachTokens(raw);
   const explorers = providers().chains;
   return (
     <div className="space-y-4">
@@ -51,7 +50,7 @@ export default async function TradesPage() {
                       {t.failureReason && <div className="mt-0.5 max-w-[200px] truncate text-[11px] text-down" title={t.failureReason}>{t.failureReason}</div>}
                     </td>
                     <td className="px-3 py-2 text-xs">
-                      {t.transaction?.signature ? <a className="text-accent" target="_blank" rel="noreferrer" href={explorers[t.token.chain as keyof typeof explorers].explorerTxUrl(t.transaction.signature)}>{shortAddr(t.transaction.signature)}</a> : <span className="text-muted">{t.environment === "PAPER" ? "simulated" : "—"}</span>}
+                      {t.transaction?.signature ? <a className="text-accent" target="_blank" rel="noreferrer" href={explorers[t.token.chain as ChainId].explorerTxUrl(t.transaction.signature)}>{shortAddr(t.transaction.signature)}</a> : <span className="text-muted">{t.environment === "PAPER" ? "simulated" : "—"}</span>}
                     </td>
                   </tr>
                 ))}
