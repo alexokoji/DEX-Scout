@@ -19,10 +19,17 @@ export const maxDuration = 300;
  *   monitor = position monitor (profit targets, health, emergency handling)
  *   execute = bot cycle + live-trade reconciliation
  */
+// Each analysed token costs at least two outbound HTTP calls in live mode. Left unbounded, a scan with
+// hundreds of qualifying tokens can outrun Hobby's 60s function cap and the platform kills the whole
+// request before anything is saved. Bounding it here just paces the work across cron ticks (every ~2min);
+// nothing is permanently skipped — see runAnalysisCycle's docstring. The self-hosted worker loop has no
+// such ceiling and calls runAnalysisCycle() unbounded.
+const SERVERLESS_ANALYSIS_BATCH = 40;
+
 const JOBS: Record<string, () => Promise<unknown>> = {
   async scan() {
     const scan = await runScanCycle();
-    const analysis = await runAnalysisCycle();
+    const analysis = await runAnalysisCycle(SERVERLESS_ANALYSIS_BATCH);
     const signals = await runSignalCycle();
     const pruned = new Date().getUTCMinutes() === 0 ? await pruneOldData().catch(() => -1) : null;
     return { scan, analysis, signals, pruned };

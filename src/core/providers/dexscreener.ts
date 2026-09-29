@@ -1,6 +1,8 @@
 /**
- * Multi-chain market data from DexScreener (discovery, pairs) and GeckoTerminal (OHLCV).
- * Chain specifics (authority checks, holders, honeypot heuristics) are injected as `onChain` handlers per family.
+ * Multi-chain market data, blended from two independent free/public sources so neither one's rate
+ * limits or downtime take discovery out entirely: DexScreener (token-profiles/boosts + pairs) and
+ * GeckoTerminal (new_pools + OHLCV). Neither needs an API key. Chain specifics (authority checks,
+ * holders, honeypot heuristics) are injected as `onChain` handlers per family.
  */
 import { CHAINS, normalizeAddress, type ChainFamily } from "../chains";
 import type { Candle, ChainId, OnChainRaw, Timeframe, TokenSnapshot } from "../types";
@@ -55,8 +57,29 @@ async function enrichHolders(s: TokenSnapshot): Promise<void> {
   s.holders1hAgo = oldest && now - oldest.t >= 30 * 60_000 ? oldest.holders : holders;
 }
 
+/** Shape of GeckoTerminal's `/networks/{network}/new_pools?include=base_token` response. */
+interface GtPool {
+  attributes: {
+    base_token_price_usd: string | null;
+    address: string;
+    name: string;
+    pool_created_at: string | null;
+    fdv_usd: string | null;
+    market_cap_usd: string | null;
+    reserve_in_usd: string | null;
+    price_change_percentage: Record<string, string>;
+    transactions: Record<string, { buys: number; sells: number }>;
+    volume_usd: Record<string, string>;
+  };
+  relationships: { base_token: { data: { id: string } }; dex?: { data: { id: string } } };
+}
+interface GtToken {
+  id: string;
+  attributes: { address: string; name: string; symbol: string; decimals: number };
+}
+
 export class DexScreenerDataProvider implements TokenDataProvider {
-  readonly name = "dexscreener";
+  readonly name = "dexscreener+geckoterminal";
   readonly kind = "LIVE" as const;
 
   constructor(private onChain: Record<ChainFamily, OnChainHandler>) {}
@@ -64,6 +87,20 @@ export class DexScreenerDataProvider implements TokenDataProvider {
   private base = () => env().MARKET_DATA_URL;
 
   async discover(chain: ChainId): Promise<TokenSnapshot[]> {
+    const [ds, gt] = await Promise.allSettled([this.discoverDexScreener(chain), this.discoverGeckoTerminal(chain)]);
+    const dsList = ds.status === "fulfilled" ? ds.value : [];
+    const gtList = gt.status === "fulfilled" ? gt.value : [];
+    if (ds.status === "rejected" && gt.status === "rejected") {
+      throw new Error(`discovery failed on both providers for ${chain}: ${String(ds.reason)} / ${String(gt.reason)}`);
+    }
+    // DexScreener has richer fields (multi-window volume, real market cap) — prefer it when both saw the token.
+    const byAddress = new Map<string, TokenSnapshot>();
+    for (const s of gtList) byAddress.set(s.address, s);
+    for (const s of dsList) byAddress.set(s.address, s);
+    return [...byAddress.values()];
+  }
+
+  private async discoverDexScreener(chain: ChainId): Promise<TokenSnapshot[]> {
     const slug = CHAINS[chain].dexScreenerId;
     const lists = await Promise.allSettled([
       getJson<{ chainId: string; tokenAddress: string }[]>(`${this.base()}/token-profiles/latest/v1`),
@@ -76,16 +113,34 @@ export class DexScreenerDataProvider implements TokenDataProvider {
     }
     if (addrs.size === 0 && lists.every((l) => l.status === "rejected")) throw new Error("DexScreener discovery failed");
     const all = [...addrs];
+    const chunks: string[][] = [];
+    for (let i = 0; i < all.length; i += 30) chunks.push(all.slice(i, i + 30));
+    const pairLists = await Promise.all(
+      chunks.map((chunk) => getJson<DsPair[]>(`${this.base()}/tokens/v1/${slug}/${chunk.join(",")}`).catch(() => [] as DsPair[])),
+    );
     const out: TokenSnapshot[] = [];
-    for (let i = 0; i < all.length; i += 30) {
-      const chunk = all.slice(i, i + 30);
-      const pairs = await getJson<DsPair[]>(`${this.base()}/tokens/v1/${slug}/${chunk.join(",")}`).catch(() => []);
+    for (const pairs of pairLists) {
       const byToken = new Map<string, DsPair[]>();
       for (const p of pairs) byToken.set(p.baseToken.address, [...(byToken.get(p.baseToken.address) ?? []), p]);
       for (const ps of byToken.values()) {
         const s = this.toSnapshot(chain, ps);
         if (s) out.push(s);
       }
+    }
+    return out;
+  }
+
+  /** Independent, free/public discovery source: freshly created pools on GeckoTerminal, per chain. */
+  private async discoverGeckoTerminal(chain: ChainId): Promise<TokenSnapshot[]> {
+    const network = CHAINS[chain].geckoId;
+    const j = await getJson<{ data: GtPool[]; included?: GtToken[] }>(
+      `https://api.geckoterminal.com/api/v2/networks/${network}/new_pools?include=base_token&page=1`,
+    );
+    const tokenById = new Map((j.included ?? []).map((t) => [t.id, t.attributes]));
+    const out: TokenSnapshot[] = [];
+    for (const pool of j.data ?? []) {
+      const s = this.toSnapshotFromGecko(chain, pool, tokenById);
+      if (s) out.push(s);
     }
     return out;
   }
@@ -136,6 +191,54 @@ export class DexScreenerDataProvider implements TokenDataProvider {
       change5m: p.priceChange?.m5 ?? 0,
       change1h: p.priceChange?.h1 ?? 0,
       change24h: p.priceChange?.h24 ?? 0,
+      holders: -1,
+      holders1hAgo: -1,
+      observedAt: new Date(),
+      dataSource: "LIVE",
+    };
+  }
+
+  private toSnapshotFromGecko(chain: ChainId, pool: GtPool, tokenById: Map<string, GtToken["attributes"]>): TokenSnapshot | null {
+    const a = pool.attributes;
+    const price = Number(a.base_token_price_usd);
+    if (!(price > 0)) return null;
+    const token = tokenById.get(pool.relationships.base_token.data.id);
+    if (!token) return null; // can't identify the base token without the `include=base_token` join
+    const tx = (k: string) => a.transactions?.[k] ?? { buys: 0, sells: 0 };
+    const v = (k: string) => Number(a.volume_usd?.[k] ?? 0);
+    const liq = Number(a.reserve_in_usd ?? 0);
+    const fdv = Number(a.fdv_usd ?? 0);
+    const mcap = Number(a.market_cap_usd ?? 0);
+    const pct = (k: string) => Number(a.price_change_percentage?.[k] ?? 0);
+    return {
+      chain,
+      address: normalizeAddress(chain, token.address),
+      name: token.name,
+      symbol: token.symbol,
+      decimals: token.decimals,
+      dex: pool.relationships.dex?.data.id ?? "unknown",
+      poolAddress: a.address,
+      poolCreatedAt: new Date(a.pool_created_at ?? Date.now()),
+      pairCount: 1,
+      priceUsd: price,
+      marketCapUsd: mcap || fdv,
+      fdvUsd: fdv || mcap,
+      liquidityUsd: liq,
+      liquidity1hAgoUsd: liq,
+      volume5m: v("m5"),
+      volume15m: v("m15"),
+      volume30m: v("m30"),
+      volume1h: v("h1"),
+      volume24h: v("h24"),
+      buys5m: tx("m5").buys,
+      sells5m: tx("m5").sells,
+      buys15m: tx("m15").buys,
+      sells15m: tx("m15").sells,
+      buys1h: tx("h1").buys,
+      sells1h: tx("h1").sells,
+      change5m: pct("m5"),
+      change1h: pct("h1"),
+      change24h: pct("h24"),
       holders: -1,
       holders1hAgo: -1,
       observedAt: new Date(),

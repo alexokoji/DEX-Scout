@@ -76,14 +76,32 @@ async function inChunks<T>(items: T[], size: number, fn: (t: T) => Promise<void>
   for (let i = 0; i < items.length; i += size) await Promise.all(items.slice(i, i + size).map(fn));
 }
 
-/** Safety + market + on-chain analysis for every token that currently passes the scanner filters. */
-export async function runAnalysisCycle(): Promise<{ analyzed: number; failed: number }> {
+/**
+ * Safety + market + on-chain analysis for tokens that currently pass the scanner filters.
+ *
+ * `limit` bounds how many tokens a single call analyses (each one costs at least two outbound HTTP
+ * calls, so on a hard wall-clock budget — the Vercel serverless cron route, capped at 60s on Hobby —
+ * an unbounded pass across hundreds of live tokens can blow past it and the platform kills the whole
+ * request with a 500 before anything gets persisted). Never-analysed tokens are always prioritised,
+ * then the ones with the oldest analysis, so nothing is permanently skipped — it's paced across
+ * however many cron ticks it takes, not capped. The self-hosted worker loop (no wall-clock ceiling)
+ * calls this with no limit.
+ */
+export async function runAnalysisCycle(limit?: number): Promise<{ analyzed: number; failed: number }> {
   const p = providers();
   const tokenCol = await collections.tokens();
-  const tokens = await tokenCol
-    .find({ passedFilters: true }, { projection: { _id: 1, address: 1, chain: 1 } })
-    .sort({ marketCapUsd: -1 })
-    .toArray();
+  const [unanalyzed, stale] = await Promise.all([
+    tokenCol
+      .find({ passedFilters: true, analysis: null }, { projection: { _id: 1, address: 1, chain: 1 } })
+      .sort({ marketCapUsd: -1 })
+      .toArray(),
+    tokenCol
+      .find({ passedFilters: true, analysis: { $ne: null } }, { projection: { _id: 1, address: 1, chain: 1 } })
+      .sort({ "analysis.computedAt": 1 })
+      .toArray(),
+  ]);
+  const ordered = [...unanalyzed, ...stale];
+  const tokens = limit ? ordered.slice(0, limit) : ordered;
   let analyzed = 0;
   let failed = 0;
   let critical = 0;
@@ -108,8 +126,8 @@ export async function runAnalysisCycle(): Promise<{ analyzed: number; failed: nu
     type: "SAFETY_CHECK_COMPLETED",
     source: "analysis",
     level: "DEBUG",
-    message: `Analysed ${analyzed} tokens (${critical} with critical issues, ${failed} failed)`,
-    data: { analyzed, failed, critical },
+    message: `Analysed ${analyzed} tokens (${critical} with critical issues, ${failed} failed)${limit ? `, ${ordered.length - tokens.length} left for the next run` : ""}`,
+    data: { analyzed, failed, critical, remaining: ordered.length - tokens.length },
   });
   await touchWorker("analysis-worker", failed && !analyzed ? "All analyses failed" : null, { analyzed, failed, critical });
   return { analyzed, failed };
