@@ -33,10 +33,25 @@ export type Env = z.infer<typeof schema>;
 
 let cached: Env | null = null;
 
+/**
+ * Dashboard env-var UIs (Vercel included) happily let you add a key with an empty value, which is
+ * indistinguishable from "" once it reaches `process.env` — but every `.default(...)` above only
+ * triggers on `undefined`, not on "". Left alone, an accidentally-blank var silently keeps its empty
+ * string instead of falling back (this is exactly how MARKET_DATA_URL="" turned every live discovery
+ * fetch into a call to a bare path like "/tokens/v1/solana/...", which `fetch` rejects as an
+ * unparseable URL). Treat blank as unset everywhere, since no field in this schema gives "" a meaning
+ * distinct from "not set".
+ */
+function stripBlank(env: NodeJS.ProcessEnv): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) if (v) out[k] = v;
+  return out;
+}
+
 /** Server-only. Never import this from a client component. */
 export function env(): Env {
   if (cached) return cached;
-  const parsed = schema.safeParse(process.env);
+  const parsed = schema.safeParse(stripBlank(process.env));
   if (!parsed.success) {
     throw new Error(`Invalid environment: ${parsed.error.issues.map((i) => i.path.join(".")).join(", ")}`);
   }
