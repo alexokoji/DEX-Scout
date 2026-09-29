@@ -110,6 +110,11 @@ export async function runAnalysisCycle(limit?: number): Promise<{ analyzed: numb
       const snap = await p.data.getSnapshot(t.chain as ChainId, t.address);
       if (!snap) {
         failed++;
+        // The provider can no longer resolve this token (delisted, too new for this source, or — after a
+        // MOCK -> LIVE switch — a synthetic address that never existed on-chain). Left marked as passing,
+        // it would be retried forever and, under the serverless batch cap, could permanently crowd out
+        // real candidates that are actually ready to analyse. Demote it instead of leaving it stuck.
+        await tokenCol.updateOne({ _id: t._id }, { $set: { passedFilters: false, stage: "FILTERED" } });
         return;
       }
       const raw = await p.data.getOnChain(t.chain as ChainId, t.address, snap);
