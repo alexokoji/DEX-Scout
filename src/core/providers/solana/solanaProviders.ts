@@ -64,6 +64,16 @@ export class SolanaChainAdapter implements ChainAdapter {
   }
 }
 
+/**
+ * Unlike `rpcCall` (used by the EVM adapter), `@solana/web3.js`'s `Connection` methods carry no
+ * application-level timeout of their own — a slow response from the default public RPC (rate-limited,
+ * no SLA) can otherwise hang far longer than every other call in the analysis pipeline combined, with
+ * nothing to cut it off before it eats the whole serverless request budget.
+ */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([p, new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`Solana RPC timed out after ${ms}ms`)), ms))]);
+}
+
 /** Solana raw facts: mint/freeze authority, top-holder concentration, sell-side heuristics. */
 export async function solanaOnChain(_chain: ChainId, address: string, snapshot: TokenSnapshot): Promise<OnChainRaw> {
   const c = connection();
@@ -74,11 +84,11 @@ export async function solanaOnChain(_chain: ChainId, address: string, snapshot: 
   let topHolderPct = 0;
   let top10 = 0;
   try {
-    const info = await c.getParsedAccountInfo(mint);
+    const info = await withTimeout(c.getParsedAccountInfo(mint), 8_000);
     const parsed = (info.value?.data as { parsed?: { info?: { mintAuthority: string | null; freezeAuthority: string | null } } })?.parsed?.info;
     mintRevoked = parsed ? parsed.mintAuthority === null : false;
     freezeRevoked = parsed ? parsed.freezeAuthority === null : false;
-    const [largest, supply] = await Promise.all([c.getTokenLargestAccounts(mint), c.getTokenSupply(mint)]);
+    const [largest, supply] = await withTimeout(Promise.all([c.getTokenLargestAccounts(mint), c.getTokenSupply(mint)]), 8_000);
     const total = Number(supply.value.amount) || 1;
     const amounts = largest.value.map((a) => (Number(a.amount) / total) * 100);
     // The largest account is frequently the liquidity pool vault; report it but callers should treat it with care.
