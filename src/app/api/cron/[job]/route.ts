@@ -10,7 +10,10 @@ import { runScanCycle } from "@/services/scanner";
 import { runSignalCycle } from "@/services/signals";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
+// Vercel Hobby hard-caps functions at 60s regardless of what's requested here (vercel.json also pins
+// these routes to 60). Keep this truthful rather than aspirational — see the lease TTL below, which is
+// sized off this number.
+export const maxDuration = 60;
 
 /**
  * Serverless replacement for the long-running workers (used on Vercel, see vercel.json / VERCEL.md).
@@ -53,7 +56,12 @@ export async function GET(req: Request, ctx: { params: Promise<{ job: string }> 
   if (!fn) return NextResponse.json({ error: "Unknown job" }, { status: 404 });
   const t0 = Date.now();
   try {
-    const out = await withLease(`cron:${job}`, 280, fn);
+    // Below maxDuration on purpose: if the platform kills this invocation for running past the real
+    // 60s ceiling, the lease's `finally` release never executes (the runtime is torn down first), so a
+    // stale lease from a killed run must expire quickly on its own — not sit "held" for minutes, which
+    // would otherwise make every subsequent tick report "another run is still in progress" for far
+    // longer than a single missed cycle.
+    const out = await withLease(`cron:${job}`, 55, fn);
     if (!out.ran) return NextResponse.json({ job, skipped: "another run is still in progress" });
     return NextResponse.json({ job, ms: Date.now() - t0, result: out.result });
   } catch (err) {
