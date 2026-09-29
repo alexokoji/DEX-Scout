@@ -22,12 +22,15 @@ export const maxDuration = 60;
  *   monitor = position monitor (profit targets, health, emergency handling)
  *   execute = bot cycle + live-trade reconciliation
  */
-// Each analysed token costs at least two outbound HTTP calls in live mode. Left unbounded, a scan with
-// hundreds of qualifying tokens can outrun Hobby's 60s function cap and the platform kills the whole
-// request before anything is saved. Bounding it here just paces the work across cron ticks (every ~2min);
-// nothing is permanently skipped — see runAnalysisCycle's docstring. The self-hosted worker loop has no
-// such ceiling and calls runAnalysisCycle() unbounded.
-const SERVERLESS_ANALYSIS_BATCH = 40;
+// Each analysed token costs at least two outbound HTTP calls in live mode, one of them a candle fetch
+// that shares a single process-wide, ~27/min pace queue with this same job's own discovery step (see
+// geckoFetch in dexscreener.ts — GeckoTerminal's free tier 429s a burst well before its per-minute cap).
+// That queue, not raw wall-clock, is the binding constraint: 6 chains' worth of discovery calls plus N
+// candle calls, measured at ~2.6s apart each including real fetch time, must fit inside Hobby's real 60s
+// cap. 12 keeps (6 + 12) * 2.6s ≈ 47s with room for a 429 retry or two; nothing is permanently skipped —
+// see runAnalysisCycle's docstring. The self-hosted worker loop has no such ceiling and calls
+// runAnalysisCycle() unbounded.
+const SERVERLESS_ANALYSIS_BATCH = 12;
 
 const JOBS: Record<string, () => Promise<unknown>> = {
   async scan() {

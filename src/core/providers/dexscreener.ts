@@ -13,6 +13,36 @@ import type { TokenDataProvider } from "./interfaces";
 
 export type OnChainHandler = (chain: ChainId, address: string, snapshot: TokenSnapshot) => Promise<OnChainRaw>;
 
+/**
+ * GeckoTerminal's free public tier is good for roughly 30 requests/minute, and it's used here for both
+ * per-chain discovery (new_pools) and per-token candles — both of which can legitimately need dozens of
+ * calls inside a single scan cycle. Left unpaced, a batch of concurrent analysis calls bursts well past
+ * that in a few seconds and gets 429'd (reproduced in production: 6/6 candle fetches failed this way in
+ * one run). A single process-wide queue paces every call to this host at roughly one every 2.2s
+ * (~27/min, with headroom) and retries a 429 with backoff instead of counting a rate-limit hit as a
+ * permanent analysis failure.
+ */
+let geckoChain: Promise<unknown> = Promise.resolve();
+const GECKO_MIN_GAP_MS = 2200;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function geckoFetch<T>(url: string): Promise<T> {
+  const p = geckoChain.then(async () => {
+    await sleep(GECKO_MIN_GAP_MS);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await getJson<T>(url);
+      } catch (err) {
+        const rateLimited = err instanceof Error && err.message.includes("HTTP 429");
+        if (!rateLimited || attempt >= 2) throw err;
+        await sleep(1500 * (attempt + 1));
+      }
+    }
+  });
+  geckoChain = p.catch(() => {}); // one call's failure must not jam the queue for the calls behind it
+  return p;
+}
+
 interface DsPair {
   chainId: string;
   dexId: string;
@@ -133,7 +163,7 @@ export class DexScreenerDataProvider implements TokenDataProvider {
   /** Independent, free/public discovery source: freshly created pools on GeckoTerminal, per chain. */
   private async discoverGeckoTerminal(chain: ChainId): Promise<TokenSnapshot[]> {
     const network = CHAINS[chain].geckoId;
-    const j = await getJson<{ data: GtPool[]; included?: GtToken[] }>(
+    const j = await geckoFetch<{ data: GtPool[]; included?: GtToken[] }>(
       `https://api.geckoterminal.com/api/v2/networks/${network}/new_pools?include=base_token&page=1`,
     );
     const tokenById = new Map((j.included ?? []).map((t) => [t.id, t.attributes]));
@@ -253,7 +283,7 @@ export class DexScreenerDataProvider implements TokenDataProvider {
     const unit = m >= 60 ? "hour" : "minute";
     const agg = m >= 60 ? m / 60 : m;
     const url = `https://api.geckoterminal.com/api/v2/networks/${CHAINS[chain].geckoId}/pools/${snap.poolAddress}/ohlcv/${unit}?aggregate=${agg}&limit=${Math.min(limit, 1000)}`;
-    const j = await getJson<{ data: { attributes: { ohlcv_list: number[][] } } }>(url);
+    const j = await geckoFetch<{ data: { attributes: { ohlcv_list: number[][] } } }>(url);
     return j.data.attributes.ohlcv_list
       .map(([t, o, h, l, c, v]) => ({ time: t, open: o, high: h, low: l, close: c, volume: v, buys: 0, sells: 0 }))
       .sort((a, b) => a.time - b.time);
