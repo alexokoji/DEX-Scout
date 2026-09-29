@@ -27,10 +27,13 @@ export const maxDuration = 60;
 // geckoFetch in dexscreener.ts — GeckoTerminal's free tier 429s a burst well before its per-minute cap).
 // That queue, not raw wall-clock, is the binding constraint: 6 chains' worth of discovery calls plus N
 // candle calls, measured at ~2.6s apart each including real fetch time, must fit inside Hobby's real 60s
-// cap. 12 keeps (6 + 12) * 2.6s ≈ 47s with room for a 429 retry or two; nothing is permanently skipped —
-// see runAnalysisCycle's docstring. The self-hosted worker loop has no such ceiling and calls
+// cap. That estimate turned out optimistic in production — a run analysing 6 tokens still took 58.6s
+// total, because per-token on-chain checks against free public RPC endpoints (no SLA, occasionally
+// slow) run alongside the gecko queue, not instead of it, and a chunk of CONCURRENCY tokens only
+// finishes when its slowest member does. 8 buys back real margin; nothing is permanently skipped — see
+// runAnalysisCycle's docstring. The self-hosted worker loop has no such ceiling and calls
 // runAnalysisCycle() unbounded.
-const SERVERLESS_ANALYSIS_BATCH = 12;
+const SERVERLESS_ANALYSIS_BATCH = 8;
 
 const JOBS: Record<string, () => Promise<unknown>> = {
   async scan() {
