@@ -9,7 +9,7 @@ import { CHAINS } from "../../chains";
 import type { ChainId, OnChainRaw, SwapQuote, TokenSnapshot } from "../../types";
 import { env } from "../../../lib/env";
 import { DexScreenerDataProvider } from "../dexscreener";
-import { getJson } from "../http";
+import { getJson, withTimeout } from "../http";
 import type { ChainAdapter, DexAdapter, QuoteRequest, SwapSimulation, TransactionStatus } from "../interfaces";
 
 const SOL_MINT = CHAINS.solana.wrappedNative;
@@ -64,15 +64,11 @@ export class SolanaChainAdapter implements ChainAdapter {
   }
 }
 
-/**
- * Unlike `rpcCall` (used by the EVM adapter), `@solana/web3.js`'s `Connection` methods carry no
- * application-level timeout of their own — a slow response from the default public RPC (rate-limited,
- * no SLA) can otherwise hang far longer than every other call in the analysis pipeline combined, with
- * nothing to cut it off before it eats the whole serverless request budget.
- */
-function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
-  return Promise.race([p, new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`Solana RPC timed out after ${ms}ms`)), ms))]);
-}
+// Unlike `rpcCall` (used by the EVM adapter), `@solana/web3.js`'s `Connection` methods carry no
+// application-level timeout of their own — a slow response from the default public RPC (rate-limited,
+// no SLA) can otherwise hang far longer than every other call in the analysis pipeline combined, with
+// nothing to cut it off before it eats the whole serverless request budget. `withTimeout` (below) bounds
+// both calls explicitly.
 
 /** Solana raw facts: mint/freeze authority, top-holder concentration, sell-side heuristics. */
 export async function solanaOnChain(_chain: ChainId, address: string, snapshot: TokenSnapshot): Promise<OnChainRaw> {

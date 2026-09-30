@@ -19,11 +19,19 @@ export type OnChainHandler = (chain: ChainId, address: string, snapshot: TokenSn
  * calls inside a single scan cycle. Left unpaced, a batch of concurrent analysis calls bursts well past
  * that in a few seconds and gets 429'd (reproduced in production: 6/6 candle fetches failed this way in
  * one run). A single process-wide queue paces every call to this host at roughly one every 2.2s
- * (~27/min, with headroom) and retries a 429 with backoff instead of counting a rate-limit hit as a
- * permanent analysis failure.
+ * (~27/min, with headroom).
+ *
+ * The per-call timeout is deliberately tight (6s, vs `getJson`'s 10s default) and there's at most one
+ * retry with a short backoff: a normal GeckoTerminal response lands well under a second (observed
+ * ~0.4-1s), so anything approaching 10s is already abnormal, and the earlier 10s-timeout/2-retry version
+ * of this let one bad call cost up to ~34s while blocking every other call queued behind it — enough by
+ * itself to blow Hobby's 60s function cap (reproduced in production as a hard FUNCTION_INVOCATION_TIMEOUT).
+ * Worst case per call is now ~20s across 3 attempts (6s timeout, 1s backoff, repeated twice more) instead
+ * of ~34s across the same 3 attempts at the old 10s timeout and longer backoff.
  */
 let geckoChain: Promise<unknown> = Promise.resolve();
 const GECKO_MIN_GAP_MS = 2200;
+const GECKO_TIMEOUT_MS = 6_000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function geckoFetch<T>(url: string): Promise<T> {
@@ -31,11 +39,10 @@ function geckoFetch<T>(url: string): Promise<T> {
     await sleep(GECKO_MIN_GAP_MS);
     for (let attempt = 0; ; attempt++) {
       try {
-        return await getJson<T>(url);
+        return await getJson<T>(url, undefined, GECKO_TIMEOUT_MS);
       } catch (err) {
-        const rateLimited = err instanceof Error && err.message.includes("HTTP 429");
-        if (!rateLimited || attempt >= 2) throw err;
-        await sleep(1500 * (attempt + 1));
+        if (attempt >= 2) throw err;
+        await sleep(1000);
       }
     }
   });

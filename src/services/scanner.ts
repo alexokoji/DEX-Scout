@@ -1,5 +1,6 @@
 import type { AnyBulkWriteOperation } from "mongodb";
 import { DEFAULT_FILTERS } from "@/core/config";
+import { withTimeout } from "@/core/providers/http";
 import { providers } from "@/core/providers/registry";
 import { applyFilters, mergeFilters } from "@/core/scanner/filter";
 import type { ScannerFilters, TokenSnapshot } from "@/core/types";
@@ -59,7 +60,19 @@ export async function runScanCycle(): Promise<ScanResult> {
   await logEvent({ type: "SCANNER_STARTED", source: "scanner", level: "DEBUG", message: `Scan started (${p.data.name})` });
   try {
     const filters = await resolveScanFilters();
-    const snaps = (await Promise.all(filters.chains.map((c) => p.data.discover(c)))).flat();
+    // Each chain is capped independently so one slow/misbehaving chain (a provider outage, a retry
+    // cascade) contributes zero tokens for this tick instead of holding up every other chain's discovery
+    // — and, transitively, the whole serverless request's 60s budget (see withTimeout's docstring).
+    const snaps = (
+      await Promise.all(
+        filters.chains.map((c) =>
+          withTimeout(p.data.discover(c), 20_000, `discover(${c})`).catch(async (err) => {
+            await logEvent({ type: "PROVIDER_ERROR", source: "scanner", level: "WARN", message: `Discovery timed out or failed for ${c}: ${safeMessage(err)}` });
+            return [] as TokenSnapshot[];
+          }),
+        ),
+      )
+    ).flat();
     const now = new Date();
 
     const tokens = await collections.tokens();

@@ -1,5 +1,6 @@
 import { buildAnalysis } from "@/core/analysis/pipeline";
 import { SIGNAL_THRESHOLDS } from "@/core/config";
+import { withTimeout } from "@/core/providers/http";
 import { providers } from "@/core/providers/registry";
 import type { Analysis, ChainId, OnChainRaw, TokenSnapshot } from "@/core/types";
 import { collections } from "@/lib/db";
@@ -7,6 +8,13 @@ import { logEvent, safeMessage } from "@/lib/events";
 import { touchWorker } from "./workerState";
 
 const CONCURRENCY = 8;
+// Bounds one token's ENTIRE getSnapshot -> getOnChain -> analyzeSnapshot chain, regardless of which
+// provider is slow or how many times a shared pacing queue retries underneath it. Since CONCURRENCY
+// tokens run as one Promise.all batch, this caps that whole batch's wall-clock at ~this value no matter
+// what any individual provider does — the hard backstop behind the more specific per-provider timeouts
+// (Solana's withTimeout, GeckoTerminal's geckoFetch). A token that times out here isn't demoted, since
+// it's a provider being slow this cycle, not proof the token itself is unresolvable; it's retried next.
+const PER_TOKEN_DEADLINE_MS = 20_000;
 
 export async function analyzeSnapshot(s: TokenSnapshot, raw: OnChainRaw): Promise<Analysis> {
   const candles = await providers().data.getCandles(s.chain, s.address, "5m", 120);
@@ -107,21 +115,28 @@ export async function runAnalysisCycle(limit?: number): Promise<{ analyzed: numb
   let critical = 0;
   await inChunks(tokens, CONCURRENCY, async (t) => {
     try {
-      const snap = await p.data.getSnapshot(t.chain as ChainId, t.address);
-      if (!snap) {
-        failed++;
-        // The provider can no longer resolve this token (delisted, too new for this source, or — after a
-        // MOCK -> LIVE switch — a synthetic address that never existed on-chain). Left marked as passing,
-        // it would be retried forever and, under the serverless batch cap, could permanently crowd out
-        // real candidates that are actually ready to analyse. Demote it instead of leaving it stuck.
-        await tokenCol.updateOne({ _id: t._id }, { $set: { passedFilters: false, stage: "FILTERED" } });
-        return;
-      }
-      const raw = await p.data.getOnChain(t.chain as ChainId, t.address, snap);
-      const a = await analyzeSnapshot(snap, raw);
-      if (a.safety.criticalIssues.length) critical++;
-      await persistAnalysis(t._id, a);
-      analyzed++;
+      await withTimeout(
+        (async () => {
+          const snap = await p.data.getSnapshot(t.chain as ChainId, t.address);
+          if (!snap) {
+            failed++;
+            // The provider can no longer resolve this token (delisted, too new for this source, or — after
+            // a MOCK -> LIVE switch — a synthetic address that never existed on-chain). Left marked as
+            // passing, it would be retried forever and, under the serverless batch cap, could permanently
+            // crowd out real candidates that are actually ready to analyse. Demote it instead of leaving it
+            // stuck.
+            await tokenCol.updateOne({ _id: t._id }, { $set: { passedFilters: false, stage: "FILTERED" } });
+            return;
+          }
+          const raw = await p.data.getOnChain(t.chain as ChainId, t.address, snap);
+          const a = await analyzeSnapshot(snap, raw);
+          if (a.safety.criticalIssues.length) critical++;
+          await persistAnalysis(t._id, a);
+          analyzed++;
+        })(),
+        PER_TOKEN_DEADLINE_MS,
+        `analysis of ${t.chain}:${t.address}`,
+      );
     } catch (err) {
       failed++;
       await logEvent({ type: "PROVIDER_ERROR", source: "analysis", level: "WARN", message: `Analysis failed for ${t.address}: ${safeMessage(err)}` });
