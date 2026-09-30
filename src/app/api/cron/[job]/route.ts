@@ -22,18 +22,18 @@ export const maxDuration = 60;
  *   monitor = position monitor (profit targets, health, emergency handling)
  *   execute = bot cycle + live-trade reconciliation
  */
-// Each analysed token costs at least two outbound HTTP calls in live mode, one of them a candle fetch
-// that shares a single process-wide, ~27/min pace queue with this same job's own discovery step (see
-// geckoFetch in dexscreener.ts — GeckoTerminal's free tier 429s a burst well before its per-minute cap).
-// That queue, not raw wall-clock, is the binding constraint: 6 chains' worth of discovery calls plus N
-// candle calls, measured at ~2.6s apart each including real fetch time, must fit inside Hobby's real 60s
-// cap. That estimate turned out optimistic in production — a run analysing 6 tokens still took 58.6s
-// total, because per-token on-chain checks against free public RPC endpoints (no SLA, occasionally
-// slow) run alongside the gecko queue, not instead of it, and a chunk of CONCURRENCY tokens only
-// finishes when its slowest member does. 8 buys back real margin; nothing is permanently skipped — see
-// runAnalysisCycle's docstring. The self-hosted worker loop has no such ceiling and calls
-// runAnalysisCycle() unbounded.
-const SERVERLESS_ANALYSIS_BATCH = 8;
+// Each analysed token needs one candle fetch through geckoFetch's single, serialized, ~27/min pace
+// queue (dexscreener.ts) -- and that queue only services ~1 call every ~2.2-2.7s NO MATTER how many
+// tokens are dispatched "concurrently". With CONCURRENCY=8 tokens competing for that one queue, a token
+// near the back can exceed a 20s per-token deadline purely from queue wait, with no error of its own --
+// and one slow/retried call ahead of it pushes every token behind it further out. Reproduced in
+// production: 6 of 8 analysed tokens timed out in one run, all at exactly 20000ms.
+// A hard platform timeout (a killed function, no lease released) is a categorically worse outcome than
+// a token failing this tick and retrying next -- see runAnalysisCycle's docstring, and PER_TOKEN_DEADLINE_MS
+// there. So this stays conservative: 5 keeps queue depth shallow enough that most tokens clear well
+// inside their deadline even with one slow call ahead of them, at the cost of processing fewer per tick.
+// The self-hosted worker loop has no such ceiling and calls runAnalysisCycle() unbounded.
+const SERVERLESS_ANALYSIS_BATCH = 5;
 
 const JOBS: Record<string, () => Promise<unknown>> = {
   async scan() {
