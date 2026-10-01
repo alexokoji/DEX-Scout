@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, Select, Label } from "@/components/ui/form";
 
-export function ClosePositionButton({ id, symbol, environment }: { id: string; symbol: string; environment: string }) {
+export function ClosePositionButton({ id, symbol }: { id: string; symbol: string }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [pct, setPct] = useState("100");
@@ -32,7 +32,7 @@ export function ClosePositionButton({ id, symbol, environment }: { id: string; s
     <>
       <Button size="sm" variant="outline" onClick={() => setOpen(true)}>Sell</Button>
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent title={`Sell ${symbol}`} description={environment === "PAPER" ? "Simulated sale at the current pool price." : "Prepares an unsigned transaction that your wallet must approve."}>
+        <DialogContent title={`Sell ${symbol}`} description="Prepares an unsigned transaction that your wallet must approve.">
           <div className="space-y-3">
             <div>
               <Label>Amount to sell</Label>

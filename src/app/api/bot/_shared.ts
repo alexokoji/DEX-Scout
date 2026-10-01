@@ -9,8 +9,8 @@ import { getSettings } from "@/services/settings";
 export async function setBotState(userId: string, status: BotStatus) {
   const settings = await getSettings(userId);
   if (status === "ACTIVE") {
-    if (settings.environment === "MANUAL") throw new ApiError("Choose PAPER or LIVE as the bot environment in Settings → Trading first", 409);
-    if (settings.environment === "LIVE" && !liveTradingAllowed()) throw new ApiError("LIVE trading is disabled by server configuration", 403);
+    if (settings.environment === "MANUAL") throw new ApiError("Choose LIVE as the bot environment in Settings → Trading first", 409);
+    if (!liveTradingAllowed()) throw new ApiError("LIVE trading is disabled by server configuration", 403);
   }
   const bots = await collections.bots();
   const now = new Date();
@@ -18,7 +18,7 @@ export async function setBotState(userId: string, status: BotStatus) {
     { userId },
     {
       $set: { status, updatedAt: now, ...(status === "DISABLED" ? { emergencyStoppedAt: now } : { emergencyStoppedAt: null }) },
-      $setOnInsert: { _id: newId(), userId, environment: settings.environment === "MANUAL" ? "PAPER" : settings.environment, lastRunAt: null, createdAt: now },
+      $setOnInsert: { _id: newId(), userId, environment: "LIVE", lastRunAt: null, createdAt: now },
     },
     { upsert: true },
   );

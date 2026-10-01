@@ -34,8 +34,9 @@ export class MockTokenDataProvider implements TokenDataProvider {
 }
 
 /**
- * Mock DEX for every chain. Quotes are priced from the simulated pool, but it refuses to "broadcast" anything:
- * simulated fills are recorded by the paper broker and never receive a transaction signature.
+ * Mock DEX for every chain. Quotes are priced from the simulated pool, but it can never build, sign or
+ * broadcast anything real — there's no actual chain behind mock data. LIVE trading is fundamentally
+ * untestable in mock mode for that reason; this is an honest limitation, not a gap to paper over.
  */
 export class MockDexAdapter implements DexAdapter {
   readonly name = "mock-dex";
@@ -62,7 +63,7 @@ export class MockDexAdapter implements DexAdapter {
   }
 
   async buildSwapTransaction(): Promise<{ unsignedTxBase64: string }> {
-    throw new Error("Mock provider cannot build on-chain transactions. Use PAPER environment.");
+    throw new Error("Mock provider cannot build on-chain transactions. Disable MOCK_PROVIDER and configure a real RPC/aggregator to trade LIVE.");
   }
 
   async estimatePriceImpact(req: QuoteRequest): Promise<number> {

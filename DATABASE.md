@@ -5,16 +5,16 @@ layer: a cached `MongoClient`, typed collection getters (`src/lib/models.ts` has
 `ensureIndexes()` function, id generation (`newId()` = `crypto.randomUUID()`, stored as `_id`), and `withUserLock`.
 Every document uses a UUID string `_id` (never a driver-generated `ObjectId`); `withId`/`withIds` rename `_id` ->
 `id` wherever a document leaves the data layer so the rest of the app just sees `.id` everywhere. Money/price
-fields are `number` (adequate for analytics/paper; move to a fixed-point representation before handling large real
-balances — native JS numbers, same caveat Postgres `Float` had).
+fields are `number` (adequate for analytics and ordinary position sizes; move to a fixed-point representation
+before handling very large real balances — native JS numbers, same caveat Postgres `Float` had).
 
 ## Collections
 User, Wallet, TradingAccount (per user+environment), TradingSettings (profit targets embedded as `targets[]`),
 Strategy, Token (safety + analysis embedded as `safety`/`analysis`, always loaded together with the token),
 TokenMetric, PriceSnapshot, VolumeSnapshot, LiquidityPool, Signal (its AI analysis embedded as `analysis`), Bot,
-BotRun, Position, PositionEvent, Trade (its on-chain transaction embedded as `transaction`; paper trades leave it
-`null`), SystemEvent, WorkerState (background-worker heartbeats *and* the short-lived leases serverless cron jobs
-take to avoid double-running — see `src/services/lease.ts`).
+BotRun, Position, PositionEvent, Trade (its on-chain transaction embedded as `transaction`, populated once the
+user's wallet signs and broadcasts it), SystemEvent, WorkerState (background-worker heartbeats *and* the
+short-lived leases serverless cron jobs take to avoid double-running — see `src/services/lease.ts`).
 
 A handful of 1:1, always-fetched-together relations from a relational design (safety/analysis on a token, a
 signal's AI write-up, a trade's on-chain transaction, a settings row's profit targets) are embedded subdocuments

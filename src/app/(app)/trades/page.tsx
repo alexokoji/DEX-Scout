@@ -20,7 +20,7 @@ export default async function TradesPage() {
   const explorers = providers().chains;
   return (
     <div className="space-y-4">
-      <PageHeader title="Trades" subtitle="Paper trades are simulations and never have a transaction signature. Only LIVE trades link to the chain." right={<LiveRefresh seconds={15} />} />
+      <PageHeader title="Trades" subtitle="Every trade is a real, wallet-signed swap that links to the chain." right={<LiveRefresh seconds={15} />} />
       <PendingApprovals />
       <Card>
         <CardHeader title="History" />
@@ -50,7 +50,7 @@ export default async function TradesPage() {
                       {t.failureReason && <div className="mt-0.5 max-w-[200px] truncate text-[11px] text-down" title={t.failureReason}>{t.failureReason}</div>}
                     </td>
                     <td className="px-3 py-2 text-xs">
-                      {t.transaction?.signature ? <a className="text-accent" target="_blank" rel="noreferrer" href={explorers[t.token.chain as ChainId].explorerTxUrl(t.transaction.signature)}>{shortAddr(t.transaction.signature)}</a> : <span className="text-muted">{t.environment === "PAPER" ? "simulated" : "—"}</span>}
+                      {t.transaction?.signature ? <a className="text-accent" target="_blank" rel="noreferrer" href={explorers[t.token.chain as ChainId].explorerTxUrl(t.transaction.signature)}>{shortAddr(t.transaction.signature)}</a> : <span className="text-muted">—</span>}
                     </td>
                   </tr>
                 ))}

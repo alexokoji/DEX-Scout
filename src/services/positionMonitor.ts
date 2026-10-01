@@ -9,7 +9,7 @@ import { logEvent, safeMessage } from "@/lib/events";
 import type { PositionDoc, TokenDoc } from "@/lib/models";
 import { analyzeSnapshot } from "./analysis";
 import { getSettings } from "./settings";
-import { paperSell, prepareLiveSell } from "./trading";
+import { prepareLiveSell } from "./trading";
 import { touchWorker } from "./workerState";
 
 interface HealthNotes {
@@ -78,11 +78,7 @@ export async function monitorPosition(pos: PositionDoc, token: TokenDoc): Promis
   // ── Emergency exit (separate from profit-taking; opt-in) ──
   if (assessment.emergency && pos.emergencyAutoExit) {
     const reason = `Emergency exit: ${assessment.emergencyReasons.join("; ")}`;
-    if (pos.environment === "PAPER") {
-      await paperSell(pos.userId, pos._id, pos.amount, "EMERGENCY_EXIT", reason);
-    } else if (liveTradingAllowed()) {
-      await prepareLiveSell(pos.userId, pos._id, pos.amount, "EMERGENCY_EXIT", reason);
-    }
+    if (liveTradingAllowed()) await prepareLiveSell(pos.userId, pos._id, pos.amount, "EMERGENCY_EXIT", reason);
     return;
   }
 
@@ -96,12 +92,7 @@ export async function monitorPosition(pos: PositionDoc, token: TokenDoc): Promis
   );
   if (actions.length) {
     await logEvent({ type: "TARGET_REACHED", source: "monitor", userId: pos.userId, message: `${token.symbol} reached target ${actions.map((a) => a.level).join(",")}`, data: { positionId: pos._id } });
-    if (pos.environment === "PAPER") {
-      for (const a of actions) {
-        const r = await paperSell(pos.userId, pos._id, a.sellAmount, "TARGET_EXIT", `Target ${a.level} (+${a.gainPct}%)`, a.level);
-        if (!r.ok) break; // retry on the next tick
-      }
-    } else if (liveTradingAllowed()) {
+    if (liveTradingAllowed()) {
       const total = actions.reduce((s, a) => s + a.sellAmount, 0);
       await prepareLiveSell(pos.userId, pos._id, total, "TARGET_EXIT", `Target ${actions[actions.length - 1].level} reached`, actions[actions.length - 1].level);
     }
@@ -111,8 +102,7 @@ export async function monitorPosition(pos: PositionDoc, token: TokenDoc): Promis
   // ── Max position age: only ever closes a position that is in profit; losers are held (no stop loss) ──
   if (settings.maxPositionAgeHours && Date.now() - pos.openedAt.getTime() > settings.maxPositionAgeHours * 3_600_000) {
     if (unrealized > 0) {
-      if (pos.environment === "PAPER") await paperSell(pos.userId, pos._id, pos.amount, "TARGET_EXIT", "Maximum position age reached while in profit");
-      else if (liveTradingAllowed()) await prepareLiveSell(pos.userId, pos._id, pos.amount, "TARGET_EXIT", "Maximum position age reached while in profit");
+      if (liveTradingAllowed()) await prepareLiveSell(pos.userId, pos._id, pos.amount, "TARGET_EXIT", "Maximum position age reached while in profit");
     } else if (!notes.maxAgeNoted) {
       await positionEvents.insertOne({ _id: newId(), positionId: pos._id, type: "MAX_AGE", message: "Maximum age reached but position is not in profit — holding (no automatic stop loss)", data: null, createdAt: new Date() });
       await positions.updateOne(

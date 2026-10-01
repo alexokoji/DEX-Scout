@@ -1,6 +1,6 @@
 # DEX Scout
 
-Multi-chain low-cap DEX scanner, signal engine and (paper/live) trading platform. Supports **Solana, Ethereum, Base, BNB Chain, Arbitrum and Polygon**; chain metadata lives in one file (`src/core/chains.ts`) so more chains are additive.
+Multi-chain low-cap DEX scanner, signal engine and live trading platform. Supports **Solana, Ethereum, Base, BNB Chain, Arbitrum and Polygon**; chain metadata lives in one file (`src/core/chains.ts`) so more chains are additive.
 
 - **Scanner** continuously discovers tokens (default band **$1M-$10M market cap**, fully configurable, no cap on results).
 - **Safety + market + on-chain analysis** produce a 0-100 *opportunity score* (an analytical ranking, **not** a probability of profit) and lower/moderate/high/critical **risk levels** (never "safe").
@@ -8,7 +8,7 @@ Multi-chain low-cap DEX scanner, signal engine and (paper/live) trading platform
 - **Wallets**: Solana (Phantom, Solflare, Backpack via Wallet Standard) and EVM (MetaMask, Rabby, Coinbase Wallet, any injected wallet) - both signature-verified, non-custodial.
 - **Manual mode**: browse signals, charts, analysis and trade from the token page.
 - **Auto mode**: a bot executes rule-approved BUY signals within server-enforced capital limits, monitors positions and **takes profit at configured targets. There is no stop loss.** Optional *emergency protection* only reacts to catastrophic conditions.
-- **Environments**: `MANUAL` (signals only), `PAPER` (simulated fills, fees, slippage, failures), `LIVE` (real swaps, wallet-signed, off by default). Every simulated item is labelled `PAPER`/`MOCK`.
+- **Environments**: `MANUAL` (signals only, bot never trades) or `LIVE` (real swaps, wallet-signed, off by default until `LIVE_TRADING_ENABLED=true` with real providers). Mock/simulated data is labelled `MOCK`.
 
 ## Quick start (no external accounts needed)
 
@@ -17,13 +17,13 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:3000 and choose **Continue with demo account**. `npm run dev` will:
+Open http://localhost:3000 and register an account. `npm run dev` will:
 1. start an embedded local MongoDB replica set (port 27117) if `MONGODB_URI` points there,
-2. apply migrations and seed the demo user,
+2. ensure indexes,
 3. start the background workers (scanner, analysis, signals, position monitor, trade executor),
 4. start Next.js.
 
-`.env` (copy from `.env.example`) ships with `MOCK_PROVIDER=true`, so everything is simulated and runs offline.
+`.env` (copy from `.env.example`) ships with `MOCK_PROVIDER=true`, so scanning/analysis/signals run fully offline on synthetic data. There is no demo account and no simulated (paper) trading mode — every trade is LIVE and wallet-signed; LIVE is disabled by default until explicitly enabled with real providers.
 
 ## Scripts
 
@@ -44,4 +44,4 @@ Open http://localhost:3000 and choose **Continue with demo account**. `npm run d
 
 ## Important disclaimers
 
-Low-cap tokens are extremely volatile and can go to zero. Scores, risk levels, AI text and backtests are analytical aids, not advice or guarantees. Live trading with real funds is disabled by default; enable it only after paper-trading and reviewing SECURITY.md.
+Low-cap tokens are extremely volatile and can go to zero. Scores, risk levels, AI text and backtests are analytical aids, not advice or guarantees. Live trading with real funds is disabled by default; enable it only after reviewing SECURITY.md.

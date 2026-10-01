@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { runBacktest } from "@/core/strategy/engine";
 import { allocate, capitalSnapshot, checkManualAmount } from "@/core/trading/capital";
 import { assessPosition } from "@/core/trading/emergency";
-import { simulateFill } from "@/core/trading/paperBroker";
 import { applySell, computeMetrics, deriveStatus } from "@/core/trading/positions";
 import { evaluateTargets, validateTargets } from "@/core/trading/targets";
 import { validateEntry, validateSlippage } from "@/core/trading/validation";
@@ -176,30 +175,6 @@ describe("emergency conditions", () => {
     const r = assessPosition({ ...base, market: { ...a.market, buySellRatio: 0.5, volumeMomentum: -0.8, liquidityTrend: -20 }, onchain: { ...a.onchain, whaleBias: "DISTRIBUTION", holderGrowthPct1h: -3 } }, cfg);
     expect(r.health).toBe("WARNING");
     expect(r.emergency).toBe(false);
-  });
-});
-
-describe("paper broker (mock trading)", () => {
-  const base = { side: "BUY" as const, amountUsd: 10, midPriceUsd: 1, liquidityUsd: 200_000, slippageBps: 100, tradeable: true, rng: () => 0.5, failureRate: 0 };
-  it("applies impact, slippage and fees to a buy", () => {
-    const f = simulateFill(base);
-    expect(f.ok).toBe(true);
-    if (f.ok) {
-      expect(f.fillPriceUsd).toBeGreaterThan(1);
-      expect(f.tokenAmount).toBeLessThan(10);
-      expect(f.usd).toBeGreaterThan(10);
-      expect(f.feesUsd).toBeGreaterThan(0);
-    }
-  });
-  it("sells below mid and nets fees", () => {
-    const f = simulateFill({ ...base, side: "SELL", amountUsd: 10 });
-    expect(f.ok && f.fillPriceUsd < 1 && f.usd < 10).toBe(true);
-  });
-  it("fails on untradeable tokens, low liquidity, simulated network failures and excessive impact", () => {
-    expect(simulateFill({ ...base, tradeable: false }).ok).toBe(false);
-    expect(simulateFill({ ...base, liquidityUsd: 100 }).ok).toBe(false);
-    expect(simulateFill({ ...base, rng: () => 0, failureRate: 0.5 }).ok).toBe(false);
-    expect(simulateFill({ ...base, amountUsd: 50_000 }).ok).toBe(false);
   });
 });
 

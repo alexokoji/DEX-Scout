@@ -95,7 +95,7 @@ export function Shell({ children, mock, liveEnabled, email, mode }: { children: 
             <button className="md:hidden" onClick={() => setOpen(true)} aria-label="Open menu"><Menu className="h-5 w-5" /></button>
             <div className="flex flex-wrap items-center gap-1.5">
               {mock && <Badge tone="gray">MOCK DATA</Badge>}
-              <Badge tone={mode === "LIVE" ? "red" : mode === "PAPER" ? "amber" : "gray"}>{mode === "MANUAL" ? "MANUAL MODE" : `${mode} TRADING`}</Badge>
+              <Badge tone={mode === "LIVE" ? "red" : "gray"}>{mode === "MANUAL" ? "MANUAL MODE" : `${mode} TRADING`}</Badge>
               {!liveEnabled && <Badge tone="gray">LIVE DISABLED</Badge>}
             </div>
           </div>

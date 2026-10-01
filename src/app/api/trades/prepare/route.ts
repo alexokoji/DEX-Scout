@@ -11,7 +11,7 @@ export const POST = protectedRoute(
       expiresAt: r.trade.expiresAt,
       environment: r.trade.environment,
       quote: { ...r.quote, raw: undefined },
-      // LIVE only: unsigned transaction for the user's wallet to sign. PAPER trades have none.
+      // Unsigned transaction for the user's wallet to sign.
       unsignedTxBase64: r.unsignedTxBase64,
     });
   },

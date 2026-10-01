@@ -2,8 +2,7 @@
  * `npm run dev` — one command for local development:
  *   1. starts an embedded local MongoDB replica set if nothing is listening on the configured port
  *   2. ensures indexes (Mongo has no migration engine)
- *   3. seeds the demo user (mock mode only)
- *   4. starts background workers + the Next.js dev server
+ *   3. starts background workers + the Next.js dev server
  */
 import "dotenv/config";
 import { spawn, spawnSync } from "node:child_process";
@@ -25,8 +24,6 @@ async function main() {
     console.error("[dev] index setup failed — check MONGODB_URI and that MongoDB is reachable");
     process.exit(1);
   }
-  spawnSync(npx, ["tsx", "scripts/seed.ts"], { stdio: "inherit", env, shell: isWin });
-
   const children = [
     spawn(npx, ["tsx", "src/workers/main.ts"], { stdio: "inherit", env, shell: isWin }),
     spawn(npx, ["next", "dev"], { stdio: "inherit", env, shell: isWin }),

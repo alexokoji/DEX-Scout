@@ -24,7 +24,7 @@ import type { AiAnalysis } from "@/core/ai/schema";
 
 export type Json = Record<string, unknown> | unknown[] | string | number | boolean | null;
 
-export type Environment = "MANUAL" | "PAPER" | "LIVE";
+export type Environment = "MANUAL" | "LIVE";
 export type DataSourceKind = "MOCK" | "LIVE";
 export type TokenStage = "DISCOVERED" | "SCANNED" | "SAFETY_CHECK" | "ANALYZED" | "QUALIFIED" | "SIGNAL_GENERATED" | "FILTERED";
 export type SignalStatus = "ACTIVE" | "EXPIRED" | "CONSUMED";

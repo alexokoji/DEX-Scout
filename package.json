@@ -13,7 +13,6 @@
         "test": "vitest run",
         "db:start": "tsx scripts/embedded-db.ts",
         "db:index": "tsx scripts/ensure-indexes.ts",
-        "db:seed": "tsx scripts/seed.ts",
         "workers": "tsx src/workers/main.ts",
         "worker:scanner": "tsx src/workers/main.ts scanner",
         "worker:analysis": "tsx src/workers/main.ts analysis",

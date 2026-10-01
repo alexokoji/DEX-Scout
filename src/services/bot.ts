@@ -5,7 +5,7 @@ import { allocate } from "@/core/trading/capital";
 import { collections, newId, withId } from "@/lib/db";
 import { liveTradingAllowed } from "@/lib/env";
 import { logEvent, safeMessage } from "@/lib/events";
-import { capitalState, ensureAnalysis, executeTrade, prepareTrade, reconcileLiveTrade, TradeError } from "./trading";
+import { capitalState, ensureAnalysis, prepareTrade, reconcileLiveTrade, TradeError } from "./trading";
 import { getSettings } from "./settings";
 import { touchWorker } from "./workerState";
 
@@ -74,15 +74,10 @@ export async function runBotCycle(): Promise<{ bots: number; executed: number; s
             { chain: token.chain as ChainId, tokenAddress: token.address, amountUsd: alloc.amountUsd, slippageBps: Math.min(settings.maxSlippageBps, 300), environment: env, signalId: sig._id },
             "AUTO_ENTRY",
           );
-          if (env === "PAPER") {
-            const res = await executeTrade(bot.userId, trade.id);
-            if (res && "ok" in res && res.ok) { runExecuted++; executed++; } else skip("paper fill failed");
-          } else {
-            // LIVE: the trade waits in the user's wallet-approval queue; the bot cannot sign on its own.
-            runExecuted++;
-            executed++;
-            await logEvent({ type: "TRADE_REQUESTED", source: "bot", userId: bot.userId, message: `LIVE auto entry for ${token.symbol} awaiting wallet approval`, data: { tradeId: trade.id } });
-          }
+          // The trade waits in the user's wallet-approval queue; the bot cannot sign on its own.
+          runExecuted++;
+          executed++;
+          await logEvent({ type: "TRADE_REQUESTED", source: "bot", userId: bot.userId, message: `LIVE auto entry for ${token.symbol} awaiting wallet approval`, data: { tradeId: trade.id } });
         } catch (err) {
           const msg = err instanceof TradeError && err.violations.length ? err.violations.join("; ") : safeMessage(err);
           skip(msg);

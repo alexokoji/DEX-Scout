@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/form";
 
-export function AuthForm({ mode, mock }: { mode: "login" | "register"; mock: boolean }) {
+export function AuthForm({ mode }: { mode: "login" | "register" }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
 
@@ -61,11 +61,6 @@ export function AuthForm({ mode, mock }: { mode: "login" | "register"; mock: boo
           {mode === "login" ? "Sign in" : "Create account"}
         </Button>
       </form>
-      {mock && (
-        <Button variant="outline" className="mt-3 w-full" disabled={busy} onClick={() => void post("/api/auth/demo")}>
-          Continue with demo account (mock data)
-        </Button>
-      )}
       <p className="mt-4 text-center text-xs text-muted">
         {mode === "login" ? (
           <>

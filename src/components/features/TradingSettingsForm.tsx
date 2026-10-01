@@ -53,13 +53,12 @@ export function TradingSettingsForm({ initial, liveEnabled }: { initial: S; live
   return (
     <div className="space-y-4">
       <Card>
-        <CardHeader title="Mode" sub="MANUAL: signals only. PAPER: simulated auto trading. LIVE: real swaps that your wallet must approve." />
+        <CardHeader title="Mode" sub="MANUAL: signals only. LIVE: real swaps that your wallet must approve." />
         <CardBody className="grid gap-4 md:grid-cols-3">
           <div>
             <Label>Bot environment</Label>
             <Select value={s.environment} onChange={(e) => set("environment", e.target.value as S["environment"])}>
               <option value="MANUAL">Manual (bot never trades)</option>
-              <option value="PAPER">Paper trading</option>
               <option value="LIVE" disabled={!liveEnabled}>Live{liveEnabled ? "" : " (disabled by server config)"}</option>
             </Select>
           </div>

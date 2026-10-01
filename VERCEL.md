@@ -29,7 +29,7 @@ second one just reports `"skipped: another run is still in progress"` instead of
 |---|---|
 | `AUTH_SECRET` | `openssl rand -base64 32` — required; the app refuses to boot in production without a real one |
 | `CRON_SECRET` | `openssl rand -hex 24` — the bearer token the external scheduler sends. **The `/api/cron/*` routes return 401 for everyone until this is set** |
-| `MOCK_PROVIDER` | `true` for a demo deployment (simulated data, demo login). `false` for real data |
+| `MOCK_PROVIDER` | `true` to run on simulated token/market data (there is no demo account or paper trading — scanning/analysis/signals are simulated, but trading is always LIVE and still requires `LIVE_TRADING_ENABLED` + real providers). `false` for real data |
 | `NEXT_PUBLIC_APP_URL` | your production URL, e.g. `https://dex-scout.vercel.app` |
 | `UPSTASH_REDIS_REST_URL` / `_TOKEN` | strongly recommended — serverless instances don't share memory, so the in-memory rate limiter doesn't actually limit anything across them (Vercel Marketplace has Upstash's free tier) |
 | `MONGODB_DB` | only needed if you want to override the database name baked into `MONGODB_URI` |
@@ -86,7 +86,7 @@ the cron-job.org jobs / GitHub Actions workflow.
 - Check the **Dashboard** page in the app — the "Background workers" card reads heartbeats from the database, so it
   shows the cron jobs as alive/stale exactly like it did with the local workers.
 - Or call a job by hand: `curl -H "Authorization: Bearer $CRON_SECRET" https://<your-app>.vercel.app/api/cron/scan`
-- In mock mode, press **Continue with demo account** on the login page once tokens have been scanned.
+- Register an account on the login page once tokens have been scanned — there is no demo login.
 
 ## 6. What is different from local dev
 - No `npm run workers` process: the same `scan` / `monitor` / `execute` cycles run as one-shot API calls instead of a loop.
@@ -95,9 +95,9 @@ the cron-job.org jobs / GitHub Actions workflow.
 - The embedded dev MongoDB from `npm run dev` is not used in production; `MONGODB_URI` must point at Atlas (or any real MongoDB replica set).
 
 ## 7. Checklist before pointing real users at it
-- [ ] Strong `AUTH_SECRET` and `CRON_SECRET` set; demo login only if `MOCK_PROVIDER=true` is intended
+- [ ] Strong `AUTH_SECRET` and `CRON_SECRET` set
 - [ ] External scheduler (cron-job.org and/or GitHub Actions) set up and confirmed returning `200`, not `401`
 - [ ] Upstash Redis configured for rate limiting
 - [ ] Atlas backups enabled
 - [ ] Vercel deployment protection / custom domain configured
-- [ ] Paper-traded for a while before enabling `LIVE_TRADING_ENABLED`
+- [ ] Reviewed SECURITY.md and the capital limits in Settings -> Trading before enabling `LIVE_TRADING_ENABLED` — there is no paper/simulated mode to rehearse in first; the first trade is real

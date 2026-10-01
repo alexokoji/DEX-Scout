@@ -13,7 +13,7 @@ import type { Environment, RiskLevel, TargetsMode, TradingSettingsDoc } from "@/
 
 export const tradingSettingsInput = z
   .object({
-    environment: z.enum(["MANUAL", "PAPER", "LIVE"]),
+    environment: z.enum(["MANUAL", "LIVE"]),
     autoTradingEnabled: z.boolean(),
     capitalUsd: z.number().positive().max(10_000_000),
     maxPositionUsd: z.number().positive(),
@@ -94,7 +94,7 @@ export async function getSettings(userId: string): Promise<UserSettings> {
   const doc: TradingSettingsDoc = {
     _id: newId(),
     userId,
-    environment: "PAPER",
+    environment: "MANUAL",
     autoTradingEnabled: false,
     capitalUsd: 100,
     maxPositionUsd: 10,

@@ -32,7 +32,7 @@ export function SignalBadge({ type }: { type?: string | null }) {
 export function EnvBadge({ env, source }: { env?: string; source?: string }) {
   return (
     <span className="inline-flex gap-1">
-      {env && <Badge tone={env === "LIVE" ? "red" : env === "PAPER" ? "amber" : "gray"}>{env}</Badge>}
+      {env && <Badge tone={env === "LIVE" ? "red" : "gray"}>{env}</Badge>}
       {source === "MOCK" && <Badge tone="gray">MOCK DATA</Badge>}
     </span>
   );

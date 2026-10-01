@@ -4,5 +4,5 @@ import { positionViews } from "@/services/queries";
 export const GET = protectedRoute(async ({ req, user }) => {
   const sp = new URL(req.url).searchParams;
   const env = sp.get("environment");
-  return serialize(await positionViews(user.id, env === "PAPER" || env === "LIVE" ? env : undefined, sp.get("closed") === "true"));
+  return serialize(await positionViews(user.id, env === "LIVE" ? env : undefined, sp.get("closed") === "true"));
 });

@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badges";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
-import { Dialog, DialogContent, Input, Label, Select } from "@/components/ui/form";
+import { Dialog, DialogContent, Input, Label } from "@/components/ui/form";
 import { CHAINS } from "@/core/chains";
 import type { ChainId } from "@/core/types";
 import { price, usd } from "@/lib/format";
@@ -38,7 +38,6 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
   const [amount, setAmount] = useState(String(defaults.amountUsd));
   const [slippagePct, setSlippagePct] = useState(String(defaults.slippageBps / 100));
   const [priority, setPriority] = useState(meta.family === "evm" ? "0" : "0.0001");
-  const [venue, setVenue] = useState<"PAPER" | "LIVE">("PAPER");
   const [q, setQ] = useState<QuoteResp | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -49,8 +48,8 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
     const amountUsd = Number(amount);
     const slippageBps = Math.round(Number(slippagePct) * 100);
     if (!(amountUsd > 0) || !(slippageBps > 0)) return null;
-    return { chain, tokenAddress: address, amountUsd, slippageBps, priorityFeeNative: Number(priority) || 0, environment: venue, signalId };
-  }, [amount, slippagePct, priority, venue, address, signalId, chain]);
+    return { chain, tokenAddress: address, amountUsd, slippageBps, priorityFeeNative: Number(priority) || 0, environment: "LIVE" as const, signalId };
+  }, [amount, slippagePct, priority, address, signalId, chain]);
 
   useEffect(() => {
     if (!body) return;
@@ -84,7 +83,7 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
     if (!body) return;
     setBusy(true);
     try {
-      if (venue === "LIVE" && !signer.isConnected(chain)) {
+      if (!signer.isConnected(chain)) {
         toast.error(`Connect your ${signer.walletLabel(chain)} first`);
         return;
       }
@@ -94,19 +93,16 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
         toast.error(pj.violations?.[0] ?? pj.error ?? "Trade rejected");
         return;
       }
-      let signature: string | undefined;
-      if (venue === "LIVE") {
-        // The wallet shows the transaction and asks the user to approve. We never see keys.
-        signature = await signer.signAndSend(chain, pj.unsignedTxBase64);
-      }
+      // The wallet shows the transaction and asks the user to approve. We never see keys.
+      const signature = await signer.signAndSend(chain, pj.unsignedTxBase64);
       const ex = await fetch("/api/trades/execute", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tradeId: pj.tradeId, signature }) });
       const ej = await ex.json();
       if (!ex.ok) {
         toast.error(ej.error ?? "Execution failed");
       } else if (ej.ok === false && ej.reason) {
-        toast.error(`${venue === "PAPER" ? "Paper" : "Live"} trade failed: ${ej.reason}`);
+        toast.error(`Live trade failed: ${ej.reason}`);
       } else {
-        toast.success(venue === "PAPER" ? `Paper position opened for ${symbol}` : "Transaction submitted — awaiting confirmation");
+        toast.success("Transaction submitted — awaiting confirmation");
         setOpen(false);
         router.refresh();
       }
@@ -117,21 +113,12 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
     }
   }
 
-  const blocked = !body || !q || q.violations.length > 0 || loading;
+  const blocked = !liveEnabled || !body || !q || q.violations.length > 0 || loading;
   return (
     <Card>
-      <CardHeader
-        title={`Trade · ${meta.name}`}
-        right={<Badge tone={venue === "LIVE" ? "red" : "amber"}>{venue === "LIVE" ? "LIVE — real funds" : "PAPER — simulated"}</Badge>}
-      />
+      <CardHeader title={`Trade · ${meta.name}`} right={<Badge tone="red">LIVE — real funds</Badge>} />
       <CardBody className="space-y-3">
-        <div>
-          <Label>Venue</Label>
-          <Select value={venue} onChange={(e) => setVenue(e.target.value as "PAPER" | "LIVE")}>
-            <option value="PAPER">Paper (simulated fills)</option>
-            <option value="LIVE" disabled={!liveEnabled}>Live wallet swap{liveEnabled ? "" : " (disabled)"}</option>
-          </Select>
-        </div>
+        {!liveEnabled && <p className="rounded-md border border-warn/30 bg-warn/10 p-2 text-xs text-warn">LIVE trading is disabled by server configuration.</p>}
         <div className="grid grid-cols-2 gap-2">
           <div>
             <Label hint="USD">Amount</Label>
@@ -182,7 +169,7 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
       </CardBody>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent title="Confirm transaction" description={venue === "LIVE" ? `Your ${signer.walletLabel(chain)} will ask you to approve this swap on ${meta.name}.` : "Paper trade — no real funds move."}>
+        <DialogContent title="Confirm transaction" description={`Your ${signer.walletLabel(chain)} will ask you to approve this swap on ${meta.name}.`}>
           {q && (
             <div className="space-y-3 text-sm">
               <dl className="space-y-1.5 rounded-md border border-border bg-surface2 p-3 text-xs">
@@ -193,7 +180,7 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
                 <Row k="Price impact" v={`${q.quote.priceImpactPct.toFixed(2)}%`} />
                 <Row k="Slippage tolerance" v={`${(q.quote.slippageBps / 100).toFixed(2)}%`} />
                 <Row k="Fees" v={usd(q.quote.networkFeeUsd + q.quote.priorityFeeUsd + q.quote.platformFeeUsd, 4)} />
-                <Row k="Environment" v={venue} />
+                <Row k="Environment" v="LIVE" />
               </dl>
               {q.analysis.warnings.length > 0 && <p className="text-xs text-warn">Warnings: {q.analysis.warnings.slice(0, 3).join("; ")}</p>}
               <p className="text-xs text-muted">This position will NOT be sold automatically for being at a loss. Exits happen only at your configured profit targets or via emergency protection (if enabled).</p>

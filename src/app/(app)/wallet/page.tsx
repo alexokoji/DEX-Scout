@@ -15,7 +15,7 @@ export default async function WalletPage() {
   const walletsCol = await collections.wallets();
   const [wallets, pf, wb] = await Promise.all([
     walletsCol.find({ userId: user.id }).sort({ createdAt: -1 }).toArray().then(withIds),
-    portfolio(user.id, liveTradingAllowed() ? "LIVE" : "PAPER"),
+    portfolio(user.id, "LIVE"),
     walletBalances(user.id),
   ]);
   return (
@@ -63,7 +63,6 @@ export default async function WalletPage() {
           <p><span className="text-foreground">No keys, no withdrawals.</span> The server stores only your public addresses. It never receives a seed phrase, private key or wallet password.</p>
           <p><span className="text-foreground">Manual LIVE trades:</span> the server validates limits and builds an unsigned swap for the token&apos;s chain (Jupiter on Solana, 0x on EVM chains); your wallet shows it and you approve or reject it. On EVM the wallet may first ask for a token approval.</p>
           <p><span className="text-foreground">Auto LIVE trades:</span> the bot prepares unsigned transactions and places them in the approval queue above. They execute only after your wallet signs. There is no delegated authority that could withdraw funds.</p>
-          <p><span className="text-foreground">Paper trading</span> needs no wallet and moves no funds; every paper trade is labelled and has no transaction signature.</p>
           <p>LIVE mode is {liveTradingAllowed() ? "enabled on this server." : "disabled on this server (requires LIVE_TRADING_ENABLED=true and MOCK_PROVIDER=false)."}</p>
         </CardBody>
       </Card>

@@ -200,7 +200,7 @@ export async function portfolio(userId: string, environment: Environment) {
 
 export async function dashboard(userId: string) {
   const settings = await getSettings(userId);
-  const env: Environment = settings.environment === "MANUAL" ? "PAPER" : settings.environment;
+  const env: Environment = "LIVE";
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
 
@@ -242,7 +242,7 @@ export async function dashboard(userId: string) {
 
 export async function botOverview(userId: string) {
   const settings = await getSettings(userId);
-  const env: Environment = settings.environment === "MANUAL" ? "PAPER" : settings.environment;
+  const env: Environment = "LIVE";
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
 

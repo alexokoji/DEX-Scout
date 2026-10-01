@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { CHAIN_IDS, CHAINS, normalizeAddress } from "@/core/chains";
 import { MockChainAdapter, MockDexAdapter, MockTokenDataProvider } from "@/core/providers/mock/mockMarket";
 import { findTokenByAddress, liveTokenIndices, snapshotAt, toMinute, tokenSpec } from "@/core/providers/mock/world";
-import { simulateFill } from "@/core/trading/paperBroker";
 import { NOW_MIN } from "./helpers";
 
 describe("multi-chain support", () => {
@@ -36,7 +35,7 @@ describe("multi-chain support", () => {
     expect(normalizeAddress("solana", "AbC")).toBe("AbC");
   });
 
-  it("quotes and paper fills use each chain's native symbol and fee level", async () => {
+  it("quotes use each chain's native symbol and fee level", async () => {
     const data = new MockTokenDataProvider();
     const dex = new MockDexAdapter();
     const eth = (await data.discover("ethereum")).sort((a, b) => b.liquidityUsd - a.liquidityUsd)[0];
@@ -46,8 +45,6 @@ describe("multi-chain support", () => {
     expect(qe.route[1]).toContain("ETH");
     expect(qs.route[1]).toContain("SOL");
     expect(qe.networkFeeUsd).toBeGreaterThan(qs.networkFeeUsd * 10); // mainnet gas dwarfs Solana fees
-    const f = simulateFill({ chain: "ethereum", side: "BUY", amountUsd: 10, midPriceUsd: 1, liquidityUsd: 500_000, slippageBps: 100, tradeable: true, rng: () => 0.5, failureRate: 0 });
-    expect(f.ok && f.networkFeeUsd).toBeGreaterThan(3);
   });
 
   it("mock chain adapters validate the right address format", () => {

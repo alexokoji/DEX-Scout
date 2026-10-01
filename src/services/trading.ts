@@ -3,7 +3,6 @@ import { CHAIN_IDS, CHAINS, normalizeAddress } from "@/core/chains";
 import { FEES } from "@/core/config";
 import { providers } from "@/core/providers/registry";
 import { checkManualAmount, type CapitalState } from "@/core/trading/capital";
-import { simulateFill } from "@/core/trading/paperBroker";
 import { applySell, deriveStatus } from "@/core/trading/positions";
 import { validateEntry, validateSlippage } from "@/core/trading/validation";
 import type { Analysis, ChainId, ProfitTargetConfig, SwapQuote } from "@/core/types";
@@ -27,7 +26,7 @@ export const prepareTradeInput = z.object({
   amountUsd: z.number().positive().max(1_000_000),
   slippageBps: z.number().int().min(1).max(5000),
   priorityFeeNative: z.number().min(0).max(1).optional(),
-  environment: z.enum(["PAPER", "LIVE"]),
+  environment: z.literal("LIVE"),
   signalId: z.string().optional(),
 });
 export type PrepareTradeInput = z.infer<typeof prepareTradeInput>;
@@ -201,10 +200,9 @@ export async function prepareTrade(userId: string, input: PrepareTradeInput, kin
 }
 
 /**
- * Execute a PREPARED trade.
- *  - PAPER: simulated fill; a Position is created only if the simulated fill succeeds.
- *  - LIVE:  the user's wallet has already signed & broadcast; we record the signature and confirm it on-chain.
- * The request body never contains prices or amounts — everything is taken from the stored, validated Trade.
+ * Execute a PREPARED trade. The user's wallet has already signed & broadcast; we record the signature
+ * and confirm it on-chain. The request body never contains prices or amounts — everything is taken from
+ * the stored, validated Trade.
  */
 export async function executeTrade(userId: string, tradeId: string, opts: { signature?: string } = {}) {
   const trades = await collections.trades();
@@ -216,228 +214,25 @@ export async function executeTrade(userId: string, tradeId: string, opts: { sign
     throw new TradeError("Quote expired — request a new quote", 410);
   }
   assertEnvironment(trade.environment);
-
-  if (trade.environment === "LIVE") return recordLiveSignature(userId, trade, opts.signature);
-  return trade.side === "BUY" ? executePaperBuy(userId, trade._id) : executePaperSellTrade(trade._id);
-}
-
-// ───────────────────────────── PAPER ─────────────────────────────
-
-async function executePaperBuy(userId: string, tradeId: string) {
-  const p = providers();
-  const settings = await getSettings(userId);
-  const trades = await collections.trades();
-  const positions = await collections.positions();
-  const positionEvents = await collections.positionEvents();
-  const signals = await collections.signals();
-
-  const trade0 = await trades.findOne({ _id: tradeId });
-  if (!trade0) throw new TradeError("Trade not found", 404);
-  const token0 = await getToken(trade0.tokenId);
-  const chain0 = token0.chain as ChainId;
-  const snap = await p.data.getSnapshot(chain0, token0.address);
-  const raw = snap ? await p.data.getOnChain(chain0, token0.address, snap) : null;
-
-  return withUserLock(userId, async (session) => {
-    const trade = await trades.findOne({ _id: tradeId }, { session });
-    if (!trade || trade.status !== "PREPARED") throw new TradeError("Trade already processed", 409);
-
-    const state = await capitalState(userId, "PAPER", session);
-    const capErr = checkManualAmount(settings, state, trade.inputUsd);
-    // auto entries were already allocated by the bot; re-check hard limits for every entry regardless of origin
-    if (capErr && !(trade.kind === "AUTO_ENTRY" && capErr.startsWith("Amount is below"))) {
-      await trades.updateOne({ _id: tradeId }, { $set: { status: "FAILED", failureReason: capErr } }, { session });
-      throw new TradeError(capErr, 422, [capErr]);
-    }
-    if (!snap || !raw) {
-      await trades.updateOne({ _id: tradeId }, { $set: { status: "FAILED", failureReason: "Token no longer tradeable" } }, { session });
-      throw new TradeError("Token no longer tradeable", 410);
-    }
-    const fill = simulateFill({
-      chain: chain0,
-      side: "BUY",
-      amountUsd: trade.inputUsd,
-      midPriceUsd: snap.priceUsd,
-      liquidityUsd: snap.liquidityUsd,
-      slippageBps: trade.slippageBps,
-      tradeable: raw.poolActive && raw.sellSimulationOk,
-    });
-    if (!fill.ok) {
-      await trades.updateOne({ _id: tradeId }, { $set: { status: "FAILED", failureReason: fill.reason } }, { session });
-      await logEvent({ type: "TRADE_FAILED", source: "paper", userId, level: "WARN", message: `Paper buy of ${token0.symbol} failed: ${fill.reason}`, data: { tradeId } });
-      return { ok: false as const, reason: fill.reason, tradeId };
-    }
-
-    const now = new Date();
-    const signalId = (trade.quote as { signalId?: string | null } | null)?.signalId ?? null;
-    const positionId = newId();
-    await positions.insertOne(
-      {
-        _id: positionId,
-        userId,
-        accountId: trade.accountId,
-        tokenId: trade.tokenId,
-        environment: "PAPER",
-        status: "OPEN",
-        health: "HOLD",
-        healthNotes: { entryLiquidityUsd: snap.liquidityUsd },
-        origin: trade.kind === "AUTO_ENTRY" ? "AUTO" : "MANUAL",
-        sourceSignalId: signalId,
-        entryPriceUsd: fill.fillPriceUsd,
-        currentPriceUsd: snap.priceUsd,
-        initialAmount: fill.tokenAmount,
-        amount: fill.tokenAmount,
-        investedUsd: fill.usd,
-        costBasisUsd: fill.usd,
-        realizedPnlUsd: 0,
-        targetsHit: 0,
-        targetsSnapshot: settings.targets,
-        emergencyEnabled: settings.emergencyEnabled,
-        emergencyAutoExit: settings.emergencyAutoExit,
-        openedAt: now,
-        updatedAt: now,
-        closedAt: null,
-        lastAnalysisAt: null,
-      },
-      { session },
-    );
-    await positionEvents.insertOne({ _id: newId(), positionId, type: "OPENED", message: `Paper entry at $${fill.fillPriceUsd.toPrecision(5)} for $${fill.usd.toFixed(2)}`, data: { tradeId }, createdAt: now }, { session });
-    await trades.updateOne(
-      { _id: tradeId },
-      { $set: { status: "CONFIRMED", positionId, tokenAmount: fill.tokenAmount, priceUsd: fill.fillPriceUsd, priceImpactPct: fill.priceImpactPct, feesUsd: fill.feesUsd, networkFeeUsd: fill.networkFeeUsd, executedAt: now } },
-      { session },
-    );
-    if (signalId) await signals.updateOne({ _id: signalId, status: "ACTIVE" }, { $set: { status: "CONSUMED", updatedAt: now } }, { session }).catch(() => {});
-    await logEvent({ type: "TRADE_EXECUTED", source: "paper", userId, message: `PAPER buy ${token0.symbol} $${fill.usd.toFixed(2)}`, data: { tradeId, positionId } });
-    await logEvent({ type: "POSITION_OPENED", source: "paper", userId, message: `Position opened: ${token0.symbol} @ $${fill.fillPriceUsd.toPrecision(5)}`, data: { positionId } });
-    return { ok: true as const, tradeId, positionId };
-  });
-}
-
-/** Apply a PAPER sell to a position. Used by manual close, profit targets and emergency exits. */
-export async function paperSell(
-  userId: string,
-  positionId: string,
-  sellAmount: number,
-  kind: TradeKind,
-  reason: string,
-  targetLevel?: number,
-) {
-  const p = providers();
-  const positions = await collections.positions();
-  const trades = await collections.trades();
-  const positionEvents = await collections.positionEvents();
-  const tradingAccounts = await collections.tradingAccounts();
-
-  const position0 = await positions.findOne({ _id: positionId, userId, environment: "PAPER" });
-  if (!position0) throw new TradeError("Position not found", 404);
-  const token = await getToken(position0.tokenId);
-  const chain1 = token.chain as ChainId;
-  const snap = await p.data.getSnapshot(chain1, token.address);
-  const raw = snap ? await p.data.getOnChain(chain1, token.address, snap) : null;
-  const settings = await getSettings(userId);
-
-  return withUserLock(userId, async (session) => {
-    const pos = await positions.findOne({ _id: positionId }, { session });
-    if (!pos) throw new TradeError("Position not found", 404);
-    if (pos.status === "CLOSED" || pos.amount <= 0) throw new TradeError("Position already closed", 409);
-    const amount = Math.min(sellAmount, pos.amount);
-    const mid = snap?.priceUsd ?? pos.currentPriceUsd;
-    const now = new Date();
-
-    const fill = snap && raw
-      ? simulateFill({
-          chain: chain1,
-          side: "SELL",
-          amountUsd: amount * mid,
-          midPriceUsd: mid,
-          liquidityUsd: snap.liquidityUsd,
-          slippageBps: kind === "EMERGENCY_EXIT" ? 2000 : settings.maxSlippageBps,
-          tradeable: raw.poolActive && raw.sellSimulationOk,
-          // exits may retry next tick; keep simulated random failures rarer than entries
-          failureRate: 0.01,
-        })
-      : ({ ok: false, reason: "Token no longer tradeable" } as const);
-
-    if (!fill.ok) {
-      await trades.insertOne(
-        {
-          _id: newId(), userId, accountId: pos.accountId, tokenId: pos.tokenId, positionId: pos._id, side: "SELL", kind, environment: "PAPER", dataSource: "MOCK", status: "FAILED",
-          inputUsd: amount * mid, tokenAmount: amount, priceUsd: mid, priceImpactPct: 0, slippageBps: settings.maxSlippageBps, feesUsd: 0, networkFeeUsd: 0, realizedPnlUsd: null,
-          failureReason: fill.reason, quote: { reason } as Json, expiresAt: null, createdAt: now, executedAt: null, transaction: null,
-        },
-        { session },
-      );
-      await positionEvents.insertOne({ _id: newId(), positionId: pos._id, type: "SELL_FAILED", message: `Sell failed: ${fill.reason}`, data: null, createdAt: now }, { session });
-      await logEvent({ type: "TRADE_FAILED", source: "paper", userId, level: "WARN", message: `Paper sell of ${token.symbol} failed: ${fill.reason}`, data: { positionId } });
-      return { ok: false as const, reason: fill.reason };
-    }
-
-    const res = applySell(
-      { entryPriceUsd: pos.entryPriceUsd, initialAmount: pos.initialAmount, amount: pos.amount, costBasisUsd: pos.costBasisUsd, targetsHit: pos.targetsHit, realizedPnlUsd: pos.realizedPnlUsd },
-      amount,
-      fill.usd,
-    );
-    const targetsHit = targetLevel ? Math.max(pos.targetsHit, targetLevel) : pos.targetsHit;
-    const unrealized = res.amount * mid - res.costBasisUsd;
-    const status = deriveStatus({ closed: res.closed, emergency: kind === "EMERGENCY_EXIT" && !res.closed, targetsHit, unrealizedPnlUsd: unrealized });
-
-    const tradeId = newId();
-    await trades.insertOne(
-      {
-        _id: tradeId, userId, accountId: pos.accountId, tokenId: pos.tokenId, positionId: pos._id, side: "SELL", kind, environment: "PAPER", dataSource: "MOCK", status: "CONFIRMED",
-        inputUsd: amount * mid, tokenAmount: amount, priceUsd: fill.fillPriceUsd, priceImpactPct: fill.priceImpactPct, slippageBps: settings.maxSlippageBps,
-        feesUsd: fill.feesUsd, networkFeeUsd: fill.networkFeeUsd, realizedPnlUsd: res.realizedDeltaUsd, quote: { reason } as Json, failureReason: null, expiresAt: null, createdAt: now, executedAt: now, transaction: null,
-      },
-      { session },
-    );
-    await positions.updateOne(
-      { _id: pos._id },
-      {
-        $set: {
-          amount: res.amount, costBasisUsd: res.costBasisUsd, realizedPnlUsd: res.realizedPnlUsd, targetsHit, status,
-          currentPriceUsd: mid, updatedAt: now, closedAt: res.closed ? now : null,
-          ...(kind === "EMERGENCY_EXIT" ? { health: "EMERGENCY" as const } : {}),
-        },
-      },
-      { session },
-    );
-    await tradingAccounts.updateOne({ _id: pos.accountId }, { $inc: { realizedPnlUsd: res.realizedDeltaUsd } }, { session });
-    await positionEvents.insertOne(
-      {
-        _id: newId(),
-        positionId: pos._id,
-        type: kind === "EMERGENCY_EXIT" ? "EMERGENCY_EXIT" : kind === "TARGET_EXIT" ? "PROFIT_TAKEN" : "MANUAL_EXIT",
-        message: `${reason}: sold ${amount.toPrecision(6)} tokens @ $${fill.fillPriceUsd.toPrecision(5)} (P/L ${res.realizedDeltaUsd >= 0 ? "+" : ""}$${res.realizedDeltaUsd.toFixed(2)})`,
-        data: { tradeId, targetLevel: targetLevel ?? null },
-        createdAt: now,
-      },
-      { session },
-    );
-    await logEvent({
-      type: kind === "EMERGENCY_EXIT" ? "EMERGENCY_EXIT" : kind === "TARGET_EXIT" ? "PROFIT_TAKEN" : "TRADE_EXECUTED",
-      source: "paper", userId, message: `PAPER sell ${token.symbol}: ${reason}`, data: { positionId, tradeId, realizedDeltaUsd: res.realizedDeltaUsd },
-    });
-    if (res.closed) await logEvent({ type: "POSITION_CLOSED", source: "paper", userId, message: `Position closed: ${token.symbol} (realised ${res.realizedPnlUsd >= 0 ? "+" : ""}$${res.realizedPnlUsd.toFixed(2)})`, data: { positionId } });
-    return { ok: true as const, tradeId, closed: res.closed, realizedDeltaUsd: res.realizedDeltaUsd };
-  });
-}
-
-async function executePaperSellTrade(tradeId: string): Promise<never> {
-  // PAPER exits never go through PREPARED trades; exits call paperSell directly.
-  const trades = await collections.trades();
-  await trades.updateOne({ _id: tradeId }, { $set: { status: "CANCELLED", failureReason: "Unsupported for PAPER" } });
-  throw new TradeError("Paper exits are executed directly via the close-position endpoint", 400);
+  return recordLiveSignature(userId, trade, opts.signature);
 }
 
 // ───────────────────────────── LIVE ─────────────────────────────
+
+const SOLANA_SIGNATURE = /^[1-9A-HJ-NP-Za-km-z]{64,90}$/;
+const EVM_TX_HASH = /^0x[0-9a-fA-F]{64}$/;
+
+function isValidSignature(chain: string, signature: string): boolean {
+  return CHAINS[chain as ChainId]?.family === "evm" ? EVM_TX_HASH.test(signature) : SOLANA_SIGNATURE.test(signature);
+}
 
 /**
  * LIVE: the browser wallet signed and broadcast the prepared (unsigned) transaction. We never hold keys and never
  * broadcast on the user's behalf; we only record the signature and follow it to confirmation on-chain.
  */
 async function recordLiveSignature(userId: string, trade: TradeDoc, signature?: string) {
-  if (!signature || !/^[1-9A-HJ-NP-Za-km-z]{64,90}$/.test(signature)) throw new TradeError("A valid transaction signature is required for LIVE trades", 400);
+  const chain = trade.transaction?.chain;
+  if (!signature || !chain || !isValidSignature(chain, signature)) throw new TradeError("A valid transaction signature is required for LIVE trades", 400);
   const trades = await collections.trades();
   await trades.updateOne(
     { _id: trade._id },
@@ -508,12 +303,13 @@ export async function reconcileLiveTrade(tradeId: string) {
     await trades.updateOne({ _id: tradeId }, { $set: { "transaction.status": "CONFIRMED", "transaction.confirmedAt": now, "transaction.slot": st.slot ?? null } }, { session });
     if (trade.side === "BUY") {
       const positionId = newId();
+      const signalId = (trade.quote as { signalId?: string | null } | null)?.signalId ?? null;
       await positions.insertOne(
         {
           _id: positionId, userId: trade.userId, accountId: trade.accountId, tokenId: trade.tokenId, environment: "LIVE", status: "OPEN", health: "HOLD",
           healthNotes: { entryLiquidityUsd: token.liquidityUsd },
           origin: trade.kind === "AUTO_ENTRY" ? "AUTO" : "MANUAL",
-          sourceSignalId: (trade.quote as { signalId?: string | null } | null)?.signalId ?? null,
+          sourceSignalId: signalId,
           entryPriceUsd: buyCostUsd / tokenAmountActual, currentPriceUsd: token.priceUsd, initialAmount: tokenAmountActual, amount: tokenAmountActual,
           investedUsd: buyCostUsd, costBasisUsd: buyCostUsd, realizedPnlUsd: 0, targetsHit: 0,
           targetsSnapshot: settings.targets, emergencyEnabled: settings.emergencyEnabled, emergencyAutoExit: settings.emergencyAutoExit,
@@ -523,6 +319,10 @@ export async function reconcileLiveTrade(tradeId: string) {
       );
       await positionEvents.insertOne({ _id: newId(), positionId, type: "OPENED", message: "LIVE entry confirmed on-chain", data: { tradeId }, createdAt: now }, { session });
       await trades.updateOne({ _id: tradeId }, { $set: { status: "CONFIRMED", positionId, executedAt: now } }, { session });
+      if (signalId) {
+        const signals = await collections.signals();
+        await signals.updateOne({ _id: signalId, status: "ACTIVE" }, { $set: { status: "CONSUMED", updatedAt: now } }, { session }).catch(() => {});
+      }
       await logEvent({ type: "POSITION_OPENED", source: "live", userId: trade.userId, message: `LIVE position opened: ${token.symbol}`, data: { positionId } });
     } else if (trade.positionId) {
       const pos = await positions.findOne({ _id: trade.positionId }, { session });

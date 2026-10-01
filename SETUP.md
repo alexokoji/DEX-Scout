@@ -9,7 +9,7 @@ npm install
 cp .env.example .env      # Windows: copy .env.example .env
 npm run dev
 ```
-Demo login: **Continue with demo account** (or `demo@dexscout.dev` / `demo-pass-123`, created by the seed script; mock mode only).
+There is no demo account. Register normally at `/register` — mock mode still generates synthetic tokens/signals so there's data to look at.
 
 ## MongoDB
 - **Embedded (default dev):** `MONGODB_URI=mongodb://127.0.0.1:27117/dexscout?replicaSet=rs0`. Data lives in `.data/mongo`. It's a real `mongod` binary (via `mongodb-memory-server`) run as a single-node replica set — required because capital-safety locking uses multi-document transactions, which only work on a replica set, never a plain standalone `mongod`.
@@ -36,11 +36,8 @@ Set `AI_API_KEY` (Anthropic) and optionally `AI_MODEL`. Without a key a determin
 ## Workers
 `npm run dev` runs them. In production run `npm run workers` (or each `worker:*` separately) as long-lived processes independent of the web server, or drive the equivalent `/api/cron/*` routes from an external scheduler on Vercel (see VERCEL.md). Each worker exposes `run()` cycles that can be wrapped by BullMQ/SQS consumers.
 
-## Paper trading
-Set Settings -> Trading -> environment `PAPER`, enable Auto trading, then press **Start bot** on the Bot page. Manual paper trades use the Paper venue on any token page.
-
 ## Enabling live trading
-Requires **all** of: `MOCK_PROVIDER=false`, `LIVE_TRADING_ENABLED=true`, a real RPC + aggregator, a wallet linked (signature-verified) on the Wallet page. Then choose the `LIVE` environment/venue. Every live transaction is signed in your wallet; the bot only queues unsigned transactions for approval.
+There is no paper/simulated trading mode — every trade is LIVE. Trading requires **all** of: `MOCK_PROVIDER=false`, `LIVE_TRADING_ENABLED=true`, a real RPC + aggregator, a wallet linked (signature-verified) on the Wallet page. For auto trading, set Settings -> Trading -> environment `LIVE`, enable Auto trading, then press **Start bot** on the Bot page. Every live transaction is signed in your wallet; the bot only queues unsigned transactions for approval.
 
 ## Multi-instance rate limiting
 Set `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` to share rate limits across server instances; without them an in-memory limiter is used.

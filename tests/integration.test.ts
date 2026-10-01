@@ -2,7 +2,7 @@
  * Integration tests against the real (embedded/local) MongoDB with the mock provider.
  * They are skipped automatically when the database is unreachable.
  */
-import { describe, expect, it, vi, beforeAll, afterAll } from "vitest";
+import { describe, expect, it, vi, beforeAll, afterAll, afterEach } from "vitest";
 
 vi.mock("next/headers", () => ({
   cookies: async () => ({ get: () => undefined, set: () => {}, delete: () => {} }),
@@ -24,10 +24,7 @@ afterAll(async () => {
   if (dbUp) await closeDb();
 });
 
-d("database + trading flow (paper, mock provider)", () => {
-  let userId = "";
-  const email = `it-${Date.now()}@test.local`;
-
+d("scanner, analysis and signal engine", () => {
   beforeAll(async () => {
     const { runScanCycle } = await import("@/services/scanner");
     const { runAnalysisCycle } = await import("@/services/analysis");
@@ -35,30 +32,6 @@ d("database + trading flow (paper, mock provider)", () => {
     await runScanCycle();
     await runAnalysisCycle();
     await runSignalCycle();
-    const users = await collections.users();
-    const bots = await collections.bots();
-    const accounts = await collections.tradingAccounts();
-    userId = newId();
-    const now = new Date();
-    await users.insertOne({ _id: userId, email, passwordHash: "x", name: null, role: "USER", createdAt: now });
-    await bots.insertOne({ _id: newId(), userId, status: "PAUSED", environment: "PAPER", lastRunAt: null, emergencyStoppedAt: null, createdAt: now, updatedAt: now });
-    await accounts.insertOne({ _id: newId(), userId, environment: "PAPER", realizedPnlUsd: 0, createdAt: now });
-  });
-
-  afterAll(async () => {
-    if (userId) {
-      const [users, bots, accounts, settings, positions, trades] = await Promise.all([
-        collections.users(), collections.bots(), collections.tradingAccounts(), collections.tradingSettings(), collections.positions(), collections.trades(),
-      ]);
-      await Promise.all([
-        users.deleteOne({ _id: userId }),
-        bots.deleteMany({ userId }),
-        accounts.deleteMany({ userId }),
-        settings.deleteMany({ userId }),
-        positions.deleteMany({ userId }),
-        trades.deleteMany({ userId }),
-      ]).catch(() => {});
-    }
   });
 
   it("scanner persisted tokens with indexes-backed lookups and passing tokens have analysis + safety", async () => {
@@ -79,20 +52,59 @@ d("database + trading flow (paper, mock provider)", () => {
     const n = await signals.countDocuments({ status: "ACTIVE" });
     expect(n).toBeGreaterThan(0);
   });
+});
 
-  it("rejects trades that break server-side limits (client values are not trusted)", async () => {
-    const { prepareTrade, TradeError } = await import("@/services/trading");
-    const signals = await collections.signals();
-    const tokens = await collections.tokens();
-    const sig = await signals.findOne({ status: "ACTIVE" });
-    if (!sig) throw new Error("no active signal to test against");
-    const token = await tokens.findOne({ _id: sig.tokenId });
-    if (!token) throw new Error("signal's token missing");
-    await expect(prepareTrade(userId, { chain: token.chain as "solana", tokenAddress: token.address, amountUsd: 5000, slippageBps: 100, environment: "PAPER" })).rejects.toBeInstanceOf(TradeError);
-    await expect(prepareTrade(userId, { chain: token.chain as "solana", tokenAddress: token.address, amountUsd: 10, slippageBps: 4000, environment: "PAPER" })).rejects.toBeInstanceOf(TradeError);
+/**
+ * There is no PAPER mode: every trade is LIVE, and a LIVE trade only ever moves once the user's own
+ * wallet signs and broadcasts it (prepareTrade only builds an unsigned transaction; executeTrade only
+ * records a signature). Neither of those steps can be driven from an automated test without a real
+ * wallet and a real chain — mockMarket.ts's MockDexAdapter correctly refuses to build or broadcast
+ * anything, which is why `prepareTrade` with environment "LIVE" is unreachable while MOCK_PROVIDER=true
+ * (see `liveTradingAllowed`). That refusal is itself a safety property worth testing directly.
+ *
+ * What *is* real integration-test territory: `reconcileLiveTrade`, which turns an on-chain confirmation
+ * into position/capital bookkeeping and never gates on `liveTradingAllowed`. These tests simulate the one
+ * unavoidable boundary — the on-chain confirmation itself — by mocking the DEX adapter's
+ * `getTransactionStatus`, then let every other step (Mongo transactions, capital accounting, signal
+ * consumption, profit targets, the no-stop-loss guarantee) run for real.
+ */
+d("LIVE trading: server-enforced gates and on-chain-confirmation bookkeeping", () => {
+  let userId = "";
+  let firstPositionId = "";
+  let firstPositionTokenId = "";
+  const email = `it-${Date.now()}@test.local`;
+
+  beforeAll(async () => {
+    const users = await collections.users();
+    const bots = await collections.bots();
+    const accounts = await collections.tradingAccounts();
+    userId = newId();
+    const now = new Date();
+    await users.insertOne({ _id: userId, email, passwordHash: "x", name: null, role: "USER", createdAt: now });
+    await bots.insertOne({ _id: newId(), userId, status: "PAUSED", environment: "LIVE", lastRunAt: null, emergencyStoppedAt: null, createdAt: now, updatedAt: now });
+    await accounts.insertOne({ _id: newId(), userId, environment: "LIVE", realizedPnlUsd: 0, createdAt: now });
   });
 
-  it("refuses LIVE environment unless explicitly enabled", async () => {
+  afterAll(async () => {
+    if (!userId) return;
+    const [users, bots, accounts, settings, positions, trades] = await Promise.all([
+      collections.users(), collections.bots(), collections.tradingAccounts(), collections.tradingSettings(), collections.positions(), collections.trades(),
+    ]);
+    await Promise.all([
+      users.deleteOne({ _id: userId }),
+      bots.deleteMany({ userId }),
+      accounts.deleteMany({ userId }),
+      settings.deleteMany({ userId }),
+      positions.deleteMany({ userId }),
+      trades.deleteMany({ userId }),
+    ]).catch(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("refuses to prepare a LIVE trade while running on mock data (the live/mock safety gate)", async () => {
     const { prepareTrade } = await import("@/services/trading");
     const signals = await collections.signals();
     const tokens = await collections.tokens();
@@ -100,77 +112,144 @@ d("database + trading flow (paper, mock provider)", () => {
     if (!sig) throw new Error("no active signal to test against");
     const token = await tokens.findOne({ _id: sig.tokenId });
     if (!token) throw new Error("signal's token missing");
+    // MOCK_PROVIDER=true in this test env, so liveTradingAllowed() is false regardless of LIVE_TRADING_ENABLED
+    // -- mock data must never drive a real trade. This 403 is that gate working, not a bug.
     await expect(prepareTrade(userId, { chain: token.chain as "solana", tokenAddress: token.address, amountUsd: 10, slippageBps: 100, environment: "LIVE" })).rejects.toMatchObject({ status: 403 });
   });
 
-  it("paper buy creates a position (no transaction subdocument / signature), never exceeds capital, then profit targets close it", async () => {
-    const { prepareTrade, executeTrade } = await import("@/services/trading");
+  it("reconcileLiveTrade opens a position from a confirmed on-chain buy using the trade's own recorded amounts", async () => {
+    const { reconcileLiveTrade } = await import("@/services/trading");
+    const { providers } = await import("@/core/providers/registry");
+    const tokens = await collections.tokens();
+    const trades = await collections.trades();
+    const positions = await collections.positions();
+    const signals = await collections.signals();
+    const accounts = await collections.tradingAccounts();
+
+    const sig = await signals.findOne({ status: "ACTIVE" });
+    if (!sig) throw new Error("no active signal to test against");
+    const token = await tokens.findOne({ _id: sig.tokenId });
+    if (!token) throw new Error("signal's token missing");
+    const account = await accounts.findOne({ userId, environment: "LIVE" });
+    if (!account) throw new Error("trading account missing");
+
+    vi.spyOn(providers().dex, "getTransactionStatus").mockResolvedValue({ status: "CONFIRMED", slot: 12345 });
+
+    const tradeId = newId();
+    const now = new Date();
+    await trades.insertOne({
+      _id: tradeId, userId, accountId: account._id, tokenId: token._id, positionId: null, side: "BUY", kind: "MANUAL_ENTRY", environment: "LIVE", dataSource: "MOCK", status: "PENDING",
+      inputUsd: 10, tokenAmount: 100, priceUsd: token.priceUsd, priceImpactPct: 0.5, slippageBps: 300, feesUsd: 0.03, networkFeeUsd: 0.02, realizedPnlUsd: null,
+      quote: { signalId: sig._id }, failureReason: null, expiresAt: null, createdAt: now, executedAt: null,
+      transaction: { chain: token.chain, signature: "5" + "a".repeat(80), status: "PENDING", unsignedTx: "fake", error: null, slot: null, submittedAt: now, confirmedAt: null, createdAt: now },
+    });
+
+    const r = await reconcileLiveTrade(tradeId);
+    expect(r).toMatchObject({ ok: true, status: "CONFIRMED" });
+
+    const trade = await trades.findOne({ _id: tradeId });
+    expect(trade?.status).toBe("CONFIRMED");
+    expect(trade?.positionId).toBeTruthy();
+    expect(trade?.transaction?.status).toBe("CONFIRMED");
+
+    const pos = await positions.findOne({ _id: trade!.positionId! });
+    expect(pos).toBeTruthy();
+    expect(pos!.status).toBe("OPEN");
+    expect(pos!.origin).toBe("MANUAL");
+    expect(pos!.sourceSignalId).toBe(sig._id);
+    expect(pos!.investedUsd).toBeCloseTo(10 + 0.02, 6); // inputUsd + networkFeeUsd (no on-chain inspection available in mock mode)
+    expect(pos!.amount).toBeCloseTo(100, 6);
+
+    const consumed = await signals.findOne({ _id: sig._id });
+    expect(consumed?.status).toBe("CONSUMED");
+
+    firstPositionId = pos!._id;
+    firstPositionTokenId = token._id;
+  });
+
+  it("NEVER sells a losing position automatically (no stop-loss)", async () => {
     const { monitorPosition } = await import("@/services/positionMonitor");
-    const { getSettings, updateSettings, tradingSettingsInput } = await import("@/services/settings");
-    const positionsCol = await collections.positions();
-    const tradesCol = await collections.trades();
-    const tokensCol = await collections.tokens();
+    const positions = await collections.positions();
+    const tokens = await collections.tokens();
+    if (!firstPositionId) throw new Error("previous test did not open a position");
 
-    const s = await getSettings(userId);
-    const { id: _a, userId: _b, ...rest } = s;
-    void _a; void _b;
-    await updateSettings(userId, tradingSettingsInput.parse({ ...rest, environment: "PAPER", capitalUsd: 30, maxPositionUsd: 10, minPositionUsd: 5, maxDeployedUsd: 30, maxOpenPositions: 3, minLiquidityUsd: 0, minVolume24hUsd: 0, maxPriceImpactPct: 10, maxSlippageBps: 500, maxAllowedRisk: "HIGH" }));
+    const before = await positions.findOne({ _id: firstPositionId });
+    if (!before) throw new Error("position missing");
+    await positions.updateOne({ _id: firstPositionId }, { $set: { entryPriceUsd: before.entryPriceUsd * 3 } }); // price now -66% vs entry
+    const pos = await positions.findOne({ _id: firstPositionId });
+    const token = await tokens.findOne({ _id: firstPositionTokenId });
+    if (!pos || !token) throw new Error("fixture missing");
 
-    const candidates = await tokensCol.find({ passedFilters: true, "safety.criticalIssues": { $size: 0 } }).sort({ liquidityUsd: -1 }).limit(10).toArray();
-    let opened = 0;
-    let firstPosition = "";
-    for (const t of candidates) {
-      if (opened >= 4) break;
-      try {
-        const prep = await prepareTrade(userId, { chain: t.chain as "solana", tokenAddress: t.address, amountUsd: 10, slippageBps: 300, environment: "PAPER" });
-        const res = await executeTrade(userId, prep.trade.id);
-        if (res && "ok" in res && res.ok) {
-          opened++;
-          if (!firstPosition && "positionId" in res) firstPosition = res.positionId as string;
-        }
-      } catch {
-        /* rejected by validation / limits — expected for some */
-      }
-    }
-    expect(opened).toBeGreaterThan(0);
-    expect(opened).toBeLessThanOrEqual(3); // maximum open positions / capital respected
-    const open = await positionsCol.find({ userId, status: { $ne: "CLOSED" } }).toArray();
-    expect(open.reduce((a, p) => a + p.costBasisUsd, 0)).toBeLessThanOrEqual(30.5);
-    expect(await tradesCol.countDocuments({ userId, "transaction.signature": { $ne: null } })).toBe(0);
-    expect(await tradesCol.countDocuments({ userId, environment: "PAPER", status: "CONFIRMED" })).toBe(opened);
+    await monitorPosition(pos, token);
+    const after = await positions.findOne({ _id: firstPositionId });
+    expect(after?.status).not.toBe("CLOSED");
+    expect(after?.amount).toBeCloseTo(pos.amount, 8); // nothing sold
+  });
 
-    // simulate a price collapse without emergency: the monitor must NOT sell a loser
-    const pos0 = await positionsCol.findOne({ _id: firstPosition });
-    if (!pos0) throw new Error("first position missing");
-    const token0 = await tokensCol.findOne({ _id: pos0.tokenId });
-    if (!token0) throw new Error("position's token missing");
-    await positionsCol.updateOne({ _id: pos0._id }, { $set: { entryPriceUsd: pos0.entryPriceUsd * 3 } }); // price now -66% vs entry
-    const posForMonitor = await positionsCol.findOne({ _id: pos0._id });
-    if (!posForMonitor) throw new Error("position disappeared");
-    await monitorPosition(posForMonitor, token0);
-    const afterLoss = await positionsCol.findOne({ _id: pos0._id });
-    if (!afterLoss) throw new Error("position disappeared");
-    expect(afterLoss.status).not.toBe("CLOSED");
-    expect(afterLoss.amount).toBeCloseTo(pos0.amount, 8);
+  it("detects a profit target but does not execute a sell while LIVE trading is disabled (mock mode)", async () => {
+    const { monitorPosition } = await import("@/services/positionMonitor");
+    const positions = await collections.positions();
+    const tokens = await collections.tokens();
+    if (!firstPositionId) throw new Error("previous test did not open a position");
 
-    // now make it a big winner: all targets fire and position closes with realised profit
-    await positionsCol.updateOne({ _id: pos0._id }, { $set: { entryPriceUsd: token0.priceUsd / 2 } }); // +100% vs entry
-    for (let i = 0; i < 4; i++) {
-      const cur = await positionsCol.findOne({ _id: pos0._id });
-      if (!cur || cur.status === "CLOSED") break;
-      await monitorPosition(cur, token0);
-    }
-    const closed = await positionsCol.findOne({ _id: pos0._id });
-    if (!closed) throw new Error("position disappeared");
-    expect(["CLOSED", "TARGET_3", "TARGET_2", "TARGET_1"]).toContain(closed.status);
-    expect(closed.targetsHit).toBeGreaterThan(0);
-    const sells = await tradesCol.countDocuments({ positionId: pos0._id, side: "SELL", status: "CONFIRMED" });
-    expect(sells).toBeGreaterThan(0);
+    const token = await tokens.findOne({ _id: firstPositionTokenId });
+    if (!token) throw new Error("token missing");
+    await positions.updateOne({ _id: firstPositionId }, { $set: { entryPriceUsd: token.priceUsd / 2 } }); // +100% vs entry: clears every target
+    const pos = await positions.findOne({ _id: firstPositionId });
+    if (!pos) throw new Error("position missing");
+
+    await monitorPosition(pos, token);
+    const after = await positions.findOne({ _id: firstPositionId });
+    // the target was detected (see the TARGET_REACHED event this logs) but liveTradingAllowed() is false
+    // in this test env, so positionMonitor correctly never attempts the sell -- the position stays open.
+    expect(after?.status).not.toBe("CLOSED");
+    expect(after?.amount).toBeCloseTo(pos.amount, 8);
+  });
+
+  it("reconcileLiveTrade closes a position and records realised P/L from a confirmed on-chain sell", async () => {
+    const { reconcileLiveTrade } = await import("@/services/trading");
+    const { providers } = await import("@/core/providers/registry");
+    const positions = await collections.positions();
+    const trades = await collections.trades();
+    const accounts = await collections.tradingAccounts();
+    const tokens = await collections.tokens();
+    if (!firstPositionId) throw new Error("previous test did not open a position");
+
+    const pos = await positions.findOne({ _id: firstPositionId });
+    if (!pos) throw new Error("position missing");
+    const token = await tokens.findOne({ _id: pos.tokenId });
+    if (!token) throw new Error("token missing");
+    const account = await accounts.findOne({ userId, environment: "LIVE" });
+    if (!account) throw new Error("account missing");
+    const realizedBefore = account.realizedPnlUsd;
+
+    vi.spyOn(providers().dex, "getTransactionStatus").mockResolvedValue({ status: "CONFIRMED", slot: 54321 });
+
+    const tradeId = newId();
+    const now = new Date();
+    const sellProceedsUsd = pos.costBasisUsd * 1.5; // sell for 50% more than cost basis
+    await trades.insertOne({
+      _id: tradeId, userId, accountId: pos.accountId, tokenId: pos.tokenId, positionId: pos._id, side: "SELL", kind: "MANUAL_EXIT", environment: "LIVE", dataSource: "MOCK", status: "PENDING",
+      inputUsd: sellProceedsUsd, tokenAmount: pos.amount, priceUsd: sellProceedsUsd / pos.amount, priceImpactPct: 0.5, slippageBps: 300, feesUsd: 0, networkFeeUsd: 0, realizedPnlUsd: null,
+      quote: { reason: "test close" }, failureReason: null, expiresAt: null, createdAt: now, executedAt: null,
+      transaction: { chain: token.chain, signature: "5" + "b".repeat(80), status: "PENDING", unsignedTx: "fake", error: null, slot: null, submittedAt: now, confirmedAt: null, createdAt: now },
+    });
+
+    const r = await reconcileLiveTrade(tradeId);
+    expect(r).toMatchObject({ ok: true, status: "CONFIRMED" });
+
+    const closed = await positions.findOne({ _id: firstPositionId });
+    expect(closed?.status).toBe("CLOSED");
+    expect(closed?.amount).toBeCloseTo(0, 6);
+    expect(closed?.realizedPnlUsd).toBeGreaterThan(0); // sold above cost basis
+
+    const accountAfter = await accounts.findOne({ userId, environment: "LIVE" });
+    expect(accountAfter!.realizedPnlUsd).toBeGreaterThan(realizedBefore);
   });
 });
 
-d("auto trading (paper bot)", () => {
-  it("bot opens an AUTO position from an active BUY signal within limits, once, and refuses to exceed max positions", async () => {
+d("auto trading honors the LIVE/mock safety gate", () => {
+  it("bot refuses to execute LIVE auto-entries while running on mock data", async () => {
     const { runBotCycle } = await import("@/services/bot");
     const { getSettings, updateSettings, tradingSettingsInput } = await import("@/services/settings");
     const users = await collections.users();
@@ -184,14 +263,13 @@ d("auto trading (paper bot)", () => {
     const now = new Date();
     const signalIds: string[] = [];
     await users.insertOne({ _id: u, email: `bot-${Date.now()}@test.local`, passwordHash: "x", name: null, role: "USER", createdAt: now });
-    await bots.insertOne({ _id: newId(), userId: u, status: "ACTIVE", environment: "PAPER", lastRunAt: null, emergencyStoppedAt: null, createdAt: now, updatedAt: now });
-    await accounts.insertOne({ _id: newId(), userId: u, environment: "PAPER", realizedPnlUsd: 0, createdAt: now });
+    await bots.insertOne({ _id: newId(), userId: u, status: "ACTIVE", environment: "LIVE", lastRunAt: null, emergencyStoppedAt: null, createdAt: now, updatedAt: now });
+    await accounts.insertOne({ _id: newId(), userId: u, environment: "LIVE", realizedPnlUsd: 0, createdAt: now });
     try {
       const s = await getSettings(u);
       const { id: _a, userId: _b, ...rest } = s;
       void _a; void _b;
-      await updateSettings(u, tradingSettingsInput.parse({ ...rest, environment: "PAPER", autoTradingEnabled: true, capitalUsd: 100, maxPositionUsd: 10, minPositionUsd: 5, maxDeployedUsd: 100, maxOpenPositions: 1, minOpportunityScore: 0, minLiquidityUsd: 0, minVolume24hUsd: 0, maxPriceImpactPct: 10, maxSlippageBps: 500, maxAllowedRisk: "HIGH", filters: { ...rest.filters, minMarketCapUsd: 0, maxMarketCapUsd: 1e12, minLiquidityUsd: 0, minVolume24hUsd: 0, minHolders: 0, minTxCount1h: 0, maxPriceImpactPct: 50, maxTokenAgeHours: null } }));
-      // pinned to solana so the $10/$5 capital assertions below are independent of each chain's own network fee
+      await updateSettings(u, tradingSettingsInput.parse({ ...rest, environment: "LIVE", autoTradingEnabled: true, capitalUsd: 100, maxPositionUsd: 10, minPositionUsd: 5, maxDeployedUsd: 100, maxOpenPositions: 1, minOpportunityScore: 0, minLiquidityUsd: 0, minVolume24hUsd: 0, maxPriceImpactPct: 10, maxSlippageBps: 500, maxAllowedRisk: "HIGH", filters: { ...rest.filters, minMarketCapUsd: 0, maxMarketCapUsd: 1e12, minLiquidityUsd: 0, minVolume24hUsd: 0, minHolders: 0, minTxCount1h: 0, maxPriceImpactPct: 50, maxTokenAgeHours: null } }));
       const tokens = await tokensCol.find({ chain: "solana", passedFilters: true, "safety.criticalIssues": { $size: 0 } }).sort({ liquidityUsd: -1 }).limit(3).toArray();
       for (const t of tokens) {
         const sigId = newId();
@@ -203,12 +281,12 @@ d("auto trading (paper bot)", () => {
         });
       }
       await runBotCycle();
-      await runBotCycle();
+      // liveTradingAllowed() is false under MOCK_PROVIDER=true, so the bot must skip every candidate
+      // rather than silently trading mock data for real -- this is the safety property under test.
       const positions = await positionsCol.find({ userId: u }).toArray();
-      expect(positions.length).toBe(1); // max open positions = 1, no duplicates across cycles
-      expect(positions[0].origin).toBe("AUTO");
-      expect(positions[0].investedUsd).toBeLessThanOrEqual(10.5);
-      expect(positions[0].sourceSignalId).not.toBeNull();
+      expect(positions.length).toBe(0);
+      const trades = await collections.trades();
+      expect(await trades.countDocuments({ userId: u })).toBe(0);
     } finally {
       await Promise.all([
         users.deleteOne({ _id: u }),

@@ -48,7 +48,7 @@ export function PositionsView({ positions, actions = true }: { positions: PV[]; 
               </div>
               <div className="flex items-center gap-3">
                 <PnL value={p.metrics.unrealizedPnlUsd} pct={p.metrics.pnlPct} className="text-base font-semibold" />
-                {actions && !closed && <ClosePositionButton id={p.id} symbol={p.token.symbol} environment={p.environment} />}
+                {actions && !closed && <ClosePositionButton id={p.id} symbol={p.token.symbol} />}
               </div>
             </div>
 

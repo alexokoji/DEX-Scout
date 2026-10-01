@@ -3,7 +3,7 @@
 export type ChainId = "solana" | "ethereum" | "base" | "bsc" | "arbitrum" | "polygon";
 export type RiskLevel = "LOWER" | "MODERATE" | "HIGH" | "CRITICAL";
 export type SignalType = "BUY" | "WATCH" | "HOLD" | "EXIT";
-export type Environment = "MANUAL" | "PAPER" | "LIVE";
+export type Environment = "MANUAL" | "LIVE";
 export type DataSourceKind = "MOCK" | "LIVE";
 export type Timeframe = "1m" | "5m" | "15m" | "30m" | "1h" | "4h";
 export type TrendDirection = "UP" | "DOWN" | "SIDEWAYS";
