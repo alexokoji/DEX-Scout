@@ -68,7 +68,10 @@ export class SolanaChainAdapter implements ChainAdapter {
 // application-level timeout of their own — a slow response from the default public RPC (rate-limited,
 // no SLA) can otherwise hang far longer than every other call in the analysis pipeline combined, with
 // nothing to cut it off before it eats the whole serverless request budget. `withTimeout` (below) bounds
-// both calls explicitly.
+// both calls explicitly, at the same 6s used for the EVM adapter's own on-chain RPC calls (see
+// EVM_RPC_TIMEOUT_MS in evmProviders.ts) so neither chain family's worst case dominates a token's overall
+// per-token deadline (services/analysis.ts).
+const SOLANA_RPC_TIMEOUT_MS = 6_000;
 
 /** Solana raw facts: mint/freeze authority, top-holder concentration, sell-side heuristics. */
 export async function solanaOnChain(_chain: ChainId, address: string, snapshot: TokenSnapshot): Promise<OnChainRaw> {
@@ -80,11 +83,11 @@ export async function solanaOnChain(_chain: ChainId, address: string, snapshot: 
   let topHolderPct = 0;
   let top10 = 0;
   try {
-    const info = await withTimeout(c.getParsedAccountInfo(mint), 8_000);
+    const info = await withTimeout(c.getParsedAccountInfo(mint), SOLANA_RPC_TIMEOUT_MS);
     const parsed = (info.value?.data as { parsed?: { info?: { mintAuthority: string | null; freezeAuthority: string | null } } })?.parsed?.info;
     mintRevoked = parsed ? parsed.mintAuthority === null : false;
     freezeRevoked = parsed ? parsed.freezeAuthority === null : false;
-    const [largest, supply] = await withTimeout(Promise.all([c.getTokenLargestAccounts(mint), c.getTokenSupply(mint)]), 8_000);
+    const [largest, supply] = await withTimeout(Promise.all([c.getTokenLargestAccounts(mint), c.getTokenSupply(mint)]), SOLANA_RPC_TIMEOUT_MS);
     const total = Number(supply.value.amount) || 1;
     const amounts = largest.value.map((a) => (Number(a.amount) / total) * 100);
     // The largest account is frequently the liquidity pool vault; report it but callers should treat it with care.

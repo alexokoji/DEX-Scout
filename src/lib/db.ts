@@ -136,6 +136,7 @@ export async function ensureIndexes(): Promise<void> {
       { key: { updatedAt: 1 }, name: "updatedAt" },
       { key: { opportunityScore: 1 }, name: "opportunityScore" },
       { key: { passedFilters: 1, marketCapUsd: 1 }, name: "passedFilters_marketCapUsd" },
+      { key: { passedFilters: 1, lastAnalysisAttemptAt: 1 }, name: "passedFilters_lastAnalysisAttemptAt" },
     ]),
     idx("tokenMetrics", [{ key: { tokenId: 1, ts: 1 }, name: "tokenId_ts" }]),
     idx("priceSnapshots", [{ key: { tokenId: 1, ts: 1 }, name: "tokenId_ts" }]),

@@ -2,9 +2,11 @@ import { buildAnalysis } from "@/core/analysis/pipeline";
 import { SIGNAL_THRESHOLDS } from "@/core/config";
 import { withTimeout } from "@/core/providers/http";
 import { providers } from "@/core/providers/registry";
-import type { Analysis, ChainId, OnChainRaw, TokenSnapshot } from "@/core/types";
+import { applyFilters } from "@/core/scanner/filter";
+import type { Analysis, Candle, ChainId, OnChainRaw, TokenSnapshot } from "@/core/types";
 import { collections } from "@/lib/db";
 import { logEvent, safeMessage } from "@/lib/events";
+import { resolveScanFilters } from "./scanner";
 import { touchWorker } from "./workerState";
 
 const CONCURRENCY = 8;
@@ -12,12 +14,31 @@ const CONCURRENCY = 8;
 // provider is slow or how many times a shared pacing queue retries underneath it. Since CONCURRENCY
 // tokens run as one Promise.all batch, this caps that whole batch's wall-clock at ~this value no matter
 // what any individual provider does — the hard backstop behind the more specific per-provider timeouts
-// (Solana's withTimeout, GeckoTerminal's geckoFetch). A token that times out here isn't demoted, since
-// it's a provider being slow this cycle, not proof the token itself is unresolvable; it's retried next.
-const PER_TOKEN_DEADLINE_MS = 20_000;
+// (6s on-chain RPC calls, 6s candle fetch — see EVM/Solana providers and CANDLE_FETCH_DEADLINE_MS below,
+// whose worst cases already sum to ~20s). A token that times out here isn't demoted, since it's a
+// provider being slow this cycle, not proof the token itself is unresolvable; it's retried next, subject
+// to the cooldown below.
+const PER_TOKEN_DEADLINE_MS = 25_000;
+// After any analysis attempt (success, failure, or timeout), a token won't be re-selected for this long.
+// Without this, a token that keeps failing (e.g. a genuinely bad RPC/indexer entry) can keep re-winning
+// every cron tick's small batch by virtue of sorting first, starving fresh candidates that would
+// otherwise succeed — the exact "wasting resources on repeat failures" problem this guards against.
+const ANALYSIS_COOLDOWN_MS = 10 * 60_000;
 
+// Candles can be queued behind other calls in geckoFetch's shared pace queue before its own per-attempt
+// timeout even starts counting, so bounding just that inner attempt isn't enough to keep this decoupled
+// from batch size / queue depth. This wraps the whole wait (queue + attempt) so a token's candle step
+// never costs it more than this, regardless of how many other tokens are competing for the same queue.
+const CANDLE_FETCH_DEADLINE_MS = 6_000;
+
+/**
+ * Candles are enrichment, not a requirement: analyzeMarket degrades to neutral/null technicals on an
+ * empty array and still scores price/volume/buy-sell-pressure straight from the snapshot. Treating a
+ * slow or rate-limited GeckoTerminal response as fatal needlessly failed tokens that had everything else
+ * needed for a real opportunity score — this is the main lever behind tokens not showing up to trade.
+ */
 export async function analyzeSnapshot(s: TokenSnapshot, raw: OnChainRaw): Promise<Analysis> {
-  const candles = await providers().data.getCandles(s.chain, s.address, "5m", 120);
+  const candles: Candle[] = await withTimeout(providers().data.getCandles(s.chain, s.address, "5m", 120), CANDLE_FETCH_DEADLINE_MS, "candles").catch(() => []);
   return buildAnalysis(s, raw, candles, "5m");
 }
 
@@ -32,6 +53,7 @@ export async function persistAnalysis(tokenId: string, a: Analysis): Promise<voi
         opportunityScore: a.opportunity.score,
         riskLevel: a.safety.riskLevel,
         stage: qualified ? "QUALIFIED" : "ANALYZED",
+        lastAnalysisAttemptAt: now,
         safety: {
           riskScore: a.safety.riskScore,
           riskLevel: a.safety.riskLevel,
@@ -98,13 +120,15 @@ async function inChunks<T>(items: T[], size: number, fn: (t: T) => Promise<void>
 export async function runAnalysisCycle(limit?: number): Promise<{ analyzed: number; failed: number }> {
   const p = providers();
   const tokenCol = await collections.tokens();
+  const filters = await resolveScanFilters();
+  const notCoolingDown = { $or: [{ lastAnalysisAttemptAt: null }, { lastAnalysisAttemptAt: { $lt: new Date(Date.now() - ANALYSIS_COOLDOWN_MS) } }] };
   const [unanalyzed, stale] = await Promise.all([
     tokenCol
-      .find({ passedFilters: true, analysis: null }, { projection: { _id: 1, address: 1, chain: 1 } })
+      .find({ passedFilters: true, analysis: null, ...notCoolingDown }, { projection: { _id: 1, address: 1, chain: 1 } })
       .sort({ marketCapUsd: -1 })
       .toArray(),
     tokenCol
-      .find({ passedFilters: true, analysis: { $ne: null } }, { projection: { _id: 1, address: 1, chain: 1 } })
+      .find({ passedFilters: true, analysis: { $ne: null }, ...notCoolingDown }, { projection: { _id: 1, address: 1, chain: 1 } })
       .sort({ "analysis.computedAt": 1 })
       .toArray(),
   ]);
@@ -125,7 +149,18 @@ export async function runAnalysisCycle(limit?: number): Promise<{ analyzed: numb
             // passing, it would be retried forever and, under the serverless batch cap, could permanently
             // crowd out real candidates that are actually ready to analyse. Demote it instead of leaving it
             // stuck.
-            await tokenCol.updateOne({ _id: t._id }, { $set: { passedFilters: false, stage: "FILTERED" } });
+            await tokenCol.updateOne({ _id: t._id }, { $set: { passedFilters: false, stage: "FILTERED", lastAnalysisAttemptAt: new Date() } });
+            return;
+          }
+          // Re-check against a FRESH snapshot before spending an on-chain call + a gecko-queue slot: the
+          // scan that set passedFilters could be several cron ticks stale under a small serverless batch,
+          // and a thin/volatile pool's liquidity can easily have dropped back out of range since. Catching
+          // that here is the efficient place to do it — cheap (just this one already-fetched snapshot) vs.
+          // spending the expensive calls first only to end up with an analysis nobody can act on anyway.
+          const recheck = applyFilters(snap, filters);
+          if (!recheck.passed) {
+            failed++;
+            await tokenCol.updateOne({ _id: t._id }, { $set: { passedFilters: false, stage: "FILTERED", lastAnalysisAttemptAt: new Date() } });
             return;
           }
           const raw = await p.data.getOnChain(t.chain as ChainId, t.address, snap);
@@ -139,6 +174,7 @@ export async function runAnalysisCycle(limit?: number): Promise<{ analyzed: numb
       );
     } catch (err) {
       failed++;
+      await tokenCol.updateOne({ _id: t._id }, { $set: { lastAnalysisAttemptAt: new Date() } }).catch(() => {});
       await logEvent({ type: "PROVIDER_ERROR", source: "analysis", level: "WARN", message: `Analysis failed for ${t.address}: ${safeMessage(err)}` });
     }
   });

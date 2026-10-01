@@ -22,18 +22,17 @@ export const maxDuration = 60;
  *   monitor = position monitor (profit targets, health, emergency handling)
  *   execute = bot cycle + live-trade reconciliation
  */
-// Each analysed token needs one candle fetch through geckoFetch's single, serialized, ~27/min pace
-// queue (dexscreener.ts) -- and that queue only services ~1 call every ~2.2-2.7s NO MATTER how many
-// tokens are dispatched "concurrently". With CONCURRENCY=8 tokens competing for that one queue, a token
-// near the back can exceed a 20s per-token deadline purely from queue wait, with no error of its own --
-// and one slow/retried call ahead of it pushes every token behind it further out. Reproduced in
-// production: 6 of 8 analysed tokens timed out in one run, all at exactly 20000ms.
-// A hard platform timeout (a killed function, no lease released) is a categorically worse outcome than
-// a token failing this tick and retrying next -- see runAnalysisCycle's docstring, and PER_TOKEN_DEADLINE_MS
-// there. So this stays conservative: 5 keeps queue depth shallow enough that most tokens clear well
-// inside their deadline even with one slow call ahead of them, at the cost of processing fewer per tick.
-// The self-hosted worker loop has no such ceiling and calls runAnalysisCycle() unbounded.
-const SERVERLESS_ANALYSIS_BATCH = 5;
+// Candles used to be a hard requirement and gated entirely on geckoFetch's shared, serialized, ~27/min
+// pace queue -- with enough tokens in a batch, a token near the back of that queue could exceed its
+// per-token deadline purely from queue wait, no error of its own required (reproduced in production: 6 of
+// 8 analysed tokens timed out in one run, all at exactly the old 20000ms deadline). Candles are now
+// optional, capped at a fixed 6s regardless of queue depth (CANDLE_FETCH_DEADLINE_MS), and the on-chain
+// RPC calls are capped at 6s each too -- so one token's worst case is now a bounded sum (~20s) rather
+// than an unbounded queue wait, and 10 keeps total analysis-phase wall-clock comfortably inside the
+// scan job's share of Hobby's 60s cap even if several tokens hit their worst case at once. Nothing is
+// permanently skipped -- see runAnalysisCycle's docstring. The self-hosted worker loop has no such
+// ceiling and calls runAnalysisCycle() unbounded.
+const SERVERLESS_ANALYSIS_BATCH = 10;
 
 const JOBS: Record<string, () => Promise<unknown>> = {
   async scan() {

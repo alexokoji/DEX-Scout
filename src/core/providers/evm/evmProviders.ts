@@ -63,16 +63,23 @@ export class EvmChainAdapter implements ChainAdapter {
 
 const ZERO = /^0x0*$/;
 
+// Tighter than getJson's 10s default: this runs twice, sequentially, inside the analysis pipeline's
+// overall per-token deadline (see PER_TOKEN_DEADLINE_MS in services/analysis.ts) -- two calls at the
+// default would alone cost up to 20s on a slow/congested public RPC, leaving the token no room for its
+// snapshot lookup or candle fetch before getting cut off regardless of whether the RPC call itself ever
+// would have succeeded.
+const EVM_RPC_TIMEOUT_MS = 6_000;
+
 /** EVM raw facts: renounced ownership, sell-side heuristics. Holder concentration needs an indexer (Birdeye/Covalent). */
 export async function evmOnChain(chain: ChainId, address: string, snapshot: TokenSnapshot): Promise<OnChainRaw> {
   const anomalies: string[] = [];
   let ownerRenounced = false;
   try {
     // owner() -> address; a revert means the contract has no owner concept (treated as renounced)
-    const res = await rpcCall<string>(rpcUrl(chain), "eth_call", [{ to: address, data: "0x8da5cb5b" }, "latest"]).catch(() => "0x");
+    const res = await rpcCall<string>(rpcUrl(chain), "eth_call", [{ to: address, data: "0x8da5cb5b" }, "latest"], EVM_RPC_TIMEOUT_MS).catch(() => "0x");
     const slot = res.length >= 66 ? "0x" + res.slice(26) : "0x";
     ownerRenounced = ZERO.test(slot) || slot === "0x" || slot.toLowerCase() === "0x000000000000000000000000000000000000dead";
-    const code = await rpcCall<string>(rpcUrl(chain), "eth_getCode", [address, "latest"]);
+    const code = await rpcCall<string>(rpcUrl(chain), "eth_getCode", [address, "latest"], EVM_RPC_TIMEOUT_MS);
     if (!code || code === "0x") anomalies.push("Address has no contract code");
   } catch {
     anomalies.push("On-chain ownership data unavailable from RPC");

@@ -21,27 +21,30 @@ export type OnChainHandler = (chain: ChainId, address: string, snapshot: TokenSn
  * one run). A single process-wide queue paces every call to this host at roughly one every 2.2s
  * (~27/min, with headroom).
  *
- * The per-call timeout is deliberately tight (6s, vs `getJson`'s 10s default) and there's at most one
- * retry with a short backoff: a normal GeckoTerminal response lands well under a second (observed
- * ~0.4-1s), so anything approaching 10s is already abnormal, and the earlier 10s-timeout/2-retry version
- * of this let one bad call cost up to ~34s while blocking every other call queued behind it — enough by
- * itself to blow Hobby's 60s function cap (reproduced in production as a hard FUNCTION_INVOCATION_TIMEOUT).
- * Worst case per call is now ~20s across 3 attempts (6s timeout, 1s backoff, repeated twice more) instead
- * of ~34s across the same 3 attempts at the old 10s timeout and longer backoff.
+ * The per-call timeout is deliberately tight (6s, vs `getJson`'s 10s default): a normal GeckoTerminal
+ * response lands well under a second (observed ~0.4-1s), so anything approaching 10s is already abnormal.
+ * `maxAttempts`/`timeoutMs` are overridable per call: discovery retries (its tokens are worth waiting for,
+ * and there are only ~6 calls/cycle), but candles are best-effort enrichment a token's analysis can — and
+ * now does — complete without (see analyzeSnapshot), so they get one fast attempt and never block a
+ * queue slot waiting on a retry. An earlier 10s-timeout/2-retry version of this let one bad call cost up
+ * to ~34s while blocking every other call queued behind it — enough by itself to blow Hobby's 60s
+ * function cap (reproduced in production as a hard FUNCTION_INVOCATION_TIMEOUT).
  */
 let geckoChain: Promise<unknown> = Promise.resolve();
 const GECKO_MIN_GAP_MS = 2200;
 const GECKO_TIMEOUT_MS = 6_000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function geckoFetch<T>(url: string): Promise<T> {
+function geckoFetch<T>(url: string, opts?: { timeoutMs?: number; maxAttempts?: number }): Promise<T> {
+  const timeoutMs = opts?.timeoutMs ?? GECKO_TIMEOUT_MS;
+  const maxAttempts = opts?.maxAttempts ?? 3;
   const p = geckoChain.then(async () => {
     await sleep(GECKO_MIN_GAP_MS);
     for (let attempt = 0; ; attempt++) {
       try {
-        return await getJson<T>(url, undefined, GECKO_TIMEOUT_MS);
+        return await getJson<T>(url, undefined, timeoutMs);
       } catch (err) {
-        if (attempt >= 2) throw err;
+        if (attempt >= maxAttempts - 1) throw err;
         await sleep(1000);
       }
     }
@@ -290,7 +293,10 @@ export class DexScreenerDataProvider implements TokenDataProvider {
     const unit = m >= 60 ? "hour" : "minute";
     const agg = m >= 60 ? m / 60 : m;
     const url = `https://api.geckoterminal.com/api/v2/networks/${CHAINS[chain].geckoId}/pools/${snap.poolAddress}/ohlcv/${unit}?aggregate=${agg}&limit=${Math.min(limit, 1000)}`;
-    const j = await geckoFetch<{ data: { attributes: { ohlcv_list: number[][] } } }>(url);
+    // One fast attempt, no retry: candles are best-effort enrichment (analyzeSnapshot degrades gracefully
+    // to an empty array), so a slow/rate-limited response should give up quickly rather than hold the
+    // shared queue for a retry that would otherwise delay every other analysis in this batch.
+    const j = await geckoFetch<{ data: { attributes: { ohlcv_list: number[][] } } }>(url, { timeoutMs: 4_000, maxAttempts: 1 });
     return j.data.attributes.ohlcv_list
       .map(([t, o, h, l, c, v]) => ({ time: t, open: o, high: h, low: l, close: c, volume: v, buys: 0, sells: 0 }))
       .sort((a, b) => a.time - b.time);

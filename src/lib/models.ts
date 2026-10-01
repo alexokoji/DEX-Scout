@@ -161,6 +161,9 @@ export interface TokenDoc {
   opportunityScore: number;
   riskLevel: RiskLevel;
   passedFilters: boolean;
+  /** Set on every analysis attempt (success, failure, or timeout) so a token that keeps failing can be
+   * cooled down instead of re-winning every cron tick's small batch at the expense of fresh candidates. */
+  lastAnalysisAttemptAt: Date | null;
 
   safety: TokenSafetyEmbed | null;
   analysis: TokenAnalysisEmbed | null;

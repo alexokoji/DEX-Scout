@@ -117,6 +117,7 @@ export async function runScanCycle(): Promise<ScanResult> {
               firstSeenAt: now,
               opportunityScore: 0,
               riskLevel: "MODERATE",
+              lastAnalysisAttemptAt: null,
               safety: null,
               analysis: null,
             },

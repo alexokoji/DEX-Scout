@@ -52,6 +52,69 @@ d("scanner, analysis and signal engine", () => {
     const n = await signals.countDocuments({ status: "ACTIVE" });
     expect(n).toBeGreaterThan(0);
   });
+
+  it("demotes a token whose liquidity has since dropped below the filter threshold, without spending an on-chain call on it", async () => {
+    const { runAnalysisCycle } = await import("@/services/analysis");
+    const { providers } = await import("@/core/providers/registry");
+    const tokens = await collections.tokens();
+
+    // find a real mock-world token whose CURRENT snapshot liquidity is well below the default
+    // $100k minimum -- its DB record is deliberately stale (passedFilters: true) to simulate a pool that
+    // qualified when last scanned but has since thinned out before this tiny batch got to it.
+    const snaps = await providers().data.discover("solana");
+    const thin = snaps.filter((s) => s.liquidityUsd > 0 && s.liquidityUsd < 50_000).sort((a, b) => a.liquidityUsd - b.liquidityUsd)[0];
+    if (!thin) throw new Error("no thin-liquidity mock token available to test against");
+
+    const id = newId();
+    const now = new Date();
+    await tokens.updateOne(
+      { chain: thin.chain, address: thin.address },
+      {
+        $set: { passedFilters: true, stage: "SCANNED", analysis: null, lastAnalysisAttemptAt: null, marketCapUsd: 1e15 }, // inflated so it sorts first
+        $setOnInsert: {
+          _id: id, chain: thin.chain, address: thin.address, name: thin.name, symbol: thin.symbol, decimals: thin.decimals || 9, dex: thin.dex,
+          poolAddress: thin.poolAddress, logoUrl: null, dataSource: "MOCK", firstSeenAt: now, opportunityScore: 0, riskLevel: "MODERATE", safety: null,
+        },
+      },
+      { upsert: true },
+    );
+
+    const getOnChainSpy = vi.spyOn(providers().data, "getOnChain");
+    try {
+      await runAnalysisCycle(1); // the inflated market cap guarantees this exact token is the one slot processed
+      expect(getOnChainSpy).not.toHaveBeenCalled();
+
+      const after = await tokens.findOne({ chain: thin.chain, address: thin.address });
+      expect(after?.passedFilters).toBe(false);
+      expect(after?.stage).toBe("FILTERED");
+      expect(after?.lastAnalysisAttemptAt).not.toBeNull();
+    } finally {
+      getOnChainSpy.mockRestore();
+    }
+  });
+
+  it("does not re-select a token that is still cooling down after a recent analysis attempt", async () => {
+    const { runAnalysisCycle } = await import("@/services/analysis");
+    const tokens = await collections.tokens();
+    const id = newId();
+    const now = new Date();
+    const attemptedAt = new Date(now.getTime() - 60_000); // 1 minute ago, inside the 10-minute cooldown
+    await tokens.insertOne({
+      _id: id, chain: "solana", address: "11111111111111111111111CooldownTest1", name: "Cooldown Test", symbol: "CDT", decimals: 9, dex: "test",
+      poolAddress: null, logoUrl: null, dataSource: "MOCK", stage: "SCANNED", poolCreatedAt: now, firstSeenAt: now, lastScannedAt: now, updatedAt: now,
+      priceUsd: 1, marketCapUsd: 1e15, fdvUsd: 1e15, liquidityUsd: 1_000_000, volume24hUsd: 1_000_000, volume1hUsd: 50_000, // inflated mcap so it would sort
+      change5m: 0, change1h: 0, change24h: 0, buySellRatio: 1, holders: 100, holderGrowth1h: 0, txCount1h: 10, pairCount: 1, // first if it were eligible
+      opportunityScore: 0, riskLevel: "MODERATE", passedFilters: true, lastAnalysisAttemptAt: attemptedAt, safety: null, analysis: null,
+    });
+    try {
+      await runAnalysisCycle(1);
+      const after = await tokens.findOne({ _id: id });
+      expect(after?.analysis).toBeNull();
+      expect(after?.lastAnalysisAttemptAt?.getTime()).toBe(attemptedAt.getTime()); // untouched -- excluded by the cooldown, not even attempted
+    } finally {
+      await tokens.deleteOne({ _id: id });
+    }
+  });
 });
 
 /**
