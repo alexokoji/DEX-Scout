@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { CHAINS } from "@/core/chains";
 
 /** Minimal EIP-1193 provider surface (MetaMask, Rabby, Coinbase Wallet, Phantom EVM, Brave, ...). */
 interface Eip1193 {
@@ -150,7 +151,26 @@ export function EvmWalletProvider({ children }: { children: React.ReactNode }) {
         const hex = "0x" + chainId.toString(16);
         const current = (await eth.request({ method: "eth_chainId" })) as string;
         if (current.toLowerCase() === hex) return;
-        await eth.request({ method: "wallet_switchEthereumChain", params: [{ chainId: hex }] });
+        try {
+          await eth.request({ method: "wallet_switchEthereumChain", params: [{ chainId: hex }] });
+        } catch (e) {
+          // Newer networks (Robinhood Chain, HyperEVM, Monad, ...) aren't built into wallets: 4902 = "unknown chain".
+          // Offer to add it (the wallet shows its own confirmation), which also switches to it.
+          const code = (e as { code?: number }).code;
+          const unknown = code === 4902 || /unrecognized chain|not been added|unknown chain/i.test((e as Error)?.message ?? "");
+          const meta = Object.values(CHAINS).find((c) => c.evmChainId === chainId);
+          if (!unknown || !meta) throw e;
+          await eth.request({
+            method: "wallet_addEthereumChain",
+            params: [{
+              chainId: hex,
+              chainName: meta.name,
+              nativeCurrency: { name: meta.nativeSymbol, symbol: meta.nativeSymbol, decimals: 18 },
+              rpcUrls: [meta.defaultRpc, ...meta.fallbackRpcs].filter((u) => u.startsWith("https://")),
+              blockExplorerUrls: [meta.explorer],
+            }],
+          });
+        }
       },
       async sendTransaction(tx) {
         const eth = providerFor(activeId);

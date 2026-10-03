@@ -23,12 +23,14 @@ Set `SOLANA_RPC_URL` (and optionally `SOLANA_WS_URL`) to a provider such as Heli
 Real mode (`MOCK_PROVIDER=false`) uses DexScreener (discovery, pairs) and GeckoTerminal (OHLCV) - no key required, both rate limited. `MARKET_DATA_URL` / `MARKET_DATA_API_KEY` let you point at a paid provider. DexScreener has no holder counts, so holders are reported as *unknown* (filters do not penalise unknown holders). Implement `TokenDataProvider` (`src/core/providers/interfaces.ts`) for Birdeye/Helius/etc. and register it in `src/core/providers/registry.ts`.
 
 ## EVM chains
-Ethereum, Base, BNB Chain, Arbitrum and Polygon share one EVM adapter. Optional RPC overrides: `ETHEREUM_RPC_URL`, `BASE_RPC_URL`, `BSC_RPC_URL`, `ARBITRUM_RPC_URL`, `POLYGON_RPC_URL` (public defaults are used when blank - use a keyed provider in production). LIVE EVM swaps use the 0x Swap API and need `ZEROX_API_KEY`. Enable or disable chains per user under Settings -> Trading -> Chains to scan.
+Every EVM chain shares one adapter: Ethereum, Base, BNB Chain, Arbitrum, Polygon, Robinhood Chain, Avalanche, Optimism, Unichain, Linea, Sonic, Berachain, HyperEVM, Ink, Mantle, Scroll, Blast, World Chain, Abstract and Monad. Optional RPC overrides are named `<CHAIN>_RPC_URL` (`ETHEREUM_RPC_URL`, `AVALANCHE_RPC_URL`, `INK_RPC_URL`, ...); free public endpoints with automatic failover are used when blank. Swaps need no key on the first thirteen; **Ink, Mantle, Scroll, Blast, World Chain, Abstract and Monad have no free aggregator**, so they are scanned and scored but trading there needs a free-tier `ZEROX_API_KEY`. Enable or disable chains per user under Settings -> Trading -> Chains to scan.
+
+Scanning rotates: each scan tick discovers `SCAN_CHAINS_PER_TICK` chains (default 6) from a cursor kept in the database, so adding chains makes each one refresh a little less often instead of making every tick slower (GeckoTerminal is paced at ~1 call / 2.2s, which is what bounds a tick). Adding another chain = one entry in `src/core/chains.ts`.
 
 Optional `BIRDEYE_API_KEY` adds holder counts/growth for every chain in real-data mode.
 
 ## DEX aggregators
-Solana: Jupiter via `DEX_PROVIDER_URL` (+ `DEX_PROVIDER_API_KEY`). EVM: 0x. Both only ever build **unsigned** transactions.
+Solana: Jupiter via `DEX_PROVIDER_URL` (+ `DEX_PROVIDER_API_KEY`). EVM: ParaSwap and KyberSwap (free, no key), with 0x tried first only if `ZEROX_API_KEY` is set. All of them only ever build **unsigned** transactions.
 
 ## AI
 Set `AI_API_KEY` (Anthropic) and optionally `AI_MODEL`. Without a key a deterministic rules-based summariser fills the same JSON schema and is labelled "rules-based-summary" in the UI. AI output is Zod-validated and display-only.

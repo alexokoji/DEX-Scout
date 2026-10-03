@@ -1,6 +1,9 @@
 /** Chain-agnostic domain types shared by every engine. No framework or DB imports here. */
 
-export type ChainId = "solana" | "ethereum" | "base" | "bsc" | "arbitrum" | "polygon";
+export type ChainId =
+  | "solana" | "ethereum" | "base" | "bsc" | "arbitrum" | "polygon"
+  | "robinhood" | "avalanche" | "optimism" | "unichain" | "linea" | "sonic" | "berachain" | "hyperevm"
+  | "ink" | "mantle" | "scroll" | "blast" | "world" | "abstract" | "monad";
 export type RiskLevel = "LOWER" | "MODERATE" | "HIGH" | "CRITICAL";
 export type SignalType = "BUY" | "WATCH" | "HOLD" | "EXIT";
 export type Environment = "MANUAL" | "LIVE";

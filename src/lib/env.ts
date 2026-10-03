@@ -25,6 +25,8 @@ const schema = z.object({
   AI_API_KEY: z.string().optional(),
   AI_MODEL: z.string().default("claude-sonnet-5"),
   SCANNER_INTERVAL_SECONDS: z.coerce.number().default(30),
+  /** Chains discovered per scan tick; the rest are picked up on following ticks (round-robin). 0 = every chain every tick. */
+  SCAN_CHAINS_PER_TICK: z.coerce.number().int().min(0).default(6),
   MONITOR_INTERVAL_SECONDS: z.coerce.number().default(15),
   NEXT_PUBLIC_APP_URL: z.string().default("http://localhost:3000"),
 });

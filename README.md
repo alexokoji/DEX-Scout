@@ -1,6 +1,6 @@
 # DEX Scout
 
-Multi-chain low-cap DEX scanner, signal engine and live trading platform. Supports **Solana, Ethereum, Base, BNB Chain, Arbitrum and Polygon**; chain metadata lives in one file (`src/core/chains.ts`) so more chains are additive.
+Multi-chain low-cap DEX scanner, signal engine and live trading platform. Supports **Solana plus 20 EVM chains** (Ethereum, Base, BNB Chain, Arbitrum, Polygon, Robinhood Chain, Avalanche, Optimism, Unichain, Linea, Sonic, Berachain, HyperEVM, Ink, Mantle, Scroll, Blast, World Chain, Abstract, Monad); chain metadata lives in one file (`src/core/chains.ts`) so more chains are additive, and scanning rotates across them so cost per tick stays flat.
 
 - **Scanner** continuously discovers tokens (default band **$250K-$25M market cap**, fully configurable, no cap on results).
 - **Safety + market + on-chain analysis** produce a 0-100 *opportunity score* (an analytical ranking, **not** a probability of profit) and lower/moderate/high/critical **risk levels** (never "safe").

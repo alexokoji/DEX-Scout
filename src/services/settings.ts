@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ORIGINAL_CHAIN_IDS } from "@/core/chains";
 import {
   DEFAULT_TARGETS_MULTI,
   DEFAULT_TARGETS_SINGLE,
@@ -87,7 +88,14 @@ function hydrate(row: TradingSettingsDoc): UserSettings {
   };
 }
 
-export const SETTINGS_VERSION = 2;
+export const SETTINGS_VERSION = 3;
+
+/** True when `chains` holds exactly the six chains this app originally scanned (any order). */
+export function isOriginalChainSet(chains: readonly string[] | undefined): boolean {
+  if (!chains) return false;
+  const set = new Set(chains);
+  return set.size === ORIGINAL_CHAIN_IDS.length && ORIGINAL_CHAIN_IDS.every((c) => set.has(c));
+}
 
 /** The one place new accounts' settings come from (registration and lazy creation both use it). */
 export function defaultSettingsDoc(userId: string, now = new Date()): TradingSettingsDoc {
@@ -131,13 +139,19 @@ const V1_FILTERS = { minMarketCapUsd: 1_000_000, maxMarketCapUsd: 10_000_000, mi
  * anything the user changed on purpose is left alone. Runs once per account (settingsVersion is persisted).
  */
 async function migrateSettings(row: TradingSettingsDoc): Promise<TradingSettingsDoc> {
-  if ((row.settingsVersion ?? 1) >= SETTINGS_VERSION) return row;
+  const version = row.settingsVersion ?? 1;
+  if (version >= SETTINGS_VERSION) return row;
   const fresh = defaultSettingsDoc(row.userId);
   const set: Record<string, unknown> = { settingsVersion: SETTINGS_VERSION };
-  for (const k of Object.keys(V1_TOP) as (keyof typeof V1_TOP)[]) if (row[k] === V1_TOP[k]) set[k] = fresh[k];
-  for (const k of Object.keys(V1_FILTERS) as (keyof typeof V1_FILTERS)[]) {
-    if (row.filters?.[k] === V1_FILTERS[k]) set[`filters.${k}`] = fresh.filters[k];
+  if (version < 2) {
+    for (const k of Object.keys(V1_TOP) as (keyof typeof V1_TOP)[]) if (row[k] === V1_TOP[k]) set[k] = fresh[k];
+    for (const k of Object.keys(V1_FILTERS) as (keyof typeof V1_FILTERS)[]) {
+      if (row.filters?.[k] === V1_FILTERS[k]) set[`filters.${k}`] = fresh.filters[k];
+    }
   }
+  // v3: more chains exist now. An account whose chain list is exactly the original six never chose that subset —
+  // it is just the old default — so it gets every chain; anyone who picked a different set keeps their choice.
+  if (isOriginalChainSet(row.filters?.chains)) set["filters.chains"] = fresh.filters.chains;
   const col = await collections.tradingSettings();
   await col.updateOne({ _id: row._id }, { $set: set });
   return (await col.findOne({ _id: row._id })) ?? row;

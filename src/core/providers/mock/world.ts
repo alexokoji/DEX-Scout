@@ -98,6 +98,21 @@ const DEX_BY_CHAIN: Record<ChainId, string[]> = {
   bsc: ["PancakeSwap", "Biswap", "Uniswap"],
   arbitrum: ["Camelot", "Uniswap", "SushiSwap"],
   polygon: ["QuickSwap", "Uniswap", "SushiSwap"],
+  robinhood: ["Uniswap", "Camelot"],
+  avalanche: ["TraderJoe", "Pangolin", "Uniswap"],
+  optimism: ["Velodrome", "Uniswap"],
+  unichain: ["Uniswap"],
+  linea: ["SyncSwap", "Uniswap"],
+  sonic: ["Shadow", "SwapX"],
+  berachain: ["Kodiak", "BEX"],
+  hyperevm: ["HyperSwap", "KittenSwap"],
+  ink: ["InkySwap", "Velodrome"],
+  mantle: ["Agni", "MerchantMoe"],
+  scroll: ["Ambient", "Uniswap"],
+  blast: ["Thruster", "Ring"],
+  world: ["Uniswap"],
+  abstract: ["Aborean"],
+  monad: ["Kuru"],
 };
 
 export function tokenSpec(index: number, chain: ChainId = "solana"): MockTokenSpec {

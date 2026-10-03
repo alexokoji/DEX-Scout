@@ -48,10 +48,10 @@ export const INTEGRATIONS: Integration[] = [
     note: "A paid plan raises the rate limits that otherwise cap how many tokens can be analysed per minute.",
   },
   {
-    id: "evm-rpc", name: "EVM RPC (Ethereum, Base, BNB, Arbitrum, Polygon)", powers: "On-chain safety checks, wallet balances, trade confirmation", kind: "optional",
+    id: "evm-rpc", name: "EVM RPC (every EVM chain)", powers: "On-chain safety checks, wallet balances, trade confirmation", kind: "optional",
     freeDefault: "Several free public endpoints per chain with automatic failover; dead or slow ones are skipped.",
-    envVars: ["ETHEREUM_RPC_URL", "BASE_RPC_URL", "BSC_RPC_URL", "ARBITRUM_RPC_URL", "POLYGON_RPC_URL"], getUrl: "https://dashboard.alchemy.com", getLabel: "Alchemy / Infura / QuickNode / dRPC (free tiers)",
-    note: "Set one URL per chain you care about. Yours is tried first, the free ones stay as backup. Faster and more reliable than shared public nodes.",
+    envVars: ["ETHEREUM_RPC_URL", "BASE_RPC_URL", "BSC_RPC_URL", "ARBITRUM_RPC_URL", "POLYGON_RPC_URL", "<CHAIN>_RPC_URL (e.g. AVALANCHE_RPC_URL, INK_RPC_URL)"], getUrl: "https://dashboard.alchemy.com", getLabel: "Alchemy / Infura / QuickNode / dRPC (free tiers)",
+    note: "Set one URL per chain you care about, named after the chain in capitals plus _RPC_URL. Yours is tried first, the free ones stay as backup. Faster and more reliable than shared public nodes.",
   },
   {
     id: "solana-rpc", name: "Solana RPC", powers: "Mint/freeze authority checks, wallet balance, trade confirmation", kind: "optional",
@@ -65,10 +65,10 @@ export const INTEGRATIONS: Integration[] = [
     note: "A key raises rate limits. Not needed for normal use.",
   },
   {
-    id: "evm-swaps", name: "EVM swaps (ParaSwap + KyberSwap, optional 0x)", powers: "Quotes and swap transactions on Ethereum, Base, BNB, Arbitrum, Polygon", kind: "optional",
-    freeDefault: "ParaSwap, then KyberSwap, both free with no key. If one has no route or is down, the next is tried.",
-    envVars: ["ZEROX_API_KEY"], getUrl: "https://dashboard.0x.org", getLabel: "0x dashboard",
-    note: "Not required. If you add a 0x key it is simply tried first.",
+    id: "evm-swaps", name: "EVM swaps (ParaSwap + KyberSwap, optional 0x)", powers: "Quotes and swap transactions on EVM chains", kind: "optional",
+    freeDefault: "Ethereum, Base, BNB, Arbitrum, Polygon, Robinhood, Avalanche, Optimism, Unichain, Linea, Sonic, Berachain and HyperEVM: ParaSwap and/or KyberSwap, free with no key. If one has no route or is down, the next is tried.",
+    envVars: ["ZEROX_API_KEY"], getUrl: "https://dashboard.0x.org", getLabel: "0x dashboard (free tier)",
+    note: "Only needed to trade on Ink, Mantle, Scroll, Blast, World Chain, Abstract and Monad — no free aggregator serves those. Without it they are still scanned and scored; only the swap step is unavailable. On the other chains a 0x key is simply tried first.",
   },
   {
     id: "holders", name: "Holder data (Birdeye)", powers: "Holder counts and growth in the score", kind: "optional",

@@ -68,6 +68,7 @@ interface DsPair {
   pairCreatedAt?: number;
 }
 
+let dsListsCache: { at: number; p: Promise<PromiseSettledResult<{ chainId: string; tokenAddress: string }[]>[]> } | null = null;
 const holderHistory = new Map<string, { t: number; holders: number }[]>();
 
 /**
@@ -140,13 +141,28 @@ export class DexScreenerDataProvider implements TokenDataProvider {
     return [...byAddress.values()];
   }
 
-  private async discoverDexScreener(chain: ChainId): Promise<TokenSnapshot[]> {
-    const slug = CHAINS[chain].dexScreenerId;
-    const lists = await Promise.allSettled([
+  /**
+   * DexScreener's profile/boost lists are global (every chain in one response), so fetch them once per 30s and share
+   * the result across the chains discovered in a tick, rather than three requests per chain.
+   */
+  private globalLists(): Promise<PromiseSettledResult<{ chainId: string; tokenAddress: string }[]>[]> {
+    const now = Date.now();
+    if (dsListsCache && now - dsListsCache.at < 30_000) return dsListsCache.p;
+    const get = () => Promise.allSettled([
       getJson<{ chainId: string; tokenAddress: string }[]>(`${this.base()}/token-profiles/latest/v1`),
       getJson<{ chainId: string; tokenAddress: string }[]>(`${this.base()}/token-boosts/latest/v1`),
       getJson<{ chainId: string; tokenAddress: string }[]>(`${this.base()}/token-boosts/top/v1`),
     ]);
+    const p = get();
+    dsListsCache = { at: now, p };
+    // a total failure must not be cached for 30s
+    void p.then((r) => { if (r.every((x) => x.status === "rejected") && dsListsCache?.p === p) dsListsCache = null; });
+    return p;
+  }
+
+  private async discoverDexScreener(chain: ChainId): Promise<TokenSnapshot[]> {
+    const slug = CHAINS[chain].dexScreenerId;
+    const lists = await this.globalLists();
     const addrs = new Set<string>();
     for (const l of lists) {
       if (l.status === "fulfilled") for (const t of l.value) if (t.chainId === slug) addrs.add(t.tokenAddress);

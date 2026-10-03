@@ -157,12 +157,18 @@ export async function ensureIndexes(): Promise<void> {
       { key: { openedAt: 1 }, name: "openedAt" },
     ]),
     idx("positionEvents", [{ key: { positionId: 1, createdAt: 1 }, name: "positionId_createdAt" }]),
-    idx("trades", [
-      { key: { userId: 1, createdAt: 1 }, name: "userId_createdAt" },
-      { key: { status: 1 }, name: "status" },
-      { key: { tokenId: 1 }, name: "tokenId" },
-      { key: { "transaction.signature": 1 }, name: "transaction_signature_unique", unique: true, sparse: true },
-    ]),
+    (async () => {
+      // The original unique index was only `sparse`, and sparse indexes still index an explicit `null` — every
+      // freshly prepared LIVE trade has `signature: null`, so a second unsigned trade (the bot queues several per
+      // cycle) failed with E11000. Replace it with one that only covers real signatures.
+      await db.collection("trades").dropIndex("transaction_signature_unique").catch(() => {});
+      await idx("trades", [
+        { key: { userId: 1, createdAt: 1 }, name: "userId_createdAt" },
+        { key: { status: 1 }, name: "status" },
+        { key: { tokenId: 1 }, name: "tokenId" },
+        { key: { "transaction.signature": 1 }, name: "transaction_signature_string_unique", unique: true, partialFilterExpression: { "transaction.signature": { $type: "string" } } },
+      ]);
+    })(),
     idx("systemEvents", [
       { key: { ts: 1 }, name: "ts" },
       { key: { type: 1, ts: 1 }, name: "type_ts" },

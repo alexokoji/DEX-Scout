@@ -6,7 +6,8 @@ import { NOW_MIN } from "./helpers";
 
 describe("multi-chain support", () => {
   it("covers Solana and the major EVM chains", () => {
-    expect(CHAIN_IDS).toEqual(["solana", "ethereum", "base", "bsc", "arbitrum", "polygon"]);
+    expect(CHAIN_IDS.slice(0, 6)).toEqual(["solana", "ethereum", "base", "bsc", "arbitrum", "polygon"]);
+    expect(CHAIN_IDS.length).toBeGreaterThan(6);
     expect(CHAINS.base.evmChainId).toBe(8453);
     expect(CHAINS.solana.family).toBe("svm");
   });

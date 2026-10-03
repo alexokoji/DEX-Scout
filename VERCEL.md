@@ -33,7 +33,7 @@ second one just reports `"skipped: another run is still in progress"` instead of
 | `NEXT_PUBLIC_APP_URL` | your production URL, e.g. `https://dex-scout.vercel.app` |
 | `UPSTASH_REDIS_REST_URL` / `_TOKEN` | strongly recommended — serverless instances don't share memory, so the in-memory rate limiter doesn't actually limit anything across them (Vercel Marketplace has Upstash's free tier) |
 | `MONGODB_DB` | only needed if you want to override the database name baked into `MONGODB_URI` |
-| Real-data mode | `SOLANA_RPC_URL`, `NEXT_PUBLIC_SOLANA_RPC_URL`, EVM `*_RPC_URL`s, `DEX_PROVIDER_API_KEY`, `ZEROX_API_KEY`, `BIRDEYE_API_KEY`, `AI_API_KEY` (see `.env.example`) |
+| Real-data mode | `SOLANA_RPC_URL`, `NEXT_PUBLIC_SOLANA_RPC_URL`, EVM `<CHAIN>_RPC_URL`s, `DEX_PROVIDER_API_KEY`, `ZEROX_API_KEY` (only to trade on Ink/Mantle/Scroll/Blast/World/Abstract/Monad), `SCAN_CHAINS_PER_TICK`, `BIRDEYE_API_KEY`, `AI_API_KEY` (all optional; see `.env.example`) |
 | Live trading | `LIVE_TRADING_ENABLED=true` (only with `MOCK_PROVIDER=false`; read SECURITY.md first) |
 
 `NEXT_PUBLIC_*` values are exposed to the browser — never put secrets in them.

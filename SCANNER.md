@@ -10,6 +10,6 @@ Buy-time rules: hard safety limits (critical issues incl. liquidity < $10K, fail
 
 The shared scanner uses the **union envelope** of all users' filters so nobody's band is starved; each user's own filters are re-applied to signals at trade time. Discovered tokens are never truncated: every token is stored (rejected ones as `FILTERED`), and pages paginate server-side.
 
-Chains: Solana, Ethereum, Base, BNB Chain, Arbitrum, Polygon (per-user `Chains to scan` filter; the shared scanner scans the union).
+Chains: Solana plus 20 EVM chains (see `src/core/chains.ts`; per-user `Chains to scan` filter, the shared scanner scans the union). Each tick discovers only the next `SCAN_CHAINS_PER_TICK` (default 6) of them, round-robin from a cursor in `workerStates["scan-cursor"]`, so the cost per tick is constant however many chains are enabled and each chain is revisited every ceil(chains/6) ticks. DexScreener's global boost/profile lists are fetched once per 30s and shared across the chains of a tick.
 
 Providers: mock generates ~600 live tokens across all chains (a new launch every 3h on Solana, 6h elsewhere) (archetypes: pumper, steady, sleeper, dumper, rug, honeypot-like trap). Real: DexScreener profiles/boosts -> `tokens/v1/solana/{addresses}` (holders unknown), GeckoTerminal OHLCV.

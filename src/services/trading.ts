@@ -32,6 +32,13 @@ export const prepareTradeInput = z.object({
 export type PrepareTradeInput = z.infer<typeof prepareTradeInput>;
 
 const PREPARED_TTL_MS = 60_000;
+// A trade the BOT queued waits for the user to come and approve it, so it gets a real approval window. Staleness is
+// handled by refreshPreparedTrade (a fresh quote + transaction is built the moment the user clicks), not by a short TTL.
+const APPROVAL_TTL_MS = 15 * 60_000;
+// After refreshing, the user is about to sign; keep the window comfortably longer than a wallet prompt.
+const REFRESHED_TTL_MS = 5 * 60_000;
+// A signature for a trade that lapsed while the wallet prompt was open must still be recorded (see executeTrade).
+const LATE_SIGNATURE_GRACE_MS = 30 * 60_000;
 
 export async function getOrCreateAccount(userId: string, environment: Environment, session?: ClientSession) {
   const col = await collections.tradingAccounts();
@@ -188,7 +195,7 @@ export async function prepareTrade(userId: string, input: PrepareTradeInput, kin
     realizedPnlUsd: null,
     quote: { ...(quoteJson(quote) as object), signalId: input.signalId ?? null } as Json,
     failureReason: null,
-    expiresAt: new Date(Date.now() + PREPARED_TTL_MS),
+    expiresAt: new Date(Date.now() + (kind === "AUTO_ENTRY" ? APPROVAL_TTL_MS : PREPARED_TTL_MS)),
     createdAt: new Date(),
     executedAt: null,
     transaction: unsigned ? { chain: input.chain, signature: null, status: "PENDING", unsignedTx: unsigned, error: null, slot: null, submittedAt: null, confirmedAt: null, createdAt: new Date() } : null,
@@ -207,13 +214,78 @@ export async function executeTrade(userId: string, tradeId: string, opts: { sign
   const trades = await collections.trades();
   const trade = await trades.findOne({ _id: tradeId, userId });
   if (!trade) throw new TradeError("Trade not found", 404);
-  if (trade.status !== "PREPARED") throw new TradeError(`Trade is ${trade.status}, not executable`, 409);
-  if (trade.expiresAt && trade.expiresAt.getTime() < Date.now()) {
+  // A LIVE signature means the user's wallet ALREADY broadcast the transaction: it is on-chain and cannot be undone.
+  // Refusing to record it because our quote's TTL lapsed (or the bot cycle flipped the trade to EXPIRED) while the
+  // wallet prompt was open would leave a real, untracked position. So a signature is always recorded (within a
+  // grace window); reconcileLiveTrade still verifies the signer and the token movement on-chain before trusting it.
+  const lateSignature = trade.environment === "LIVE" && !!opts.signature && Date.now() - trade.createdAt.getTime() < LATE_SIGNATURE_GRACE_MS;
+  if (trade.status !== "PREPARED" && !(lateSignature && trade.status === "EXPIRED")) throw new TradeError(`Trade is ${trade.status}, not executable`, 409);
+  if (!lateSignature && trade.expiresAt && trade.expiresAt.getTime() < Date.now()) {
     await trades.updateOne({ _id: trade._id }, { $set: { status: "EXPIRED" } });
     throw new TradeError("Quote expired — request a new quote", 410);
   }
   assertEnvironment(trade.environment);
   return recordLiveSignature(userId, trade, opts.signature);
+}
+
+/**
+ * Rebuilds a queued trade's quote and UNSIGNED transaction right before the user signs it. A trade the bot queued
+ * minutes ago carries a stale quote and (on Solana) a stale blockhash, which wallets refuse or fail to simulate —
+ * that is why "Review & sign" could fail to open the wallet. Limits are re-validated against current conditions
+ * (hard safety limits only: the user is approving this one by hand), so a token that has since turned bad is
+ * refused instead of signed blind. Never signs or sends anything.
+ */
+export async function refreshPreparedTrade(userId: string, tradeId: string) {
+  assertEnvironment("LIVE");
+  const trades = await collections.trades();
+  const trade = await trades.findOne({ _id: tradeId, userId });
+  if (!trade) throw new TradeError("Trade not found", 404);
+  const recoverable = trade.status === "PREPARED" || (trade.status === "EXPIRED" && Date.now() - trade.createdAt.getTime() < LATE_SIGNATURE_GRACE_MS);
+  if (trade.environment !== "LIVE" || !recoverable || trade.transaction?.signature) throw new TradeError(`Trade is ${trade.status}; it can no longer be refreshed`, 409);
+
+  const token = await getToken(trade.tokenId);
+  const chain = token.chain as ChainId;
+  const wallet = await liveWallet(userId, token.chain);
+  const p = providers();
+
+  let quote: SwapQuote;
+  if (trade.side === "BUY") {
+    const q = await quoteTrade(userId, { chain, tokenAddress: token.address, amountUsd: trade.inputUsd, slippageBps: trade.slippageBps, environment: "LIVE" }, false);
+    if (q.violations.length) throw new TradeError("Trade no longer passes validation", 422, q.violations);
+    quote = q.quote;
+  } else {
+    try {
+      quote = await p.dex.getQuote({ chain, side: "SELL", tokenAddress: token.address, amountUsd: trade.inputUsd, tokenAmount: trade.tokenAmount, slippageBps: trade.slippageBps });
+    } catch (err) {
+      throw new TradeError(`Quote failed: ${safeMessage(err)}`, 502);
+    }
+  }
+  let unsigned: string;
+  try {
+    unsigned = (await p.dex.buildSwapTransaction(quote, wallet.address)).unsignedTxBase64;
+  } catch (err) {
+    throw new TradeError(`Could not build transaction: ${safeMessage(err)}`, 502);
+  }
+
+  const prev = (trade.quote ?? {}) as { signalId?: string | null; reason?: string; targetLevel?: number | null };
+  const expiresAt = new Date(Date.now() + REFRESHED_TTL_MS);
+  await trades.updateOne(
+    { _id: trade._id },
+    {
+      $set: {
+        status: "PREPARED",
+        expiresAt,
+        ...(trade.side === "BUY" ? { tokenAmount: quote.outputAmount } : {}),
+        priceUsd: quote.effectivePriceUsd,
+        priceImpactPct: quote.priceImpactPct,
+        feesUsd: quote.platformFeeUsd,
+        networkFeeUsd: quote.networkFeeUsd + quote.priorityFeeUsd,
+        quote: { ...(quoteJson(quote) as object), signalId: prev.signalId ?? null, ...(prev.reason ? { reason: prev.reason } : {}), ...(prev.targetLevel !== undefined ? { targetLevel: prev.targetLevel } : {}) } as Json,
+        "transaction.unsignedTx": unsigned,
+      },
+    },
+  );
+  return { tradeId: trade._id, unsignedTxBase64: unsigned, expiresAt, priceImpactPct: quote.priceImpactPct, side: trade.side, chain };
 }
 
 // ───────────────────────────── LIVE ─────────────────────────────

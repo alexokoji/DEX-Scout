@@ -49,6 +49,12 @@ export async function nativeUsd(chain: ChainId): Promise<number> {
   const hit = priceCache.get(chain);
   if (hit && Date.now() - hit.at < 60_000) return hit.usd;
   const meta = CHAINS[chain];
+  // L2s whose gas token is ETH have no deep wrapped-native market of their own to price from; reuse the L1 price.
+  if (meta.nativeUsdFrom) {
+    const usd = await nativeUsd(meta.nativeUsdFrom);
+    priceCache.set(chain, { at: Date.now(), usd });
+    return usd;
+  }
   try {
     const j = await getJson<{ pairs?: { chainId: string; priceUsd?: string; liquidity?: { usd?: number } }[] }>(`${env().MARKET_DATA_URL}/latest/dex/tokens/${meta.wrappedNative}`);
     const best = (j.pairs ?? []).filter((p) => p.chainId === meta.dexScreenerId).sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
@@ -226,7 +232,7 @@ export class ZeroXDexAdapter implements DexAdapter {
     const payload = {
       chainId: CHAINS[quote.chain].evmChainId,
       approval,
-      tx: { to: q.transaction.to, data: q.transaction.data, value: "0x" + BigInt(q.transaction.value || "0").toString(16), gas: q.transaction.gas },
+      tx: { to: q.transaction.to, data: q.transaction.data, value: "0x" + BigInt(q.transaction.value || "0").toString(16) }, // gas omitted: 0x returns decimal, wallets need hex; the wallet estimates
     };
     return { unsignedTxBase64: JSON.stringify(payload) };
   }

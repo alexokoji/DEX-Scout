@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { Input, Label, Select, Switch } from "@/components/ui/form";
-import { CHAIN_IDS, CHAINS } from "@/core/chains";
+import { CHAIN_IDS, CHAINS, hasFreeSwapRoute } from "@/core/chains";
 import { DEFAULT_TARGETS_MULTI, DEFAULT_TARGETS_SINGLE } from "@/core/config";
 import type { UserSettings } from "@/services/settings";
 
@@ -113,12 +113,13 @@ export function TradingSettingsForm({ initial, liveEnabled }: { initial: S; live
           <Num label="Min transactions (1h)" value={s.filters.minTxCount1h} step="1" onChange={(v) => setF("minTxCount1h", v)} />
           <Num label="Max price impact" hint="% at probe size" value={s.filters.maxPriceImpactPct} onChange={(v) => setF("maxPriceImpactPct", v)} />
           <div className="sm:col-span-full">
-            <Label>Chains to scan</Label>
+            <Label hint="scanning rotates through them, so adding chains never slows a scan">Chains to scan</Label>
             <div className="flex flex-wrap gap-3 text-xs">
               {CHAIN_IDS.map((c) => (
                 <label key={c} className="flex items-center gap-1.5">
                   <input type="checkbox" checked={s.filters.chains.includes(c)} onChange={(e) => setF("chains", e.target.checked ? [...s.filters.chains, c] : s.filters.chains.filter((x) => x !== c))} />
                   {CHAINS[c].name}
+                  {!hasFreeSwapRoute(c) && <span className="text-[10px] text-muted" title="Tokens here are scanned and scored, but swapping needs a (free-tier) 0x API key — see Integrations.">· scan only</span>}
                 </label>
               ))}
             </div>

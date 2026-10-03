@@ -81,7 +81,7 @@ class KyberAggregator implements Aggregator {
   async route(i: RouteInput): Promise<RouteOutput> {
     const qs = new URLSearchParams({ tokenIn: i.sellToken, tokenOut: i.buyToken, amountIn: i.sellAmount.toString() });
     const j = await getJson<{ data?: { routeSummary?: { amountOut: string; gasUsd?: string }; routerAddress?: string } }>(
-      `https://aggregator-api.kyberswap.com/${i.chain}/api/v1/routes?${qs}`, { headers: this.headers }, 12_000,
+      `https://aggregator-api.kyberswap.com/${CHAINS[i.chain].kyberSlug}/api/v1/routes?${qs}`, { headers: this.headers }, 12_000,
     );
     const r = j.data?.routeSummary;
     if (!r) throw new Error("no route");
@@ -90,7 +90,7 @@ class KyberAggregator implements Aggregator {
   async build(i: RouteInput, out: RouteOutput, user: string): Promise<BuiltTx> {
     const p = out.payload as { routeSummary: unknown; routerAddress?: string };
     const j = await getJson<{ data?: { data: string; routerAddress: string; transactionValue?: string; gas?: string } }>(
-      `https://aggregator-api.kyberswap.com/${i.chain}/api/v1/route/build`,
+      `https://aggregator-api.kyberswap.com/${CHAINS[i.chain].kyberSlug}/api/v1/route/build`,
       { method: "POST", headers: this.headers, body: JSON.stringify({ routeSummary: p.routeSummary, sender: user, recipient: user, slippageTolerance: i.slippageBps, source: CLIENT }) },
       12_000,
     );
@@ -120,10 +120,22 @@ export class MultiEvmDexAdapter implements DexAdapter {
   readonly kind = "LIVE" as const;
   private data = new DexScreenerDataProvider({ svm: async () => { throw new Error("not an SVM adapter"); }, evm: evmOnChain });
   private zerox = new ZeroXDexAdapter(); // only used for its key-less chain helpers, and as an optional first route
-  private aggregators: Aggregator[] = [new ParaswapAggregator(), new KyberAggregator()];
+  private all: Aggregator[] = [new ParaswapAggregator(), new KyberAggregator()];
+
+  /** Only the free aggregators that actually serve this chain (a 404 per request is wasted latency). */
+  private aggregatorsFor(chain: ChainId): Aggregator[] {
+    const m = CHAINS[chain];
+    return this.all.filter((a) => (a.name === "paraswap" ? m.paraswap : !!m.kyberSlug));
+  }
 
   async getQuote(req: QuoteRequest): Promise<SwapQuote> {
     const errors: string[] = [];
+    const aggregators = this.aggregatorsFor(req.chain);
+
+    if (!aggregators.length && !process.env.ZEROX_API_KEY) {
+      // Not a bug and not a block on scanning: these chains have no free aggregator route.
+      throw new Error(`Swaps on ${CHAINS[req.chain].name} need a 0x API key (the free tier works) — add ZEROX_API_KEY. Scanning and signals on this chain still work.`);
+    }
 
     if (process.env.ZEROX_API_KEY) {
       try {
@@ -150,7 +162,7 @@ export class MultiEvmDexAdapter implements DexAdapter {
       slippageBps: req.slippageBps,
     };
 
-    for (const agg of this.aggregators) {
+    for (const agg of aggregators) {
       try {
         const out = await agg.route(input);
         if (out.buyAmount <= BigInt(0)) throw new Error("zero output");
@@ -189,7 +201,7 @@ export class MultiEvmDexAdapter implements DexAdapter {
   async buildSwapTransaction(quote: SwapQuote, userAddress: string) {
     const raw = quote.raw as StoredRaw & { aggregator: string };
     if (raw.aggregator === "0x") return this.zerox.buildSwapTransaction(quote, userAddress);
-    const agg = this.aggregators.find((a) => a.name === raw.aggregator);
+    const agg = this.all.find((a) => a.name === raw.aggregator);
     if (!agg) throw new Error(`Unknown aggregator ${raw.aggregator}`);
     const input: RouteInput = { chain: quote.chain, sellToken: raw.sellToken, buyToken: raw.buyToken, sellAmount: BigInt(raw.sellAmount), sellDecimals: raw.sellDecimals, buyDecimals: raw.buyDecimals, slippageBps: raw.slippageBps };
     const out: RouteOutput = { buyAmount: BigInt(raw.buyAmount), networkFeeUsd: raw.networkFeeUsd, route: raw.route, payload: raw.payload };
@@ -201,7 +213,9 @@ export class MultiEvmDexAdapter implements DexAdapter {
     const payload = {
       chainId: CHAINS[quote.chain].evmChainId,
       approval,
-      tx: { to: tx.to, data: tx.data, value: "0x" + BigInt(tx.value || "0").toString(16), gas: tx.gas },
+      // gas deliberately omitted: aggregators return it as a decimal string and wallets require hex (they rejected it
+      // outright), and the wallet's own estimate is what the user sees and approves anyway.
+      tx: { to: tx.to, data: tx.data, value: "0x" + BigInt(tx.value || "0").toString(16) },
     };
     return { unsignedTxBase64: JSON.stringify(payload) };
   }

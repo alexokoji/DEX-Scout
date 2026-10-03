@@ -51,14 +51,22 @@ export function PendingApprovals() {
 
   async function approve(t: Pending) {
     const chain = t.token.chain as ChainId;
-    if (!t.unsignedTxBase64) return;
     if (!signer.ensureConnected(chain)) return;
     setBusy(t.id);
     try {
-      const signature = await signer.signAndSend(chain, t.unsignedTxBase64);
+      // A queued trade's quote and (on Solana) blockhash go stale while it waits, and wallets refuse or fail to
+      // simulate a stale transaction. Rebuild it fresh right now; this also re-checks it still passes the safety limits.
+      const fr = await fetch("/api/trades/refresh", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tradeId: t.id }) });
+      const fj = await fr.json();
+      if (!fr.ok) {
+        toast.error(fj.violations?.[0] ?? fj.error ?? "This trade can no longer be approved");
+        router.refresh();
+        return;
+      }
+      const signature = await signer.signAndSend(chain, fj.unsignedTxBase64 as string);
       const r = await fetch("/api/trades/execute", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tradeId: t.id, signature }) });
       const j = await r.json();
-      if (!r.ok) toast.error(j.error ?? "Failed to record transaction");
+      if (!r.ok) toast.error(`Your wallet sent the transaction (${signature.slice(0, 10)}…) but recording it failed: ${j.error ?? "unknown error"}. Check your wallet's activity before retrying.`);
       else toast.success("Submitted — awaiting confirmation");
       router.refresh();
     } catch (e) {

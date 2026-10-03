@@ -1,10 +1,13 @@
 import type { AnyBulkWriteOperation } from "mongodb";
+import { CHAIN_IDS } from "@/core/chains";
 import { DEFAULT_FILTERS } from "@/core/config";
 import { withTimeout } from "@/core/providers/http";
 import { providers } from "@/core/providers/registry";
 import { applyFilters, mergeFilters } from "@/core/scanner/filter";
-import type { ScannerFilters, TokenSnapshot } from "@/core/types";
+import { pickRotation } from "@/core/scanner/rotation";
+import type { ChainId, ScannerFilters, TokenSnapshot } from "@/core/types";
 import { collections, newId } from "@/lib/db";
+import { env } from "@/lib/env";
 import { logEvent, safeMessage } from "@/lib/events";
 import type { LiquidityPoolDoc, TokenDoc, TokenMetricDoc, TokenStage, PriceSnapshotDoc, VolumeSnapshotDoc } from "@/lib/models";
 import { allUserFilters } from "./settings";
@@ -54,18 +57,40 @@ function tokenSet(s: TokenSnapshot, passed: boolean, stage: TokenStage) {
   };
 }
 
-export async function runScanCycle(): Promise<ScanResult> {
+const CURSOR_ID = "scan-cursor";
+
+/**
+ * Which of the enabled chains to discover on this tick. GeckoTerminal is paced (~one call per 2.2s, process-wide), so
+ * discovering every chain every tick costs more the more chains exist. Instead each tick takes the next `perTick`
+ * chains from a cursor persisted in workerStates, so the cost per tick is constant and every chain still comes round.
+ * The cursor is only advanced by the (leased) scan job, so there is a single writer.
+ */
+export async function chainsForThisTick(enabled: ChainId[], perTick: number): Promise<{ chains: ChainId[]; of: number }> {
+  const ordered = CHAIN_IDS.filter((c) => enabled.includes(c));
+  if (perTick <= 0 || ordered.length <= perTick) return { chains: ordered, of: ordered.length };
+  const states = await collections.workerStates();
+  const row = await states.findOne({ _id: CURSOR_ID });
+  const stored = (row?.stats as { cursor?: unknown } | null)?.cursor;
+  const cursor = typeof stored === "number" ? stored : 0;
+  const { picked, next } = pickRotation(ordered, cursor, perTick);
+  const now = new Date();
+  await states.updateOne({ _id: CURSOR_ID }, { $set: { stats: { cursor: next }, updatedAt: now, lastRunAt: now }, $setOnInsert: { leaseUntil: null, lastError: null, runs: 0 } }, { upsert: true });
+  return { chains: picked, of: ordered.length };
+}
+
+export async function runScanCycle(opts: { chainsPerTick?: number } = {}): Promise<ScanResult> {
   const started = Date.now();
   const p = providers();
   await logEvent({ type: "SCANNER_STARTED", source: "scanner", level: "DEBUG", message: `Scan started (${p.data.name})` });
   try {
     const filters = await resolveScanFilters();
+    const tick = await chainsForThisTick(filters.chains, opts.chainsPerTick ?? env().SCAN_CHAINS_PER_TICK);
     // Each chain is capped independently so one slow/misbehaving chain (a provider outage, a retry
     // cascade) contributes zero tokens for this tick instead of holding up every other chain's discovery
     // — and, transitively, the whole serverless request's 60s budget (see withTimeout's docstring).
     const snaps = (
       await Promise.all(
-        filters.chains.map((c) =>
+        tick.chains.map((c) =>
           withTimeout(p.data.discover(c), 20_000, `discover(${c})`).catch(async (err) => {
             await logEvent({ type: "PROVIDER_ERROR", source: "scanner", level: "WARN", message: `Discovery timed out or failed for ${c}: ${safeMessage(err)}` });
             return [] as TokenSnapshot[];
@@ -173,10 +198,10 @@ export async function runScanCycle(): Promise<ScanResult> {
       type: "SCANNER_COMPLETED",
       source: "scanner",
       level: "DEBUG",
-      message: `Scanned ${snaps.length} tokens: ${passed} passed filters, ${filtered} filtered`,
-      data: { ...result },
+      message: `Scanned ${snaps.length} tokens on ${tick.chains.join(", ")}: ${passed} passed filters, ${filtered} filtered`,
+      data: { ...result, chains: tick.chains, chainsEnabled: tick.of },
     });
-    await touchWorker("scanner-worker", null, { ...result });
+    await touchWorker("scanner-worker", null, { ...result, chains: tick.chains, chainsEnabled: tick.of });
     return result;
   } catch (err) {
     const msg = safeMessage(err);
