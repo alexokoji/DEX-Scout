@@ -102,7 +102,7 @@ export function TradingSettingsForm({ initial, liveEnabled }: { initial: S; live
       </Card>
 
       <Card>
-        <CardHeader title="Scanner filters" sub="Defaults: $1M–$10M market cap, $100K liquidity, $50K 24h volume. All configurable." />
+        <CardHeader title="Scanner filters" sub="Defaults: $250K–$25M market cap, $20K liquidity, $10K 24h volume. All configurable." />
         <CardBody className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <Num label="Min market cap" hint="USD" value={s.filters.minMarketCapUsd} onChange={(v) => setF("minMarketCapUsd", v)} err={errors["filters.minMarketCapUsd"]} />
           <Num label="Max market cap" hint="USD" value={s.filters.maxMarketCapUsd} onChange={(v) => setF("maxMarketCapUsd", v)} />

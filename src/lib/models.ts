@@ -91,6 +91,8 @@ export interface TradingSettingsDoc {
   weights: ScoreWeights;
   targets: ProfitTargetConfig[];
   activeStrategyId: string | null;
+  /** Bumped when default gate values change; see migrateSettings in services/settings.ts. */
+  settingsVersion?: number;
   updatedAt: Date;
 }
 

@@ -9,7 +9,9 @@ import type { Json } from "@/lib/models";
 import { loadAnalysis } from "./analysis";
 import { touchWorker } from "./workerState";
 
-const ANALYSIS_MAX_AGE_MS = 10 * 60_000;
+// Analyses are refreshed in small batches (and a just-attempted token is cooled down for 10 minutes), so a
+// 10-minute limit here meant most analyses had aged out before this cycle looked at them and signals starved.
+const ANALYSIS_MAX_AGE_MS = 45 * 60_000;
 
 export function toAiInput(a: Analysis, type: SignalDraft["type"], strategySummary: string): AiInput {
   const s = a.snapshot;

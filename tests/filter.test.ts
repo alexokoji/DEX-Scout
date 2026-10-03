@@ -8,11 +8,16 @@ describe("token filtering", () => {
     expect(applyFilters(makeSnapshot(), DEFAULT_FILTERS).passed).toBe(true);
   });
 
-  it("filters by market cap in both directions (defaults $1M–$10M)", () => {
-    expect(applyFilters(makeSnapshot({ marketCapUsd: 999_999 }), DEFAULT_FILTERS).reasons).toContain("Market cap below minimum");
-    expect(applyFilters(makeSnapshot({ marketCapUsd: 10_000_001 }), DEFAULT_FILTERS).reasons).toContain("Market cap above maximum");
-    expect(applyFilters(makeSnapshot({ marketCapUsd: 1_000_000 }), DEFAULT_FILTERS).passed).toBe(true);
-    expect(applyFilters(makeSnapshot({ marketCapUsd: 10_000_000 }), DEFAULT_FILTERS).passed).toBe(true);
+  it("filters by market cap in both directions (defaults $250k–$25M)", () => {
+    expect(applyFilters(makeSnapshot({ marketCapUsd: 249_999 }), DEFAULT_FILTERS).reasons).toContain("Market cap below minimum");
+    expect(applyFilters(makeSnapshot({ marketCapUsd: 25_000_001 }), DEFAULT_FILTERS).reasons).toContain("Market cap above maximum");
+    expect(applyFilters(makeSnapshot({ marketCapUsd: 250_000 }), DEFAULT_FILTERS).passed).toBe(true);
+    expect(applyFilters(makeSnapshot({ marketCapUsd: 25_000_000 }), DEFAULT_FILTERS).passed).toBe(true);
+  });
+
+  it("no longer excludes established tokens by age by default", () => {
+    const old = makeSnapshot({ poolCreatedAt: new Date(Date.now() - 400 * 24 * 3_600_000) });
+    expect(applyFilters(old, DEFAULT_FILTERS).passed).toBe(true);
   });
 
   it("market-cap band is configurable", () => {
@@ -22,11 +27,11 @@ describe("token filtering", () => {
   });
 
   it("filters by liquidity, volume, holders, age, tx count", () => {
-    expect(applyFilters(makeSnapshot({ liquidityUsd: 50_000 }), DEFAULT_FILTERS).reasons).toContain("Liquidity below minimum");
-    expect(applyFilters(makeSnapshot({ volume24h: 10_000 }), DEFAULT_FILTERS).reasons).toContain("24h volume below minimum");
+    expect(applyFilters(makeSnapshot({ liquidityUsd: 10_000 }), DEFAULT_FILTERS).reasons).toContain("Liquidity below minimum");
+    expect(applyFilters(makeSnapshot({ volume24h: 5_000 }), DEFAULT_FILTERS).reasons).toContain("24h volume below minimum");
     expect(applyFilters(makeSnapshot({ holders: 10 }), DEFAULT_FILTERS).reasons).toContain("Holder count below minimum");
-    expect(applyFilters(makeSnapshot({ poolCreatedAt: new Date(Date.now() - 90 * 24 * 3_600_000) }), DEFAULT_FILTERS).reasons).toContain("Token older than maximum age");
-    expect(applyFilters(makeSnapshot({ buys1h: 5, sells1h: 5 }), DEFAULT_FILTERS).reasons).toContain("Transaction count below minimum");
+    expect(applyFilters(makeSnapshot({ poolCreatedAt: new Date(Date.now() - 90 * 24 * 3_600_000) }), { ...DEFAULT_FILTERS, maxTokenAgeHours: 24 * 30 }).reasons).toContain("Token older than maximum age");
+    expect(applyFilters(makeSnapshot({ buys1h: 3, sells1h: 3 }), DEFAULT_FILTERS).reasons).toContain("Transaction count below minimum");
   });
 
   it("unknown holder counts (-1) are not penalised", () => {
@@ -46,8 +51,8 @@ describe("token filtering", () => {
 
   it("merging filters yields the union envelope", () => {
     const m = mergeFilters([DEFAULT_FILTERS, { ...DEFAULT_FILTERS, minMarketCapUsd: 500_000, maxMarketCapUsd: 5_000_000 }])!;
-    expect(m.minMarketCapUsd).toBe(500_000);
-    expect(m.maxMarketCapUsd).toBe(10_000_000);
+    expect(m.minMarketCapUsd).toBe(250_000); // the lower of the two minimums
+    expect(m.maxMarketCapUsd).toBe(25_000_000); // the higher of the two maximums
   });
 
   it("does not cap how many mock tokens the discovery emits or how many pass", () => {

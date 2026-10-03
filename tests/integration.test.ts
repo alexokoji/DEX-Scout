@@ -43,7 +43,7 @@ d("scanner, analysis and signal engine", () => {
     for (const t of passing) {
       expect(t.safety).not.toBeNull();
       expect(t.analysis).not.toBeNull();
-      expect(t.marketCapUsd).toBeGreaterThanOrEqual(1_000_000 - 1);
+      expect(t.marketCapUsd).toBeGreaterThanOrEqual(250_000 - 1);
     }
   });
 
@@ -131,6 +131,35 @@ d("scanner, analysis and signal engine", () => {
  * `getTransactionStatus`, then let every other step (Mongo transactions, capital accounting, signal
  * consumption, profit targets, the no-stop-loss guarantee) run for real.
  */
+d("settings migration to v2 gate defaults", () => {
+  it("moves gates still at the old strict defaults, preserves ones the user customised, and runs once", async () => {
+    const { getSettings, defaultSettingsDoc } = await import("@/services/settings");
+    const col = await collections.tradingSettings();
+    const userId = newId();
+    // an account created before v2: explicit old defaults stored, no settingsVersion, but one deliberate customisation
+    const legacy = defaultSettingsDoc(userId);
+    delete legacy.settingsVersion;
+    Object.assign(legacy, { minLiquidityUsd: 100_000, minVolume24hUsd: 50_000, maxPriceImpactPct: 2, minOpportunityScore: 70 });
+    legacy.filters = { ...legacy.filters, minMarketCapUsd: 1_000_000, maxMarketCapUsd: 10_000_000, minLiquidityUsd: 100_000, minVolume24hUsd: 50_000, minHolders: 300, maxTokenAgeHours: 720, minTxCount1h: 50, maxPriceImpactPct: 7 };
+    try {
+      await col.insertOne(legacy);
+      const migrated = await getSettings(userId);
+      expect(migrated.minLiquidityUsd).toBe(20_000);
+      expect(migrated.minVolume24hUsd).toBe(10_000);
+      expect(migrated.filters.minMarketCapUsd).toBe(250_000);
+      expect(migrated.filters.maxMarketCapUsd).toBe(25_000_000);
+      expect(migrated.filters.maxTokenAgeHours).toBeNull();
+      expect(migrated.filters.maxPriceImpactPct).toBe(7); // the user's own value, not an old default -> untouched
+
+      // a later manual change back to a "v1-looking" value must stick (migration already ran for this account)
+      await col.updateOne({ userId }, { $set: { minLiquidityUsd: 100_000 } });
+      expect((await getSettings(userId)).minLiquidityUsd).toBe(100_000);
+    } finally {
+      await col.deleteMany({ userId });
+    }
+  });
+});
+
 d("LIVE trading: server-enforced gates and on-chain-confirmation bookkeeping", () => {
   let userId = "";
   let firstPositionId = "";

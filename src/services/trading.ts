@@ -4,7 +4,7 @@ import { FEES } from "@/core/config";
 import { providers } from "@/core/providers/registry";
 import { checkManualAmount, type CapitalState } from "@/core/trading/capital";
 import { applySell, deriveStatus } from "@/core/trading/positions";
-import { validateEntry, validateSlippage } from "@/core/trading/validation";
+import { entryWarnings, validateEntry, validateSlippage, type TradeCandidate } from "@/core/trading/validation";
 import type { Analysis, ChainId, ProfitTargetConfig, SwapQuote } from "@/core/types";
 import { collections, newId, withId, withUserLock, type ClientSession } from "@/lib/db";
 import { liveTradingAllowed } from "@/lib/env";
@@ -114,17 +114,29 @@ export async function quoteTrade(userId: string, input: PrepareTradeInput, autom
   const analysis = await ensureAnalysis(withId(token));
   const sim = await p.dex.simulateSwap({ chain: input.chain, side: "SELL", tokenAddress: token.address, amountUsd: input.amountUsd, slippageBps: input.slippageBps });
   const state = await capitalState(userId, input.environment);
-  const violations = evaluateEntryRules(settings, state, input, analysis, quote, sim.ok, automatic);
-  return { quote, violations, analysis: { riskLevel: analysis.safety.riskLevel, warnings: analysis.safety.warnings, criticalIssues: analysis.safety.criticalIssues }, source: p.mock ? ("MOCK" as const) : ("LIVE" as const) };
+  const candidate = toCandidate(analysis, quote, sim.ok);
+  const violations = evaluateEntryRules(settings, state, input, candidate, automatic);
+  // manual buys get the user's own preference thresholds as warnings; only the bot is blocked by them
+  const warnings = automatic ? [] : entryWarnings(candidate, settings);
+  return { quote, violations, warnings, analysis: { riskLevel: analysis.safety.riskLevel, warnings: analysis.safety.warnings, criticalIssues: analysis.safety.criticalIssues }, source: p.mock ? ("MOCK" as const) : ("LIVE" as const) };
+}
+
+function toCandidate(analysis: Analysis, quote: SwapQuote, sellSimOk: boolean): TradeCandidate {
+  return {
+    liquidityUsd: analysis.snapshot.liquidityUsd,
+    volume24hUsd: analysis.snapshot.volume24h,
+    opportunityScore: analysis.opportunity.score,
+    safety: analysis.safety,
+    quote,
+    sellSimulationOk: sellSimOk && analysis.onchainRaw.sellSimulationOk,
+  };
 }
 
 function evaluateEntryRules(
   settings: UserSettings,
   state: CapitalState,
   input: PrepareTradeInput,
-  analysis: Analysis,
-  quote: SwapQuote,
-  sellSimOk: boolean,
+  candidate: TradeCandidate,
   automatic: boolean,
 ): string[] {
   const v: string[] = [];
@@ -132,20 +144,7 @@ function evaluateEntryRules(
   if (slipErr) v.push(slipErr);
   const capErr = checkManualAmount(settings, state, input.amountUsd);
   if (capErr) v.push(capErr);
-  v.push(
-    ...validateEntry(
-      {
-        liquidityUsd: analysis.snapshot.liquidityUsd,
-        volume24hUsd: analysis.snapshot.volume24h,
-        opportunityScore: analysis.opportunity.score,
-        safety: analysis.safety,
-        quote,
-        sellSimulationOk: sellSimOk && analysis.onchainRaw.sellSimulationOk,
-      },
-      settings,
-      { automatic },
-    ),
-  );
+  v.push(...validateEntry(candidate, settings, { automatic }));
   return v;
 }
 

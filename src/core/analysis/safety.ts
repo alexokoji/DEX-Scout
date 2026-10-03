@@ -1,3 +1,4 @@
+import { CHAINS } from "../chains";
 import type { OnChainRaw, RiskLevel, SafetyResult, TokenSnapshot } from "../types";
 import { constantProductImpactPct } from "../trading/quoteMath";
 
@@ -32,8 +33,20 @@ export function assessSafety(snap: TokenSnapshot, raw: OnChainRaw): SafetyResult
     score += pts;
   };
 
-  if (!raw.mintAuthorityRevoked) warn("Mint authority is not revoked — supply can be inflated", 18);
-  if (!raw.freezeAuthorityRevoked) warn("Freeze authority is not revoked — token accounts can be frozen", 12);
+  // A failed RPC lookup is "unknown", not "authority still active". Scoring placeholders as findings used to
+  // stack ~+38 risk points on every token whose public-RPC call merely timed out, pushing otherwise fine
+  // tokens over the safety cutoff — so unverifiable data now costs one small, clearly-labelled penalty.
+  const onchainKnown = raw.dataAvailable !== false;
+  if (!onchainKnown) {
+    warn("On-chain authority/holder checks were unavailable (RPC timeout) — treat as unverified", 6);
+  } else if (CHAINS[snap.chain]?.family === "evm") {
+    // For EVM the only signal is whether the contract owner is renounced; an active owner is common on
+    // legitimate tokens and doesn't distinguish mint vs. freeze power, so it is one moderate warning.
+    if (!raw.mintAuthorityRevoked) warn("Contract owner is not renounced — owner can change token parameters", 10);
+  } else {
+    if (!raw.mintAuthorityRevoked) warn("Mint authority is not revoked — supply can be inflated", 18);
+    if (!raw.freezeAuthorityRevoked) warn("Freeze authority is not revoked — token accounts can be frozen", 12);
+  }
   if (!raw.verified) warn("Token is not verified by any tracked list", 4);
 
   if (!raw.poolActive) crit("Liquidity pool is inactive or removed", 60);
@@ -48,12 +61,14 @@ export function assessSafety(snap: TokenSnapshot, raw: OnChainRaw): SafetyResult
     else if (drop >= 30) warn(`Liquidity dropped ${drop.toFixed(0)}% in the last hour`, 15);
   }
 
-  if (raw.topHolderPct >= 35) crit(`Single holder controls ${raw.topHolderPct.toFixed(1)}% of supply`, 25);
+  if (!onchainKnown) {
+    /* holder concentration unknown — already penalised once above */
+  } else if (raw.topHolderPct >= 35) crit(`Single holder controls ${raw.topHolderPct.toFixed(1)}% of supply`, 25);
   else if (raw.topHolderPct >= 20) warn(`Top holder controls ${raw.topHolderPct.toFixed(1)}% of supply`, 12);
   if (raw.top10HolderPct >= 80) warn(`Top 10 holders control ${raw.top10HolderPct.toFixed(0)}% of supply`, 18);
   else if (raw.top10HolderPct >= 60) warn(`Top 10 holders control ${raw.top10HolderPct.toFixed(0)}% of supply`, 8);
 
-  for (const a of raw.metadataAnomalies) warn(a, 8);
+  if (onchainKnown) for (const a of raw.metadataAnomalies) warn(a, 8);
 
   if (raw.suspiciousTxRatio >= 0.5) crit("Majority of transactions look bot/wash-like", 25);
   else if (raw.suspiciousTxRatio >= 0.3) warn("Elevated share of suspicious (bot/wash-like) transactions", 15);

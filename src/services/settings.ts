@@ -87,11 +87,11 @@ function hydrate(row: TradingSettingsDoc): UserSettings {
   };
 }
 
-export async function getSettings(userId: string): Promise<UserSettings> {
-  const col = await collections.tradingSettings();
-  const existing = await col.findOne({ userId });
-  if (existing) return hydrate(existing);
-  const doc: TradingSettingsDoc = {
+export const SETTINGS_VERSION = 2;
+
+/** The one place new accounts' settings come from (registration and lazy creation both use it). */
+export function defaultSettingsDoc(userId: string, now = new Date()): TradingSettingsDoc {
+  return {
     _id: newId(),
     userId,
     environment: "MANUAL",
@@ -101,10 +101,10 @@ export async function getSettings(userId: string): Promise<UserSettings> {
     minPositionUsd: 5,
     maxOpenPositions: 10,
     maxDeployedUsd: 100,
-    minOpportunityScore: 70,
-    minLiquidityUsd: 100_000,
-    minVolume24hUsd: 50_000,
-    maxPriceImpactPct: 2,
+    minOpportunityScore: 55,
+    minLiquidityUsd: 20_000,
+    minVolume24hUsd: 10_000,
+    maxPriceImpactPct: 3,
     maxSlippageBps: 300,
     maxAllowedRisk: "MODERATE",
     targetsMode: "MULTI",
@@ -116,8 +116,38 @@ export async function getSettings(userId: string): Promise<UserSettings> {
     weights: scoreWeightsSchema.parse({}),
     targets: DEFAULT_TARGETS_MULTI,
     activeStrategyId: null,
-    updatedAt: new Date(),
+    settingsVersion: SETTINGS_VERSION,
+    updatedAt: now,
   };
+}
+
+/** The v1 defaults that turned out to block nearly every token. Only values still equal to these get moved. */
+const V1_TOP = { minOpportunityScore: 70, minLiquidityUsd: 100_000, minVolume24hUsd: 50_000, maxPriceImpactPct: 2 } as const;
+const V1_FILTERS = { minMarketCapUsd: 1_000_000, maxMarketCapUsd: 10_000_000, minLiquidityUsd: 100_000, minVolume24hUsd: 50_000, minHolders: 300, maxTokenAgeHours: 24 * 30, minTxCount1h: 50 } as const;
+
+/**
+ * Accounts created before v2 hold the old, overly strict gates as explicit stored values, so changing the code
+ * defaults alone would never reach them. Move any gate still sitting exactly at its v1 default to the v2 default;
+ * anything the user changed on purpose is left alone. Runs once per account (settingsVersion is persisted).
+ */
+async function migrateSettings(row: TradingSettingsDoc): Promise<TradingSettingsDoc> {
+  if ((row.settingsVersion ?? 1) >= SETTINGS_VERSION) return row;
+  const fresh = defaultSettingsDoc(row.userId);
+  const set: Record<string, unknown> = { settingsVersion: SETTINGS_VERSION };
+  for (const k of Object.keys(V1_TOP) as (keyof typeof V1_TOP)[]) if (row[k] === V1_TOP[k]) set[k] = fresh[k];
+  for (const k of Object.keys(V1_FILTERS) as (keyof typeof V1_FILTERS)[]) {
+    if (row.filters?.[k] === V1_FILTERS[k]) set[`filters.${k}`] = fresh.filters[k];
+  }
+  const col = await collections.tradingSettings();
+  await col.updateOne({ _id: row._id }, { $set: set });
+  return (await col.findOne({ _id: row._id })) ?? row;
+}
+
+export async function getSettings(userId: string): Promise<UserSettings> {
+  const col = await collections.tradingSettings();
+  const existing = await col.findOne({ userId });
+  if (existing) return hydrate(await migrateSettings(existing));
+  const doc = defaultSettingsDoc(userId);
   try {
     await col.insertOne(doc);
   } catch (err) {
@@ -143,6 +173,9 @@ export async function updateSettings(userId: string, input: TradingSettingsInput
 
 export async function allUserFilters(): Promise<ScannerFilters[]> {
   const col = await collections.tradingSettings();
-  const rows = await col.find({}, { projection: { filters: 1 } }).toArray();
-  return rows.map((r) => scannerFiltersSchema.parse(r.filters ?? {}));
+  const rows = await col.find({}).toArray();
+  // The scanner reads filters here rather than through getSettings, so migrate stale rows here too —
+  // otherwise it would keep scanning with the old strict bands until that user next opened the app.
+  const migrated = await Promise.all(rows.map((r) => migrateSettings(r)));
+  return migrated.map((r) => scannerFiltersSchema.parse(r.filters ?? {}));
 }

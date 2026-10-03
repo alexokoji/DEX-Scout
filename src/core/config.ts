@@ -3,13 +3,17 @@ import { CHAIN_IDS } from "./chains";
 import type { ProfitTargetConfig, ScannerFilters, ScoreWeights } from "./types";
 
 export const scannerFiltersSchema = z.object({
-  minMarketCapUsd: z.number().min(0).default(1_000_000),
-  maxMarketCapUsd: z.number().min(0).default(10_000_000),
-  minLiquidityUsd: z.number().min(0).default(100_000),
-  minVolume24hUsd: z.number().min(0).default(50_000),
-  minHolders: z.number().int().min(0).default(300),
-  maxTokenAgeHours: z.number().min(0).nullable().default(24 * 30),
-  minTxCount1h: z.number().int().min(0).default(50),
+  // Defaults were $1M-$10M cap / $100k liquidity / $50k volume / 300 holders / 50 tx per hour / 30-day age
+  // cap, which in practice passed ~2 of ~160 discovered tokens (and the age cap silently excluded every
+  // established token). These still screen out dust and dead pools, but leave a workable universe; a
+  // trade's own price-impact check (not an absolute pool-size floor) is what protects a given position size.
+  minMarketCapUsd: z.number().min(0).default(250_000),
+  maxMarketCapUsd: z.number().min(0).default(25_000_000),
+  minLiquidityUsd: z.number().min(0).default(20_000),
+  minVolume24hUsd: z.number().min(0).default(10_000),
+  minHolders: z.number().int().min(0).default(50),
+  maxTokenAgeHours: z.number().min(0).nullable().default(null),
+  minTxCount1h: z.number().int().min(0).default(15),
   maxPriceImpactPct: z.number().min(0).max(100).default(3),
   priceImpactProbeUsd: z.number().min(1).default(100),
   dexes: z.array(z.string()).default([]),
@@ -31,8 +35,15 @@ export const scoreWeightsSchema = z.object({
 export const DEFAULT_FILTERS: ScannerFilters = scannerFiltersSchema.parse({});
 export const DEFAULT_WEIGHTS: ScoreWeights = scoreWeightsSchema.parse({});
 
-/** Minimum opportunity score for a BUY (vs WATCH) signal. */
-export const SIGNAL_THRESHOLDS = { buy: 70, watch: 60 } as const;
+/**
+ * Minimum opportunity score for a BUY (vs WATCH) signal. The score is calibrated so an ordinary, balanced
+ * market scores ~50 (measured on live data: real tokens land at roughly 47-60, best ~59), so the old 70/60
+ * cut-offs sat above every real token and produced zero signals. WATCH = "worth a look", BUY = the top tier
+ * of what the market is actually offering. Both still require a passing safety screen, and a BUY additionally
+ * needs an acceptable risk level and a trend that isn't down or overextended. Every trade — manual or the
+ * bot's — still needs the user's own wallet signature, so a lower bar widens the list, not anyone's authority.
+ */
+export const SIGNAL_THRESHOLDS = { buy: 56, watch: 50 } as const;
 
 /** How long a generated signal stays actionable. */
 export const SIGNAL_TTL_MINUTES = 90;

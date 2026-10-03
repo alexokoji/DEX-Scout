@@ -173,8 +173,14 @@ export class DexScreenerDataProvider implements TokenDataProvider {
   /** Independent, free/public discovery source: freshly created pools on GeckoTerminal, per chain. */
   private async discoverGeckoTerminal(chain: ChainId): Promise<TokenSnapshot[]> {
     const network = CHAINS[chain].geckoId;
+    // Same one-call-per-chain cost as before, but rotated: `new_pools` is almost entirely brand-new micro-cap
+    // pools (sub-$10k liquidity) that can never clear a real market-cap/liquidity band, so on its own it
+    // starved the app of tradeable tokens. `trending_pools` surfaces established tokens with real liquidity
+    // and volume (observed: $5M-$60M caps, $0.7M-$4M liquidity), so it runs on two of every three ticks and
+    // `new_pools` on the third to keep early-stage discovery alive.
+    const endpoint = Math.floor(Date.now() / 60_000) % 3 === 0 ? "new_pools" : "trending_pools";
     const j = await geckoFetch<{ data: GtPool[]; included?: GtToken[] }>(
-      `https://api.geckoterminal.com/api/v2/networks/${network}/new_pools?include=base_token&page=1`,
+      `https://api.geckoterminal.com/api/v2/networks/${network}/${endpoint}?include=base_token&page=1`,
     );
     const tokenById = new Map((j.included ?? []).map((t) => [t.id, t.attributes]));
     const out: TokenSnapshot[] = [];

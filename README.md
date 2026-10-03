@@ -2,7 +2,7 @@
 
 Multi-chain low-cap DEX scanner, signal engine and live trading platform. Supports **Solana, Ethereum, Base, BNB Chain, Arbitrum and Polygon**; chain metadata lives in one file (`src/core/chains.ts`) so more chains are additive.
 
-- **Scanner** continuously discovers tokens (default band **$1M-$10M market cap**, fully configurable, no cap on results).
+- **Scanner** continuously discovers tokens (default band **$250K-$25M market cap**, fully configurable, no cap on results).
 - **Safety + market + on-chain analysis** produce a 0-100 *opportunity score* (an analytical ranking, **not** a probability of profit) and lower/moderate/high/critical **risk levels** (never "safe").
 - **Signals** (BUY / WATCH) with entry zone, three targets, reasons, warnings, expiry and a Zod-validated AI interpretation.
 - **Wallets**: Solana (Phantom, Solflare, Backpack via Wallet Standard) and EVM (MetaMask, Rabby, Coinbase Wallet, any injected wallet) - both signature-verified, non-custodial.

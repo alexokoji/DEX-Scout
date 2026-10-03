@@ -82,6 +82,7 @@ export async function solanaOnChain(_chain: ChainId, address: string, snapshot: 
   let freezeRevoked = false;
   let topHolderPct = 0;
   let top10 = 0;
+  let dataAvailable = true;
   try {
     const info = await withTimeout(c.getParsedAccountInfo(mint), SOLANA_RPC_TIMEOUT_MS);
     const parsed = (info.value?.data as { parsed?: { info?: { mintAuthority: string | null; freezeAuthority: string | null } } })?.parsed?.info;
@@ -94,7 +95,7 @@ export async function solanaOnChain(_chain: ChainId, address: string, snapshot: 
     topHolderPct = amounts[0] ?? 0;
     top10 = amounts.slice(0, 10).reduce((a, b) => a + b, 0);
   } catch {
-    anomalies.push("On-chain authority/holder data unavailable from RPC");
+    dataAvailable = false; // unknown, not "authority active" — assessSafety scores this separately
   }
   const buyShare = snapshot.buys1h / Math.max(1, snapshot.buys1h + snapshot.sells1h);
   return {
@@ -114,6 +115,7 @@ export async function solanaOnChain(_chain: ChainId, address: string, snapshot: 
     liquidityRemovedUsd1h: 0,
     suspiciousTxRatio: 0,
     poolActive: snapshot.liquidityUsd > 0,
+    dataAvailable,
   };
 }
 

@@ -43,10 +43,13 @@ export function scoreOpportunity(
     volume: ["Volume", c01(0.6 * Math.min(1, turnover / 0.4) + 0.4 * Math.min(1, Math.max(0, spike - 1) / 2))],
     momentum: ["Momentum", c01((market.priceMomentum + 1) / 2 - (market.overextended ? 0.25 : 0))],
     buySellPressure: ["Buy/Sell Pressure", c01((market.buySellRatio - 0.8) / 1.2)],
-    priceStructure: ["Price Structure", market.structureScore],
+    // structureScore is built entirely from candle indicators. With no candles (a rate-limited or slow candle
+    // fetch is routine) it bottoms out at a flat 0.15, which scored "no information" as "bad structure" and
+    // quietly cost every such token several points. No indicators -> neutral.
+    priceStructure: ["Price Structure", market.indicators.ema21 === null ? 0.5 : market.structureScore],
     holderGrowth: [
       "Holder Growth",
-      holdersKnown ? c01(0.3 + (onchain.holderGrowthPct1h >= 0 ? onchain.holderGrowthPct1h / 5 : onchain.holderGrowthPct1h / 15) * 0.7) : 0.4,
+      holdersKnown ? c01(0.3 + (onchain.holderGrowthPct1h >= 0 ? onchain.holderGrowthPct1h / 5 : onchain.holderGrowthPct1h / 15) * 0.7) : 0.5,
     ],
     txActivity: ["Transaction Activity", c01(0.6 * Math.min(1, tx1h / 400) + 0.4 * ((market.txMomentum + 1) / 2))],
     tokenAge: ["Token Age", ageValue(ageHours)],

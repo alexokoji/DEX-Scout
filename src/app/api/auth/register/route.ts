@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { DEFAULT_FILTERS, DEFAULT_TARGETS_MULTI, DEFAULT_WEIGHTS } from "@/core/config";
 import { errorResponse, parseBody } from "@/lib/api";
 import { createSession, hashPassword } from "@/lib/auth";
 import { collections, newId } from "@/lib/db";
 import { logEvent } from "@/lib/events";
 import { rateLimitAsync } from "@/lib/rateLimit";
+import { defaultSettingsDoc } from "@/services/settings";
 
 const schema = z.object({
   email: z.string().email().max(200),
@@ -28,12 +28,7 @@ export async function POST(req: Request) {
     await users.insertOne({ _id: userId, email: lower, name: name ?? null, passwordHash: await hashPassword(password), role: "USER", createdAt: now });
     const [settings, bots, accounts] = await Promise.all([collections.tradingSettings(), collections.bots(), collections.tradingAccounts()]);
     await Promise.all([
-      settings.insertOne({
-        _id: newId(), userId, environment: "MANUAL", autoTradingEnabled: false, capitalUsd: 100, maxPositionUsd: 10, minPositionUsd: 5, maxOpenPositions: 10, maxDeployedUsd: 100,
-        minOpportunityScore: 70, minLiquidityUsd: 100_000, minVolume24hUsd: 50_000, maxPriceImpactPct: 2, maxSlippageBps: 300, maxAllowedRisk: "MODERATE", targetsMode: "MULTI",
-        maxPositionAgeHours: null, emergencyEnabled: true, emergencyAutoExit: false, emergencyLiquidityDropPct: 70,
-        filters: JSON.parse(JSON.stringify(DEFAULT_FILTERS)), weights: JSON.parse(JSON.stringify(DEFAULT_WEIGHTS)), targets: DEFAULT_TARGETS_MULTI, activeStrategyId: null, updatedAt: now,
-      }),
+      settings.insertOne(defaultSettingsDoc(userId, now)),
       bots.insertOne({ _id: newId(), userId, status: "PAUSED", environment: "LIVE", lastRunAt: null, emergencyStoppedAt: null, createdAt: now, updatedAt: now }),
       accounts.insertOne({ _id: newId(), userId, environment: "LIVE", realizedPnlUsd: 0, createdAt: now }),
     ]);

@@ -74,6 +74,7 @@ const EVM_RPC_TIMEOUT_MS = 6_000;
 export async function evmOnChain(chain: ChainId, address: string, snapshot: TokenSnapshot): Promise<OnChainRaw> {
   const anomalies: string[] = [];
   let ownerRenounced = false;
+  let dataAvailable = true;
   try {
     // owner() -> address; a revert means the contract has no owner concept (treated as renounced)
     const res = await rpcCall<string>(rpcUrl(chain), "eth_call", [{ to: address, data: "0x8da5cb5b" }, "latest"], EVM_RPC_TIMEOUT_MS).catch(() => "0x");
@@ -82,7 +83,7 @@ export async function evmOnChain(chain: ChainId, address: string, snapshot: Toke
     const code = await rpcCall<string>(rpcUrl(chain), "eth_getCode", [address, "latest"], EVM_RPC_TIMEOUT_MS);
     if (!code || code === "0x") anomalies.push("Address has no contract code");
   } catch {
-    anomalies.push("On-chain ownership data unavailable from RPC");
+    dataAvailable = false; // unknown, not "owner active" — assessSafety scores this separately
   }
   const buyShare = snapshot.buys1h / Math.max(1, snapshot.buys1h + snapshot.sells1h);
   return {
@@ -102,6 +103,7 @@ export async function evmOnChain(chain: ChainId, address: string, snapshot: Toke
     liquidityRemovedUsd1h: 0,
     suspiciousTxRatio: 0,
     poolActive: snapshot.liquidityUsd > 0,
+    dataAvailable,
   };
 }
 

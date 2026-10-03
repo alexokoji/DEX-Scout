@@ -86,6 +86,12 @@ export interface OnChainRaw {
   liquidityRemovedUsd1h: number;
   suspiciousTxRatio: number; // 0..1 share of txs flagged as wash/bot-like
   poolActive: boolean;
+  /**
+   * false when the authority/holder RPC lookups themselves failed (timeout, rate limit). In that case
+   * mintAuthorityRevoked/freezeAuthorityRevoked/topHolder* are placeholders, NOT findings — the safety
+   * engine must treat them as unknown rather than as "authority still active". Omitted/true = real data.
+   */
+  dataAvailable?: boolean;
 }
 
 export interface ScannerFilters {

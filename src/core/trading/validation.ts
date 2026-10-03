@@ -35,14 +35,31 @@ export function validateEntry(c: TradeCandidate, l: TradeLimits, opts: { automat
     v.push(`Price impact ${c.quote.priceImpactPct.toFixed(2)}% exceeds limit ${l.maxPriceImpactPct}%`);
   }
   if (c.quote.slippageBps > l.maxSlippageBps) v.push(`Slippage ${c.quote.slippageBps}bps exceeds limit ${l.maxSlippageBps}bps`);
-  if (c.liquidityUsd < l.minLiquidityUsd) v.push("Liquidity below configured minimum");
-  if (c.volume24hUsd < l.minVolume24hUsd) v.push("24h volume below configured minimum");
+  // Your configured liquidity/volume minimums are *preferences*, not safety limits. A pool-size floor is also
+  // a crude proxy for what actually matters to a given position — price impact for THIS trade size, enforced
+  // above — and hard-blocking a manual buy on a number you tuned for the bot made nearly everything
+  // untradeable. So: the auto bot enforces them (it trades unattended); a manual buy is warned, not blocked.
+  // Genuinely dangerous liquidity (< $10k) is still a CRITICAL safety issue and blocks both, above.
+  if (opts.automatic) {
+    if (c.liquidityUsd < l.minLiquidityUsd) v.push("Liquidity below configured minimum");
+    if (c.volume24hUsd < l.minVolume24hUsd) v.push("24h volume below configured minimum");
+  }
   if (c.quote.outputAmount <= 0 || c.quote.minReceived <= 0) v.push("Quote returned no output");
   if (opts.automatic) {
     if (c.opportunityScore < l.minOpportunityScore) v.push(`Opportunity score ${c.opportunityScore.toFixed(0)} below minimum ${l.minOpportunityScore}`);
     if (RISK_ORDER[c.safety.riskLevel] > RISK_ORDER[l.maxAllowedRisk]) v.push(`Risk level ${c.safety.riskLevel} above allowed ${l.maxAllowedRisk}`);
   }
   return v;
+}
+
+/** Non-blocking notes for a manual buy: preferences the token misses, shown to the user instead of refusing the trade. */
+export function entryWarnings(c: TradeCandidate, l: TradeLimits): string[] {
+  const w: string[] = [];
+  if (c.liquidityUsd < l.minLiquidityUsd) w.push(`Liquidity ${Math.round(c.liquidityUsd).toLocaleString()} is below your configured minimum of ${l.minLiquidityUsd.toLocaleString()}`);
+  if (c.volume24hUsd < l.minVolume24hUsd) w.push(`24h volume ${Math.round(c.volume24hUsd).toLocaleString()} is below your configured minimum of ${l.minVolume24hUsd.toLocaleString()}`);
+  if (c.opportunityScore < l.minOpportunityScore) w.push(`Opportunity score ${c.opportunityScore.toFixed(0)} is below your configured minimum of ${l.minOpportunityScore}`);
+  if (RISK_ORDER[c.safety.riskLevel] > RISK_ORDER[l.maxAllowedRisk]) w.push(`Risk level ${c.safety.riskLevel} is above your configured maximum of ${l.maxAllowedRisk}`);
+  return w;
 }
 
 export function validateSlippage(bps: number, maxBps: number): string | null {

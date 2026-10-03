@@ -102,8 +102,12 @@ export async function loadAnalysis(tokenId: string): Promise<Analysis | null> {
   };
 }
 
-async function inChunks<T>(items: T[], size: number, fn: (t: T) => Promise<void>) {
-  for (let i = 0; i < items.length; i += size) await Promise.all(items.slice(i, i + size).map(fn));
+/** Runs `size` items at a time. The first chunk always runs; later chunks only start while `mayStartAnother()` says there's time. */
+async function inChunks<T>(items: T[], size: number, fn: (t: T) => Promise<void>, mayStartAnother: () => boolean = () => true) {
+  for (let i = 0; i < items.length; i += size) {
+    if (i > 0 && !mayStartAnother()) return;
+    await Promise.all(items.slice(i, i + size).map(fn));
+  }
 }
 
 /**
@@ -117,7 +121,7 @@ async function inChunks<T>(items: T[], size: number, fn: (t: T) => Promise<void>
  * however many cron ticks it takes, not capped. The self-hosted worker loop (no wall-clock ceiling)
  * calls this with no limit.
  */
-export async function runAnalysisCycle(limit?: number): Promise<{ analyzed: number; failed: number }> {
+export async function runAnalysisCycle(limit?: number, opts: { startNoChunkAfter?: number } = {}): Promise<{ analyzed: number; failed: number }> {
   const p = providers();
   const tokenCol = await collections.tokens();
   const filters = await resolveScanFilters();
@@ -137,7 +141,9 @@ export async function runAnalysisCycle(limit?: number): Promise<{ analyzed: numb
   let analyzed = 0;
   let failed = 0;
   let critical = 0;
+  let attempted = 0;
   await inChunks(tokens, CONCURRENCY, async (t) => {
+    attempted++;
     try {
       await withTimeout(
         (async () => {
@@ -177,13 +183,13 @@ export async function runAnalysisCycle(limit?: number): Promise<{ analyzed: numb
       await tokenCol.updateOne({ _id: t._id }, { $set: { lastAnalysisAttemptAt: new Date() } }).catch(() => {});
       await logEvent({ type: "PROVIDER_ERROR", source: "analysis", level: "WARN", message: `Analysis failed for ${t.address}: ${safeMessage(err)}` });
     }
-  });
+  }, () => opts.startNoChunkAfter === undefined || Date.now() <= opts.startNoChunkAfter);
   await logEvent({
     type: "SAFETY_CHECK_COMPLETED",
     source: "analysis",
     level: "DEBUG",
-    message: `Analysed ${analyzed} tokens (${critical} with critical issues, ${failed} failed)${limit ? `, ${ordered.length - tokens.length} left for the next run` : ""}`,
-    data: { analyzed, failed, critical, remaining: ordered.length - tokens.length },
+    message: `Analysed ${analyzed} tokens (${critical} with critical issues, ${failed} failed)${limit ? `, ${ordered.length - attempted} left for the next run` : ""}`,
+    data: { analyzed, failed, critical, remaining: ordered.length - attempted },
   });
   await touchWorker("analysis-worker", failed && !analyzed ? "All analyses failed" : null, { analyzed, failed, critical });
   return { analyzed, failed };

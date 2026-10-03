@@ -32,12 +32,16 @@ export const maxDuration = 60;
 // scan job's share of Hobby's 60s cap even if several tokens hit their worst case at once. Nothing is
 // permanently skipped -- see runAnalysisCycle's docstring. The self-hosted worker loop has no such
 // ceiling and calls runAnalysisCycle() unbounded.
-const SERVERLESS_ANALYSIS_BATCH = 10;
+const SERVERLESS_ANALYSIS_BATCH = 16;
 
 const JOBS: Record<string, () => Promise<unknown>> = {
   async scan() {
+    const jobStart = Date.now();
     const scan = await runScanCycle();
-    const analysis = await runAnalysisCycle(SERVERLESS_ANALYSIS_BATCH);
+    // Time-budgeted rather than guessed: one chunk always runs; another only starts if it can still finish
+    // (worst case PER_TOKEN_DEADLINE_MS) plus the signal cycle inside Hobby's 60s. Observed live ticks of
+    // 44-52s with a fixed batch left almost no margin; this adapts to however long discovery took.
+    const analysis = await runAnalysisCycle(SERVERLESS_ANALYSIS_BATCH, { startNoChunkAfter: jobStart + 24_000 });
     const signals = await runSignalCycle();
     const pruned = new Date().getUTCMinutes() === 0 ? await pruneOldData().catch(() => -1) : null;
     return { scan, analysis, signals, pruned };

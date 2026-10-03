@@ -27,6 +27,7 @@ interface Quote {
 interface QuoteResp {
   quote: Quote;
   violations: string[];
+  warnings?: string[];
   analysis: { riskLevel: string; warnings: string[]; criticalIssues: string[] };
   source: string;
 }
@@ -151,6 +152,14 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
             </dl>
           )}
         </div>
+
+        {q && q.violations.length === 0 && (q.warnings?.length ?? 0) > 0 && (
+          <ul className="space-y-1 rounded-md border border-warn/30 bg-warn/10 p-3 text-xs text-warn">
+            {q.warnings!.map((w) => (
+              <li key={w}>• {w} — you can still buy; this is your own preference, not a safety block.</li>
+            ))}
+          </ul>
+        )}
 
         {q && q.violations.length > 0 && (
           <ul className="space-y-1 rounded-md border border-down/30 bg-down/10 p-3 text-xs text-down">
