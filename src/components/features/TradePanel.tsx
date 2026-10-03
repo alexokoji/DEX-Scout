@@ -84,10 +84,7 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
     if (!body) return;
     setBusy(true);
     try {
-      if (!signer.isConnected(chain)) {
-        toast.error(`Connect your ${signer.walletLabel(chain)} first`);
-        return;
-      }
+      if (!signer.ensureConnected(chain)) return;
       const prep = await fetch("/api/trades/prepare", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       const pj = await prep.json();
       if (!prep.ok) {
@@ -178,7 +175,7 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
       </CardBody>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent title="Confirm transaction" description={`Your ${signer.walletLabel(chain)} will ask you to approve this swap on ${meta.name}.`}>
+        <DialogContent title="Confirm transaction" description={`Your ${signer.walletLabel()} will ask you to approve this swap on ${meta.name}.`}>
           {q && (
             <div className="space-y-3 text-sm">
               <dl className="space-y-1.5 rounded-md border border-border bg-surface2 p-3 text-xs">

@@ -13,7 +13,7 @@ const schema = z.object({
   AUTH_SECRET: z.string().min(16).default("dev-only-insecure-secret-change-me-please"),
   MOCK_PROVIDER: bool,
   LIVE_TRADING_ENABLED: bool,
-  SOLANA_RPC_URL: z.string().default("https://api.mainnet-beta.solana.com"),
+  SOLANA_RPC_URL: z.string().default("https://solana-rpc.publicnode.com"),
   SOLANA_WS_URL: z.string().optional(),
   DEX_PROVIDER_URL: z.string().default("https://lite-api.jup.ag/swap/v1"),
   DEX_PROVIDER_API_KEY: z.string().optional(),

@@ -4,7 +4,9 @@ import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { VersionedTransaction } from "@solana/web3.js";
 import { CHAINS } from "@/core/chains";
 import type { ChainId } from "@/core/types";
+import { useConnectWallet } from "@/components/layout/ConnectWallet";
 import { useEvmWallet } from "@/components/layout/EvmWalletProvider";
+import { toast } from "sonner";
 
 const b64ToBytes = (b64: string) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
 export const bytesToB64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
@@ -17,20 +19,30 @@ export function useSigner() {
   const { connection } = useConnection();
   const sol = useWallet();
   const evm = useEvmWallet();
+  const connectUi = useConnectWallet();
 
   return {
     isConnected(chain: ChainId): boolean {
       return CHAINS[chain].family === "evm" ? !!evm.address : sol.connected;
     },
-    walletLabel(chain: ChainId): string {
-      return CHAINS[chain].family === "evm" ? "EVM wallet" : "Solana wallet";
+    walletLabel(): string {
+      return "wallet";
+    },
+    /** True when the wallet needed for `chain` is connected; otherwise opens the single connect dialog and says why. */
+    ensureConnected(chain: ChainId): boolean {
+      const ok = CHAINS[chain].family === "evm" ? !!evm.address : sol.connected;
+      if (!ok) {
+        toast.error(`Connect a wallet that supports ${CHAINS[chain].name} first`);
+        connectUi.open();
+      }
+      return ok;
     },
     async signAndSend(chain: ChainId, payload: string): Promise<string> {
       if (CHAINS[chain].family === "svm") {
-        if (!sol.connected || !sol.sendTransaction) throw new Error("Connect a Solana wallet first");
+        if (!sol.connected || !sol.sendTransaction) throw new Error("Connect a wallet that supports Solana first");
         return sol.sendTransaction(VersionedTransaction.deserialize(b64ToBytes(payload)), connection);
       }
-      if (!evm.address) throw new Error("Connect an EVM wallet first");
+      if (!evm.address) throw new Error("Connect a wallet that supports this chain first");
       const p = JSON.parse(payload) as { chainId: number; approval?: { to: string; data: string; value?: string }; tx: { to: string; data: string; value: string; gas?: string } };
       await evm.switchChain(p.chainId);
       if (p.approval) {

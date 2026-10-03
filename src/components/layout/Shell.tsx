@@ -1,19 +1,12 @@
 "use client";
 
-import { Activity, Bot, Briefcase, Gauge, LineChart, ListChecks, LogOut, Menu, Radar, Settings, Wallet, X, Zap, Layers } from "lucide-react";
-import dynamic from "next/dynamic";
+import { Activity, Bot, Briefcase, Gauge, LineChart, ListChecks, LogOut, Menu, Radar, Settings, Wallet, X, Zap, Layers, Plug } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
 import { Badge } from "@/components/ui/badges";
 import { cn } from "@/lib/utils";
-
-const EvmConnectButton = dynamic(() => import("./EvmConnectButton").then((m) => m.EvmConnectButton), { ssr: false, loading: () => <div className="h-9 w-24 animate-pulse rounded bg-surface2" /> });
-
-const WalletMultiButton = dynamic(() => import("@solana/wallet-adapter-react-ui").then((m) => m.WalletMultiButton), {
-  ssr: false,
-  loading: () => <div className="h-9 w-32 animate-pulse rounded bg-surface2" />,
-});
+import { ConnectWalletButton } from "./ConnectWallet";
 
 const NAV = [
   { href: "/", label: "Dashboard", icon: Gauge },
@@ -27,6 +20,7 @@ const NAV = [
   { href: "/strategies", label: "Strategies", icon: LineChart },
   { href: "/activity", label: "Activity", icon: Activity },
   { href: "/settings/trading", label: "Settings", icon: Settings },
+  { href: "/settings/integrations", label: "Integrations", icon: Plug },
   { href: "/wallet", label: "Wallet", icon: Wallet },
 ];
 
@@ -100,10 +94,7 @@ export function Shell({ children, mock, liveEnabled, email, mode }: { children: 
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <EvmConnectButton />
-          <div className="[&_.wallet-adapter-button]:h-9 [&_.wallet-adapter-button]:whitespace-nowrap [&_.wallet-adapter-button]:text-xs [&_.wallet-adapter-button]:leading-none[&_.wallet-adapter-button]:rounded-md [&_.wallet-adapter-button]:bg-surface2 [&_.wallet-adapter-button]:px-3 [&_.wallet-adapter-button]:text-sm [&_.wallet-adapter-button]:font-medium">
-            <WalletMultiButton />
-          </div>
+            <ConnectWalletButton />
           </div>
         </header>
         <main className="fade-in min-w-0 flex-1 p-4 md:p-6">{children}</main>

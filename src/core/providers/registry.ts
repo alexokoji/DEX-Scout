@@ -3,7 +3,8 @@ import { env } from "../../lib/env";
 import { AnthropicAiProvider } from "../ai/anthropicProvider";
 import type { ChainId, SwapQuote } from "../types";
 import { DexScreenerDataProvider } from "./dexscreener";
-import { EvmChainAdapter, evmOnChain, ZeroXDexAdapter } from "./evm/evmProviders";
+import { MultiEvmDexAdapter } from "./evm/freeAggregators";
+import { EvmChainAdapter, evmOnChain } from "./evm/evmProviders";
 import type { ChainAdapter, DexAdapter, ProviderBundle, QuoteRequest } from "./interfaces";
 import { MockChainAdapter, MockDexAdapter, MockTokenDataProvider } from "./mock/mockMarket";
 import { RulesAiProvider } from "./mock/mockProviders";
@@ -65,7 +66,7 @@ export function providers(): ProviderBundle {
     : {
         mock: false,
         data: new DexScreenerDataProvider({ svm: solanaOnChain, evm: evmOnChain }),
-        dex: new RoutingDexAdapter(new JupiterDexAdapter(), new ZeroXDexAdapter()),
+        dex: new RoutingDexAdapter(new JupiterDexAdapter(), new MultiEvmDexAdapter()),
         ai,
         chains,
       };

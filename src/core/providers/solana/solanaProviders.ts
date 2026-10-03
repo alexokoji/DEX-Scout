@@ -5,7 +5,7 @@
 import { Connection, PublicKey, VersionedTransaction } from "@solana/web3.js";
 import nacl from "tweetnacl";
 import { FEES } from "../../config";
-import { CHAINS } from "../../chains";
+import { CHAINS, rpcCandidates } from "../../chains";
 import type { ChainId, OnChainRaw, SwapQuote, TokenSnapshot } from "../../types";
 import { env } from "../../../lib/env";
 import { DexScreenerDataProvider } from "../dexscreener";
@@ -28,9 +28,52 @@ export async function solUsd(): Promise<number> {
   return solPriceCache?.usd ?? CHAINS.solana.mockNativeUsd;
 }
 
-let conn: Connection | null = null;
+const conns = new Map<string, Connection>();
+function connectionFor(url: string): Connection {
+  let c = conns.get(url);
+  if (!c) {
+    // the websocket endpoint belongs to the operator's own URL, not to whichever free fallback we are on
+    c = new Connection(url, { commitment: "confirmed", wsEndpoint: url === process.env.SOLANA_RPC_URL ? env().SOLANA_WS_URL : undefined });
+    conns.set(url, c);
+  }
+  return c;
+}
 export function connection(): Connection {
-  return (conn ??= new Connection(env().SOLANA_RPC_URL, { commitment: "confirmed", wsEndpoint: env().SOLANA_WS_URL }));
+  return connectionFor(rpcCandidates("solana")[0]);
+}
+
+/**
+ * Runs a Solana RPC call with automatic failover across every free endpoint (see rpcCandidates), so no API key is
+ * required and one dead / rate-limited / method-blocked public node does not break the chain. Free nodes differ in
+ * which methods they serve (PublicNode serves getAccountInfo but blocks the indexed ones; the official endpoint
+ * 429s heavily), which is exactly why an endpoint rejecting a call moves on rather than failing the lookup.
+ * budgetMs is the TOTAL across attempts so failover cannot blow the caller's deadline.
+ */
+export async function solanaTry<T>(fn: (c: Connection) => Promise<T>, budgetMs = 8_000): Promise<T> {
+  const deadline = Date.now() + budgetMs;
+  let last: unknown = new Error("No Solana RPC endpoint available");
+  for (const url of rpcCandidates("solana")) {
+    const left = deadline - Date.now();
+    if (left < 800) break;
+    try {
+      return await withTimeout(fn(connectionFor(url)), Math.min(left, 4_000), "solana rpc");
+    } catch (e) {
+      last = e;
+    }
+  }
+  throw last;
+}
+
+const decimalsCache = new Map<string, number>();
+/** Mint decimals via getAccountInfo (served by every free node) rather than getTokenSupply (blocked on some). */
+async function mintDecimals(mint: string): Promise<number> {
+  const hit = decimalsCache.get(mint);
+  if (hit !== undefined) return hit;
+  const info = await solanaTry((c) => c.getParsedAccountInfo(new PublicKey(mint)));
+  const d = (info.value?.data as { parsed?: { info?: { decimals?: number } } })?.parsed?.info?.decimals;
+  if (typeof d !== "number") throw new Error("Could not read token decimals");
+  decimalsCache.set(mint, d);
+  return d;
 }
 
 export class SolanaChainAdapter implements ChainAdapter {
@@ -53,7 +96,7 @@ export class SolanaChainAdapter implements ChainAdapter {
     return `${CHAINS.solana.explorer}/token/${address}`;
   }
   async getNativeBalance(address: string): Promise<number> {
-    return (await connection().getBalance(new PublicKey(address))) / 1e9;
+    return (await solanaTry((c) => c.getBalance(new PublicKey(address)))) / 1e9;
   }
   verifyMessageSignature(address: string, message: string, signatureBase64: string): boolean {
     try {
@@ -73,9 +116,15 @@ export class SolanaChainAdapter implements ChainAdapter {
 // per-token deadline (services/analysis.ts).
 const SOLANA_RPC_TIMEOUT_MS = 6_000;
 
+// Holder concentration needs getTokenLargestAccounts, which no free keyless Solana RPC serves reliably (verified:
+// PublicNode blocks it as an "indexed request", the official endpoint rate-limits it, others require a key).
+// Rather than burning two failing calls on every token, remember a failure for a while. Set SOLANA_RPC_URL to a
+// keyed provider (e.g. Helius, free tier) and this works normally.
+let holdersBackoffUntil = 0;
+const HOLDERS_BACKOFF_MS = 5 * 60_000;
+
 /** Solana raw facts: mint/freeze authority, top-holder concentration, sell-side heuristics. */
 export async function solanaOnChain(_chain: ChainId, address: string, snapshot: TokenSnapshot): Promise<OnChainRaw> {
-  const c = connection();
   const mint = new PublicKey(address);
   const anomalies: string[] = [];
   let mintRevoked = false;
@@ -83,19 +132,31 @@ export async function solanaOnChain(_chain: ChainId, address: string, snapshot: 
   let topHolderPct = 0;
   let top10 = 0;
   let dataAvailable = true;
+  let holderDataAvailable = false;
+  // 1) authorities: the important check, and served by every free node, so it survives without a key
   try {
-    const info = await withTimeout(c.getParsedAccountInfo(mint), SOLANA_RPC_TIMEOUT_MS);
+    const info = await solanaTry((c) => c.getParsedAccountInfo(mint), SOLANA_RPC_TIMEOUT_MS);
     const parsed = (info.value?.data as { parsed?: { info?: { mintAuthority: string | null; freezeAuthority: string | null } } })?.parsed?.info;
-    mintRevoked = parsed ? parsed.mintAuthority === null : false;
-    freezeRevoked = parsed ? parsed.freezeAuthority === null : false;
-    const [largest, supply] = await withTimeout(Promise.all([c.getTokenLargestAccounts(mint), c.getTokenSupply(mint)]), SOLANA_RPC_TIMEOUT_MS);
-    const total = Number(supply.value.amount) || 1;
-    const amounts = largest.value.map((a) => (Number(a.amount) / total) * 100);
-    // The largest account is frequently the liquidity pool vault; report it but callers should treat it with care.
-    topHolderPct = amounts[0] ?? 0;
-    top10 = amounts.slice(0, 10).reduce((a, b) => a + b, 0);
+    if (!parsed) throw new Error("Not a token mint");
+    mintRevoked = parsed.mintAuthority === null;
+    freezeRevoked = parsed.freezeAuthority === null;
   } catch {
     dataAvailable = false; // unknown, not "authority active" — assessSafety scores this separately
+  }
+  // 2) holder concentration: a nice-to-have that needs a capable RPC; failing here must not discard the authority result
+  if (dataAvailable && Date.now() >= holdersBackoffUntil) {
+    try {
+      const [largest, supply] = await solanaTry((c) => Promise.all([c.getTokenLargestAccounts(mint), c.getTokenSupply(mint)]), SOLANA_RPC_TIMEOUT_MS);
+      const total = Number(supply.value.amount) || 1;
+      const amounts = largest.value.map((a) => (Number(a.amount) / total) * 100);
+      // The largest account is frequently the liquidity pool vault; report it but callers should treat it with care.
+      topHolderPct = amounts[0] ?? 0;
+      top10 = amounts.slice(0, 10).reduce((a, b) => a + b, 0);
+      holderDataAvailable = true;
+      holdersBackoffUntil = 0;
+    } catch {
+      holdersBackoffUntil = Date.now() + HOLDERS_BACKOFF_MS;
+    }
   }
   const buyShare = snapshot.buys1h / Math.max(1, snapshot.buys1h + snapshot.sells1h);
   return {
@@ -116,6 +177,7 @@ export async function solanaOnChain(_chain: ChainId, address: string, snapshot: 
     suspiciousTxRatio: 0,
     poolActive: snapshot.liquidityUsd > 0,
     dataAvailable,
+    holderDataAvailable,
   };
 }
 
@@ -141,8 +203,7 @@ export class JupiterDexAdapter implements DexAdapter {
     const snap = await this.data.getSnapshot(req.chain, req.tokenAddress);
     if (!snap) throw new Error("Token not found or no longer tradeable");
     const sol = await solUsd();
-    const mint = new PublicKey(req.tokenAddress);
-    const decimals = (await connection().getTokenSupply(mint)).value.decimals;
+    const decimals = await mintDecimals(req.tokenAddress);
     const inputMint = req.side === "BUY" ? SOL_MINT : req.tokenAddress;
     const outputMint = req.side === "BUY" ? req.tokenAddress : SOL_MINT;
     const inAmount =
@@ -201,7 +262,7 @@ export class JupiterDexAdapter implements DexAdapter {
   /** Broadcasts a transaction that the user's wallet already signed. */
   async executeSwap(_chain: ChainId, signedTxBase64: string) {
     const tx = VersionedTransaction.deserialize(Buffer.from(signedTxBase64, "base64"));
-    const signature = await connection().sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
+    const signature = await solanaTry((c) => c.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 }), 15_000);
     return { signature };
   }
 
@@ -215,7 +276,7 @@ export class JupiterDexAdapter implements DexAdapter {
   }
 
   async inspectTransaction(_chain: ChainId, signature: string, owner: string, mint: string) {
-    const tx = await connection().getParsedTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
+    const tx = await solanaTry((c) => c.getParsedTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" }), 12_000);
     if (!tx?.meta) return null;
     const keys = tx.transaction.message.accountKeys;
     const signer = keys[0]?.pubkey.toBase58() ?? "";
@@ -227,7 +288,7 @@ export class JupiterDexAdapter implements DexAdapter {
   }
 
   async getTransactionStatus(_chain: ChainId, signature: string): Promise<TransactionStatus> {
-    const res = await connection().getSignatureStatuses([signature], { searchTransactionHistory: true });
+    const res = await solanaTry((c) => c.getSignatureStatuses([signature], { searchTransactionHistory: true }));
     const s = res.value[0];
     if (!s) return { status: "NOT_FOUND" };
     if (s.err) return { status: "FAILED", error: JSON.stringify(s.err), slot: s.slot };

@@ -61,7 +61,7 @@ export default async function WalletPage() {
         <CardHeader title="How wallet authorization works" />
         <CardBody className="space-y-2 text-xs leading-relaxed text-muted">
           <p><span className="text-foreground">No keys, no withdrawals.</span> The server stores only your public addresses. It never receives a seed phrase, private key or wallet password.</p>
-          <p><span className="text-foreground">Manual LIVE trades:</span> the server validates limits and builds an unsigned swap for the token&apos;s chain (Jupiter on Solana, 0x on EVM chains); your wallet shows it and you approve or reject it. On EVM the wallet may first ask for a token approval.</p>
+          <p><span className="text-foreground">Manual LIVE trades:</span> the server validates limits and builds an unsigned swap for the token&apos;s chain (Jupiter on Solana; ParaSwap or KyberSwap on EVM chains, no API keys needed); your wallet shows it and you approve or reject it. On EVM the wallet may first ask for a token approval.</p>
           <p><span className="text-foreground">Auto LIVE trades:</span> the bot prepares unsigned transactions and places them in the approval queue above. They execute only after your wallet signs. There is no delegated authority that could withdraw funds.</p>
           <p>LIVE mode is {liveTradingAllowed() ? "enabled on this server." : "disabled on this server (requires LIVE_TRADING_ENABLED=true and MOCK_PROVIDER=false)."}</p>
         </CardBody>

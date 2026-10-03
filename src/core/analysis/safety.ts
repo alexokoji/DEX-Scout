@@ -61,8 +61,10 @@ export function assessSafety(snap: TokenSnapshot, raw: OnChainRaw): SafetyResult
     else if (drop >= 30) warn(`Liquidity dropped ${drop.toFixed(0)}% in the last hour`, 15);
   }
 
-  if (!onchainKnown) {
-    /* holder concentration unknown — already penalised once above */
+  const holdersKnown = onchainKnown && raw.holderDataAvailable !== false;
+  if (!holdersKnown) {
+    // unknown holder data is not a finding: no points. When authorities WERE readable, just say what is missing.
+    if (onchainKnown) warn("Top-holder concentration unavailable (needs a Solana RPC that serves it; see Integrations)", 0);
   } else if (raw.topHolderPct >= 35) crit(`Single holder controls ${raw.topHolderPct.toFixed(1)}% of supply`, 25);
   else if (raw.topHolderPct >= 20) warn(`Top holder controls ${raw.topHolderPct.toFixed(1)}% of supply`, 12);
   if (raw.top10HolderPct >= 80) warn(`Top 10 holders control ${raw.top10HolderPct.toFixed(0)}% of supply`, 18);

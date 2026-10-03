@@ -9,11 +9,39 @@ import type { ChainId, OnChainRaw, SwapQuote, TokenSnapshot } from "../../types"
 import { env } from "../../../lib/env";
 import { DexScreenerDataProvider } from "../dexscreener";
 import { getJson, rpcCall } from "../http";
+import { markRpcBad, markRpcGood, orderedRpcs } from "../rpcHealth";
 import type { ChainAdapter, DexAdapter, QuoteRequest, SwapSimulation, TransactionStatus } from "../interfaces";
 
-export function rpcUrl(chain: ChainId): string {
-  const meta = CHAINS[chain];
-  return process.env[meta.rpcEnv] || meta.defaultRpc;
+/** A contract-level answer ("execution reverted", nonce errors...) — another endpoint would say the same, so don't fail over. */
+const DEFINITIVE_RPC_ERROR = /revert|execution|out of gas|nonce|insufficient funds|already known|underpriced|invalid (sender|opcode|signature)/i;
+
+/**
+ * JSON-RPC against a chain with automatic failover across every free endpoint (see rpcCandidates), so no API key
+ * is ever required and one dead/rate-limited public node doesn't take the chain down. Dead endpoints, timeouts,
+ * HTTP errors and provider-side rejections ("API key disabled", "too many requests") move on to the next one;
+ * genuine contract reverts are returned as-is. `budgetMs` is the TOTAL across attempts, so failover can't blow
+ * the caller's deadline.
+ */
+export async function evmRpc<T>(chain: ChainId, method: string, params: unknown[] = [], budgetMs = 10_000): Promise<T> {
+  const deadline = Date.now() + budgetMs;
+  let last: unknown = new Error(`No RPC endpoint available for ${chain}`);
+  for (const url of orderedRpcs(chain)) {
+    const left = deadline - Date.now();
+    if (left < 800) break;
+    try {
+      const r = await rpcCall<T>(url, method, params, Math.min(left, 4_000));
+      markRpcGood(chain, url);
+      return r;
+    } catch (e) {
+      if (e instanceof Error && DEFINITIVE_RPC_ERROR.test(e.message)) {
+        markRpcGood(chain, url); // it answered; the call itself reverted
+        throw e;
+      }
+      last = e;
+      markRpcBad(url);
+    }
+  }
+  throw last;
 }
 
 const priceCache = new Map<ChainId, { at: number; usd: number }>();
@@ -49,7 +77,7 @@ export class EvmChainAdapter implements ChainAdapter {
     return `${CHAINS[this.chain].explorer}/token/${address}`;
   }
   async getNativeBalance(address: string): Promise<number> {
-    const hex = await rpcCall<string>(rpcUrl(this.chain), "eth_getBalance", [address, "latest"]);
+    const hex = await evmRpc<string>(this.chain, "eth_getBalance", [address, "latest"]);
     return Number(BigInt(hex)) / 1e18;
   }
   async verifyMessageSignature(address: string, message: string, signature: string): Promise<boolean> {
@@ -77,10 +105,10 @@ export async function evmOnChain(chain: ChainId, address: string, snapshot: Toke
   let dataAvailable = true;
   try {
     // owner() -> address; a revert means the contract has no owner concept (treated as renounced)
-    const res = await rpcCall<string>(rpcUrl(chain), "eth_call", [{ to: address, data: "0x8da5cb5b" }, "latest"], EVM_RPC_TIMEOUT_MS).catch(() => "0x");
+    const res = await evmRpc<string>(chain, "eth_call", [{ to: address, data: "0x8da5cb5b" }, "latest"], EVM_RPC_TIMEOUT_MS).catch(() => "0x");
     const slot = res.length >= 66 ? "0x" + res.slice(26) : "0x";
     ownerRenounced = ZERO.test(slot) || slot === "0x" || slot.toLowerCase() === "0x000000000000000000000000000000000000dead";
-    const code = await rpcCall<string>(rpcUrl(chain), "eth_getCode", [address, "latest"], EVM_RPC_TIMEOUT_MS);
+    const code = await evmRpc<string>(chain, "eth_getCode", [address, "latest"], EVM_RPC_TIMEOUT_MS);
     if (!code || code === "0x") anomalies.push("Address has no contract code");
   } catch {
     dataAvailable = false; // unknown, not "owner active" — assessSafety scores this separately
@@ -109,11 +137,11 @@ export async function evmOnChain(chain: ChainId, address: string, snapshot: Toke
 
 const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const decimalsCache = new Map<string, number>();
-async function tokenDecimals(chain: ChainId, token: string): Promise<number> {
+export async function tokenDecimals(chain: ChainId, token: string): Promise<number> {
   const k = `${chain}:${token}`;
   const hit = decimalsCache.get(k);
   if (hit !== undefined) return hit;
-  const res = await rpcCall<string>(rpcUrl(chain), "eth_call", [{ to: token, data: "0x313ce567" }, "latest"]);
+  const res = await evmRpc<string>(chain, "eth_call", [{ to: token, data: "0x313ce567" }, "latest"]);
   const d = Number(BigInt(res));
   decimalsCache.set(k, d);
   return d;
@@ -129,7 +157,7 @@ interface ZeroXPrice {
   transaction?: { to: string; data: string; value: string; gas?: string };
 }
 
-/** 0x Swap API adapter (allowance-holder flow). Requires ZEROX_API_KEY. */
+/** 0x Swap API adapter (allowance-holder flow). OPTIONAL: needs ZEROX_API_KEY; MultiEvmDexAdapter works without it and only uses this first when a key is set. */
 export class ZeroXDexAdapter implements DexAdapter {
   readonly name = "0x";
   readonly kind = "LIVE" as const;
@@ -212,7 +240,7 @@ export class ZeroXDexAdapter implements DexAdapter {
   }
 
   async executeSwap(chain: ChainId, signedTx: string) {
-    const hash = await rpcCall<string>(rpcUrl(chain), "eth_sendRawTransaction", [signedTx]);
+    const hash = await evmRpc<string>(chain, "eth_sendRawTransaction", [signedTx]);
     return { signature: hash };
   }
 
@@ -226,9 +254,9 @@ export class ZeroXDexAdapter implements DexAdapter {
   }
 
   async getTransactionStatus(chain: ChainId, hash: string): Promise<TransactionStatus> {
-    const r = await rpcCall<{ status: string; blockNumber: string } | null>(rpcUrl(chain), "eth_getTransactionReceipt", [hash]);
+    const r = await evmRpc<{ status: string; blockNumber: string } | null>(chain, "eth_getTransactionReceipt", [hash]);
     if (!r) {
-      const t = await rpcCall<unknown>(rpcUrl(chain), "eth_getTransactionByHash", [hash]).catch(() => null);
+      const t = await evmRpc<unknown>(chain, "eth_getTransactionByHash", [hash]).catch(() => null);
       return { status: t ? "PENDING" : "NOT_FOUND" };
     }
     const slot = Number(BigInt(r.blockNumber));
@@ -236,7 +264,7 @@ export class ZeroXDexAdapter implements DexAdapter {
   }
 
   async inspectTransaction(chain: ChainId, hash: string, owner: string, token: string) {
-    const r = await rpcCall<{ from: string; logs: { address: string; topics: string[]; data: string }[] } | null>(rpcUrl(chain), "eth_getTransactionReceipt", [hash]);
+    const r = await evmRpc<{ from: string; logs: { address: string; topics: string[]; data: string }[] } | null>(chain, "eth_getTransactionReceipt", [hash]);
     if (!r) return null;
     const dec = await tokenDecimals(chain, token).catch(() => 18);
     const me = normalizeAddress(chain, owner);

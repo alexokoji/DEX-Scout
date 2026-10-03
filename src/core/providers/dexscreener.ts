@@ -196,9 +196,33 @@ export class DexScreenerDataProvider implements TokenDataProvider {
     const pairs = await getJson<DsPair[]>(`${this.base()}/tokens/v1/${slug}/${address}`);
     const want = normalizeAddress(chain, address);
     const mine = pairs.filter((p) => normalizeAddress(chain, p.baseToken.address) === want);
-    const snap = mine.length ? this.toSnapshot(chain, mine) : null;
+    const snap = (mine.length ? this.toSnapshot(chain, mine) : null) ?? (await this.snapshotFromGecko(chain, address));
     if (snap) await enrichHolders(snap);
     return snap;
+  }
+
+  /**
+   * Discovery blends two sources, but snapshots used to come from DexScreener alone — so a token GeckoTerminal
+   * surfaced (a trending pool, a brand-new chain DexScreener hasn't indexed yet) failed every later analysis with
+   * "token not found" and was demoted. Fall back to GeckoTerminal's own pool data for it. Only reached when
+   * DexScreener has nothing, so the shared GeckoTerminal queue isn't touched in the common case.
+   */
+  private async snapshotFromGecko(chain: ChainId, address: string): Promise<TokenSnapshot | null> {
+    const network = CHAINS[chain].geckoId;
+    const j = await geckoFetch<{ data?: GtPool[]; included?: GtToken[] }>(
+      `https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${address}/pools?include=base_token&page=1`,
+      { timeoutMs: 5_000, maxAttempts: 1 },
+    ).catch(() => null);
+    if (!j?.data?.length) return null;
+    const tokenById = new Map((j.included ?? []).map((t) => [t.id, t.attributes]));
+    const want = normalizeAddress(chain, address);
+    for (const pool of j.data) {
+      const base = tokenById.get(pool.relationships.base_token.data.id);
+      if (!base || normalizeAddress(chain, base.address) !== want) continue; // our token must be the pool's base token
+      const s = this.toSnapshotFromGecko(chain, pool, tokenById);
+      if (s) return s;
+    }
+    return null;
   }
 
   private toSnapshot(chain: ChainId, pairs: DsPair[]): TokenSnapshot | null {

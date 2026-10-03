@@ -52,10 +52,7 @@ export function PendingApprovals() {
   async function approve(t: Pending) {
     const chain = t.token.chain as ChainId;
     if (!t.unsignedTxBase64) return;
-    if (!signer.isConnected(chain)) {
-      toast.error(`Connect your ${signer.walletLabel(chain)} to approve`);
-      return;
-    }
+    if (!signer.ensureConnected(chain)) return;
     setBusy(t.id);
     try {
       const signature = await signer.signAndSend(chain, t.unsignedTxBase64);

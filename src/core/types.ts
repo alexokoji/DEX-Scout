@@ -92,6 +92,8 @@ export interface OnChainRaw {
    * engine must treat them as unknown rather than as "authority still active". Omitted/true = real data.
    */
   dataAvailable?: boolean;
+  /** false when authorities were read but the top-holder lookup was not possible (needs a capable RPC). Omitted/true = real data. */
+  holderDataAvailable?: boolean;
 }
 
 export interface ScannerFilters {
