@@ -37,8 +37,8 @@ export default async function BotPage() {
       </Card>
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-6">
-        <Stat label="Capital" value={usd(o.pf.capital.capitalUsd)} />
-        <Stat label="Available" value={usd(o.pf.capital.availableUsd)} />
+        <Stat label="Wallet balance" value={o.pf.capital.walletUsd !== null ? usd(o.pf.capital.walletUsd) : "—"} />
+        <Stat label="Available" value={o.pf.capital.availableUsd !== null ? usd(o.pf.capital.availableUsd) : "—"} />
         <Stat label="Open positions" value={`${o.pf.positions} / ${s.maxOpenPositions}`} />
         <Stat label="Trades today" value={String(o.tradesToday)} />
         <Stat label="Realized P/L" value={usd(o.pf.realizedPnlUsd)} tone={o.pf.realizedPnlUsd >= 0 ? "up" : "down"} />
@@ -53,7 +53,7 @@ export default async function BotPage() {
           <CardBody className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-xs">
             {([
               ["Environment", s.environment], ["Max position", usd(s.maxPositionUsd)], ["Min position", usd(s.minPositionUsd)], ["Max open", String(s.maxOpenPositions)],
-              ["Max deployed", usd(s.maxDeployedUsd)], ["Min score", String(s.minOpportunityScore)], ["Min liquidity", usd(s.minLiquidityUsd, 0)], ["Min 24h volume", usd(s.minVolume24hUsd, 0)],
+              ["Max deployed", s.maxDeployedUsd === null ? "wallet balance" : usd(s.maxDeployedUsd)], ["Min score", String(s.minOpportunityScore)], ["Min liquidity", usd(s.minLiquidityUsd, 0)], ["Min 24h volume", usd(s.minVolume24hUsd, 0)],
               ["Max price impact", `${s.maxPriceImpactPct}%`], ["Max risk", s.maxAllowedRisk], ["Profit targets", s.targets.map((t) => `+${t.gainPct}%/${t.sellPct >= 100 ? "rest" : t.sellPct + "%"}`).join(", ")],
               ["Emergency protection", s.emergencyEnabled ? (s.emergencyAutoExit ? "ON · auto exit" : "ON · alert only") : "OFF"],
             ] as [string, string][]).map(([k, v]) => (

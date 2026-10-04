@@ -21,11 +21,10 @@ export default async function WalletPage() {
   return (
     <div className="space-y-4">
       <PageHeader title="Wallets" subtitle="Non-custodial and multi-chain (Solana + EVM). Your wallet signs every live transaction; DEX Scout never sees keys or seed phrases." />
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
         <Stat label="Connected wallet balance" value={pf.wallet?.balanceUsd != null ? usd(pf.wallet.balanceUsd) : "—"} sub={pf.wallet ? pf.wallet.summary || "empty" : "no linked wallet"} />
-        <Stat label="Trading allocation" value={usd(pf.capital.capitalUsd)} sub="cap for the bot" />
         <Stat label="Open position value" value={usd(pf.openPositionValueUsd)} />
-        <Stat label="Available capital" value={usd(pf.capital.availableUsd)} />
+        <Stat label="Available to trade" value={pf.capital.availableUsd !== null ? usd(pf.capital.availableUsd) : "—"} sub="wallet balance, within your limits" />
       </div>
       <PendingApprovals />
       <WalletPanel linked={wallets.map((w) => ({ address: w.address, family: w.chain }))} />
@@ -46,7 +45,7 @@ export default async function WalletPage() {
       </Card>
       {wb.balances.length > 0 && (
         <Card>
-          <CardHeader title="Native balances by chain" sub="Gas/native token only; not part of your trading allocation." />
+          <CardHeader title="Native balances by chain" sub="Native token on each chain: this is what the bot and your manual buys can spend, and it pays gas." />
           <div className="divide-y divide-border text-sm">
             {wb.balances.map((b) => (
               <div key={`${b.address}:${b.chain}`} className="flex items-center justify-between px-4 py-2">

@@ -71,11 +71,11 @@ export interface TradingSettingsDoc {
   userId: string;
   environment: Environment;
   autoTradingEnabled: boolean;
-  capitalUsd: number;
   maxPositionUsd: number;
   minPositionUsd: number;
   maxOpenPositions: number;
-  maxDeployedUsd: number;
+  /** optional cap on total capital deployed; null = limited only by the wallet balance */
+  maxDeployedUsd: number | null;
   minOpportunityScore: number;
   minLiquidityUsd: number;
   minVolume24hUsd: number;

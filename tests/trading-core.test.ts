@@ -79,38 +79,58 @@ describe("position calculations", () => {
 });
 
 describe("capital allocation", () => {
-  const s = { capitalUsd: 100, maxPositionUsd: 10, minPositionUsd: 5, maxOpenPositions: 10, maxDeployedUsd: 100 };
+  // no typed-in "trading capital": the wallet balance is the capital, optionally capped by maxDeployedUsd
+  const s = { maxPositionUsd: 10, minPositionUsd: 5, maxOpenPositions: 10, maxDeployedUsd: 100 as number | null };
+  const st = (deployedUsd: number, openPositions: number, walletUsd?: number | null) => ({ deployedUsd, openPositions, walletUsd });
   it("never allocates above the max position size", () => {
-    expect(allocate(s, { deployedUsd: 0, openPositions: 0 }, 50)).toEqual({ ok: true, amountUsd: 10 });
+    expect(allocate(s, st(0, 0, 1_000), 50)).toEqual({ ok: true, amountUsd: 10 });
   });
-  it("never exceeds total capital / max deployed", () => {
-    const r = allocate(s, { deployedUsd: 96, openPositions: 9 }, 10);
-    expect(r.ok).toBe(false);
-    expect(allocate({ ...s, maxDeployedUsd: 40 }, { deployedUsd: 37, openPositions: 4 }, 10).ok).toBe(false);
-    const ok = allocate(s, { deployedUsd: 92, openPositions: 9 }, 10);
-    expect(ok).toEqual({ ok: true, amountUsd: 8 });
+  it("never exceeds the wallet balance or the optional max deployed", () => {
+    expect(allocate(s, st(96, 9, 1_000), 10).ok).toBe(false); // deployed cap nearly reached
+    expect(allocate({ ...s, maxDeployedUsd: 40 }, st(37, 4, 1_000), 10).ok).toBe(false);
+    expect(allocate(s, st(92, 9, 1_000), 10)).toEqual({ ok: true, amountUsd: 8 });
+    expect(allocate(s, st(0, 0, 7), 10)).toEqual({ ok: true, amountUsd: 7 }); // wallet holds only $7
+    expect(allocate(s, st(0, 0, 3), 10)).toMatchObject({ ok: false }); // below the $5 minimum position
+  });
+  it("an empty wallet blocks with a reason that says so", () => {
+    expect(allocate(s, st(0, 0, 0), 10)).toMatchObject({ ok: false, reason: expect.stringMatching(/wallet has no balance/) });
+    expect(allocate(s, st(100, 3, 500), 10)).toMatchObject({ ok: false, reason: expect.stringMatching(/Maximum capital deployed/) });
+  });
+  it("with no deployed cap, only the wallet limits spending", () => {
+    const open = { ...s, maxDeployedUsd: null };
+    expect(allocate(open, st(5_000, 3, 800), 10)).toEqual({ ok: true, amountUsd: 10 });
+    expect(capitalSnapshot(open, st(5_000, 3, 800))).toMatchObject({ walletUsd: 800, availableUsd: 800 });
+  });
+  it("an unknown wallet balance (no wallet, or RPC down) is not treated as zero", () => {
+    expect(allocate(s, st(0, 0, null), 10)).toEqual({ ok: true, amountUsd: 10 });
+    expect(allocate({ ...s, maxDeployedUsd: null }, st(0, 0), 10)).toEqual({ ok: true, amountUsd: 10 });
+    expect(capitalSnapshot({ ...s, maxDeployedUsd: null }, st(0, 0, null)).availableUsd).toBeNull();
+    expect(capitalSnapshot(s, st(30, 3, null))).toMatchObject({ walletUsd: null, availableUsd: 70 }); // the cap still applies
   });
   it("enforces max open positions", () => {
-    expect(allocate(s, { deployedUsd: 50, openPositions: 10 }, 10)).toMatchObject({ ok: false });
-    expect(capitalSnapshot(s, { deployedUsd: 30, openPositions: 3 })).toMatchObject({ availableUsd: 70, slotsLeft: 7 });
+    expect(allocate(s, st(50, 10, 1_000), 10)).toMatchObject({ ok: false });
+    expect(capitalSnapshot(s, st(30, 3, 1_000))).toMatchObject({ availableUsd: 70, slotsLeft: 7 });
+    expect(capitalSnapshot(s, st(30, 3, 40))).toMatchObject({ availableUsd: 40 }); // the wallet is the tighter limit
   });
   it("rejects invalid or tiny amounts", () => {
-    expect(allocate(s, { deployedUsd: 0, openPositions: 0 }, -1).ok).toBe(false);
-    expect(allocate(s, { deployedUsd: 0, openPositions: 0 }, NaN).ok).toBe(false);
-    expect(allocate(s, { deployedUsd: 0, openPositions: 0 }, 2).ok).toBe(false);
+    expect(allocate(s, st(0, 0, 1_000), -1).ok).toBe(false);
+    expect(allocate(s, st(0, 0, 1_000), NaN).ok).toBe(false);
+    expect(allocate(s, st(0, 0, 1_000), 2).ok).toBe(false);
   });
-  it("10 positions of $10 exactly fill $100 and the 11th is refused", () => {
+  it("10 positions of $10 exactly fill a $100 deployed cap and the 11th is refused", () => {
     let deployed = 0;
     for (let i = 0; i < 10; i++) {
-      const r = allocate(s, { deployedUsd: deployed, openPositions: i }, 10);
-      expect(r.ok).toBe(true);
+      expect(allocate(s, st(deployed, i, 1_000), 10).ok).toBe(true);
       deployed += 10;
     }
-    expect(allocate(s, { deployedUsd: deployed, openPositions: 10 }, 10).ok).toBe(false);
+    expect(allocate(s, st(deployed, 10, 1_000), 10).ok).toBe(false);
   });
   it("manual amounts are checked without silent shrinking", () => {
-    expect(checkManualAmount(s, { deployedUsd: 0, openPositions: 0 }, 11)).toMatch(/maximum position/);
-    expect(checkManualAmount(s, { deployedUsd: 0, openPositions: 0 }, 8)).toBeNull();
+    expect(checkManualAmount(s, st(0, 0, 1_000), 11)).toMatch(/maximum position/);
+    expect(checkManualAmount(s, st(0, 0, 1_000), 8)).toBeNull();
+    expect(checkManualAmount(s, st(0, 0, 6), 8)).toMatch(/wallet balance/);
+    expect(checkManualAmount(s, st(95, 3, 1_000), 8)).toMatch(/available capital/);
+    expect(checkManualAmount(s, st(0, 0, null), 8)).toBeNull();
   });
 });
 

@@ -16,11 +16,10 @@ export const tradingSettingsInput = z
   .object({
     environment: z.enum(["MANUAL", "LIVE"]),
     autoTradingEnabled: z.boolean(),
-    capitalUsd: z.number().positive().max(10_000_000),
     maxPositionUsd: z.number().positive(),
     minPositionUsd: z.number().min(0),
     maxOpenPositions: z.number().int().min(1).max(500),
-    maxDeployedUsd: z.number().positive(),
+    maxDeployedUsd: z.number().positive().nullable(),
     minOpportunityScore: z.number().min(0).max(100),
     minLiquidityUsd: z.number().min(0),
     minVolume24hUsd: z.number().min(0),
@@ -41,8 +40,7 @@ export const tradingSettingsInput = z
   })
   .superRefine((v, ctx) => {
     if (v.minPositionUsd > v.maxPositionUsd) ctx.addIssue({ code: "custom", path: ["minPositionUsd"], message: "Minimum position exceeds maximum" });
-    if (v.maxPositionUsd > v.capitalUsd) ctx.addIssue({ code: "custom", path: ["maxPositionUsd"], message: "Maximum position exceeds trading capital" });
-    if (v.maxDeployedUsd > v.capitalUsd) ctx.addIssue({ code: "custom", path: ["maxDeployedUsd"], message: "Maximum deployed exceeds trading capital" });
+    if (v.maxDeployedUsd !== null && v.maxPositionUsd > v.maxDeployedUsd) ctx.addIssue({ code: "custom", path: ["maxPositionUsd"], message: "Maximum position exceeds the maximum deployed" });
     if (v.filters.minMarketCapUsd > v.filters.maxMarketCapUsd) ctx.addIssue({ code: "custom", path: ["filters", "minMarketCapUsd"], message: "Min market cap exceeds max" });
     const err = validateTargets(v.targets);
     if (err) ctx.addIssue({ code: "custom", path: ["targets"], message: err });
@@ -55,11 +53,10 @@ export interface UserSettings {
   userId: string;
   environment: Environment;
   autoTradingEnabled: boolean;
-  capitalUsd: number;
   maxPositionUsd: number;
   minPositionUsd: number;
   maxOpenPositions: number;
-  maxDeployedUsd: number;
+  maxDeployedUsd: number | null;
   minOpportunityScore: number;
   minLiquidityUsd: number;
   minVolume24hUsd: number;
@@ -78,7 +75,8 @@ export interface UserSettings {
 
 function hydrate(row: TradingSettingsDoc): UserSettings {
   const targets = [...(row.targets ?? [])].sort((a, b) => a.level - b.level);
-  const { id, ...rest } = withId(row);
+  // accounts created before v4 may still carry the retired capitalUsd; never surface it
+  const { id, capitalUsd: _legacyCapital, ...rest } = withId(row) as ReturnType<typeof withId<TradingSettingsDoc>> & { capitalUsd?: number };
   return {
     id,
     ...rest,
@@ -88,7 +86,7 @@ function hydrate(row: TradingSettingsDoc): UserSettings {
   };
 }
 
-export const SETTINGS_VERSION = 3;
+export const SETTINGS_VERSION = 4;
 
 /** True when `chains` holds exactly the six chains this app originally scanned (any order). */
 export function isOriginalChainSet(chains: readonly string[] | undefined): boolean {
@@ -104,11 +102,10 @@ export function defaultSettingsDoc(userId: string, now = new Date()): TradingSet
     userId,
     environment: "MANUAL",
     autoTradingEnabled: false,
-    capitalUsd: 100,
     maxPositionUsd: 10,
     minPositionUsd: 5,
     maxOpenPositions: 10,
-    maxDeployedUsd: 100,
+    maxDeployedUsd: null,
     minOpportunityScore: 55,
     minLiquidityUsd: 20_000,
     minVolume24hUsd: 10_000,
@@ -151,9 +148,17 @@ async function migrateSettings(row: TradingSettingsDoc): Promise<TradingSettings
   }
   // v3: more chains exist now. An account whose chain list is exactly the original six never chose that subset —
   // it is just the old default — so it gets every chain; anyone who picked a different set keeps their choice.
-  if (isOriginalChainSet(row.filters?.chains)) set["filters.chains"] = fresh.filters.chains;
+  if (version < 3 && isOriginalChainSet(row.filters?.chains)) set["filters.chains"] = fresh.filters.chains;
+  // v4: capital now comes from the connected wallet (the typed-in "trading capital" was a demo-trading leftover, and its
+  // $100 default also capped deployment). Drop it, and lift the old $100 default cap; a cap the user chose is kept.
+  const legacy = row as TradingSettingsDoc & { capitalUsd?: number };
+  const unset: Record<string, ""> = {};
+  if (version < 4) {
+    if (legacy.capitalUsd !== undefined) unset.capitalUsd = "";
+    if (row.maxDeployedUsd === 100) set.maxDeployedUsd = null;
+  }
   const col = await collections.tradingSettings();
-  await col.updateOne({ _id: row._id }, { $set: set });
+  await col.updateOne({ _id: row._id }, { $set: set, ...(Object.keys(unset).length ? { $unset: unset } : {}) });
   return (await col.findOne({ _id: row._id })) ?? row;
 }
 

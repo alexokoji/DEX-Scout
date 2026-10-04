@@ -20,8 +20,7 @@ export default async function DashboardPage() {
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-6">
         <Stat label="Wallet balance" value={pf.wallet?.balanceUsd != null ? usd(pf.wallet.balanceUsd) : "—"} sub={pf.wallet ? pf.wallet.summary || "no balance" : <Link href="/wallet" className="text-accent">Connect wallet</Link>} />
-        <Stat label="Trading capital" value={usd(pf.capital.capitalUsd)} sub={`${d.env} allocation`} />
-        <Stat label="Available capital" value={usd(pf.capital.availableUsd)} sub={`${usd(pf.capital.deployedUsd)} deployed`} />
+        <Stat label="Available to trade" value={pf.capital.availableUsd !== null ? usd(pf.capital.availableUsd) : "—"} sub={pf.wallet ? `${usd(pf.capital.deployedUsd)} deployed` : "connect a wallet"} />
         <Stat label="Open positions" value={String(pf.positions)} sub={`${pf.capital.slotsLeft} slots left`} />
         <Stat label="Realized P/L" value={usd(pf.realizedPnlUsd)} tone={pf.realizedPnlUsd > 0 ? "up" : pf.realizedPnlUsd < 0 ? "down" : undefined} />
         <Stat label="Unrealized P/L" value={usd(pf.unrealizedPnlUsd)} tone={pf.unrealizedPnlUsd > 0 ? "up" : pf.unrealizedPnlUsd < 0 ? "down" : undefined} />

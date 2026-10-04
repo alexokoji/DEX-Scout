@@ -1,13 +1,14 @@
 import type { Filter, Sort } from "mongodb";
 import { z } from "zod";
-import { CHAIN_IDS, CHAINS } from "@/core/chains";
 import { capitalSnapshot } from "@/core/trading/capital";
 import { computeMetrics } from "@/core/trading/positions";
-import { providers } from "@/core/providers/registry";
 import { collections, withId, withIds } from "@/lib/db";
 import type { Environment, RiskLevel, SignalDoc, TokenDoc } from "@/lib/models";
 import { getSettings } from "./settings";
 import { capitalState } from "./trading";
+import { walletBalances } from "./walletBalance";
+
+export { walletBalances };
 import { workerStatuses } from "./workerState";
 
 const RISK_LEVELS: RiskLevel[] = ["LOWER", "MODERATE", "HIGH", "CRITICAL"];
@@ -47,27 +48,6 @@ export async function getTokenDetail(address: string, chain?: string) {
   const signalsCol = await collections.signals();
   const sig = await signalsCol.findOne({ tokenId: token.id, status: "ACTIVE" }, { sort: { createdAt: -1 } });
   return { token, signal: sig ? withId(sig) : null };
-}
-
-/** Native balances of every linked wallet: Solana wallets on Solana, EVM wallets on every EVM chain. */
-export async function walletBalances(userId: string) {
-  const walletsCol = await collections.wallets();
-  const wallets = withIds(await walletsCol.find({ userId }).sort({ createdAt: -1 }).toArray());
-  const p = providers();
-  const balances: { family: string; address: string; chain: string; symbol: string; amount: number; usd: number }[] = [];
-  await Promise.all(
-    wallets.flatMap((w) =>
-      (w.chain === "evm" ? CHAIN_IDS.filter((c) => CHAINS[c].family === "evm") : (["solana"] as const)).map(async (c) => {
-        const a = p.chains[c];
-        const [amount, px] = await Promise.all([a.getNativeBalance(w.address).catch(() => null), a.nativeUsdPrice().catch(() => 0)]);
-        if (amount !== null) balances.push({ family: w.chain, address: w.address, chain: c, symbol: CHAINS[c].nativeSymbol, amount, usd: amount * px });
-      }),
-    ),
-  );
-  balances.sort((x, y) => y.usd - x.usd);
-  const totalUsd = balances.reduce((s, b) => s + b.usd, 0);
-  const summary = balances.filter((b) => b.amount > 0).slice(0, 4).map((b) => `${b.amount.toFixed(3)} ${b.symbol}${b.chain === "solana" || b.symbol !== "ETH" ? "" : " (" + CHAINS[b.chain as keyof typeof CHAINS].name + ")"}`).join(" · ");
-  return { wallets: wallets.map((w) => ({ address: w.address, family: w.chain })), balances, totalUsd, summary };
 }
 
 export async function listTokens(query: TokenQuery) {
@@ -182,9 +162,10 @@ export async function portfolio(userId: string, environment: Environment) {
     positionViews(userId, environment),
     capitalState(userId, environment),
     accountsCol.findOne({ userId, environment }),
-    walletBalances(userId),
+    walletBalances(userId, settings.filters.chains),
   ]);
-  const cap = capitalSnapshot(settings, state);
+  // capital is the connected wallet's balance, not a typed-in number
+  const cap = capitalSnapshot(settings, { ...state, walletUsd: wb.wallets.length ? wb.totalUsd : null });
   const openValue = views.reduce((s, v) => s + v.metrics.currentValueUsd, 0);
   const unrealized = views.reduce((s, v) => s + v.metrics.unrealizedPnlUsd, 0);
   return {

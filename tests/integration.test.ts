@@ -361,7 +361,7 @@ d("auto trading honors the LIVE/mock safety gate", () => {
       const s = await getSettings(u);
       const { id: _a, userId: _b, ...rest } = s;
       void _a; void _b;
-      await updateSettings(u, tradingSettingsInput.parse({ ...rest, environment: "LIVE", autoTradingEnabled: true, capitalUsd: 100, maxPositionUsd: 10, minPositionUsd: 5, maxDeployedUsd: 100, maxOpenPositions: 1, minOpportunityScore: 0, minLiquidityUsd: 0, minVolume24hUsd: 0, maxPriceImpactPct: 10, maxSlippageBps: 500, maxAllowedRisk: "HIGH", filters: { ...rest.filters, minMarketCapUsd: 0, maxMarketCapUsd: 1e12, minLiquidityUsd: 0, minVolume24hUsd: 0, minHolders: 0, minTxCount1h: 0, maxPriceImpactPct: 50, maxTokenAgeHours: null } }));
+      await updateSettings(u, tradingSettingsInput.parse({ ...rest, environment: "LIVE", autoTradingEnabled: true, maxPositionUsd: 10, minPositionUsd: 5, maxDeployedUsd: null, maxOpenPositions: 1, minOpportunityScore: 0, minLiquidityUsd: 0, minVolume24hUsd: 0, maxPriceImpactPct: 10, maxSlippageBps: 500, maxAllowedRisk: "HIGH", filters: { ...rest.filters, minMarketCapUsd: 0, maxMarketCapUsd: 1e12, minLiquidityUsd: 0, minVolume24hUsd: 0, minHolders: 0, minTxCount1h: 0, maxPriceImpactPct: 50, maxTokenAgeHours: null } }));
       const tokens = await tokensCol.find({ chain: "solana", passedFilters: true, "safety.criticalIssues": { $size: 0 } }).sort({ liquidityUsd: -1 }).limit(3).toArray();
       for (const t of tokens) {
         const sigId = newId();

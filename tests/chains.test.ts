@@ -131,6 +131,32 @@ try {
     }
   });
 
+  it("v4 drops the typed-in trading capital and lifts the old $100 deployed cap, keeping a cap the user chose", async () => {
+    const { getSettings, defaultSettingsDoc } = await import("@/services/settings");
+    const col = await collections.tradingSettings();
+    const stale = newId();
+    const custom = newId();
+    const mk = (userId: string, maxDeployed: number) => {
+      const d = defaultSettingsDoc(userId) as ReturnType<typeof defaultSettingsDoc> & { capitalUsd?: number };
+      d.settingsVersion = 3;
+      d.capitalUsd = 100;
+      d.maxDeployedUsd = maxDeployed;
+      d.filters = { ...d.filters, chains: ["solana", "base"] }; // a deliberate selection must survive too
+      return d;
+    };
+    try {
+      await col.insertMany([mk(stale, 100), mk(custom, 500)] as never);
+      const a = await getSettings(stale);
+      expect(a.maxDeployedUsd).toBeNull();
+      expect("capitalUsd" in a).toBe(false);
+      expect((await col.findOne({ userId: stale }) as unknown as { capitalUsd?: number }).capitalUsd).toBeUndefined();
+      expect((await getSettings(custom)).maxDeployedUsd).toBe(500);
+      expect((await getSettings(stale)).filters.chains).toEqual(["solana", "base"]);
+    } finally {
+      await col.deleteMany({ userId: { $in: [stale, custom] } });
+    }
+  });
+
   it("upgrades accounts still on the original six chains to all chains, but leaves a deliberate selection alone", async () => {
     const { getSettings, defaultSettingsDoc, isOriginalChainSet } = await import("@/services/settings");
     expect(isOriginalChainSet([...ORIGINAL_CHAIN_IDS].reverse())).toBe(true);

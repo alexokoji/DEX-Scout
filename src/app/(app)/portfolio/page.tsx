@@ -10,18 +10,17 @@ export default async function PortfolioPage() {
   const user = await requireUser();
   const env = "LIVE" as const;
   const [pf, positions] = await Promise.all([portfolio(user.id, env), positionViews(user.id, env)]);
-  const total = pf.capital.availableUsd + pf.openPositionValueUsd;
+  const total = (pf.capital.walletUsd ?? 0) + pf.openPositionValueUsd;
   return (
     <div className="space-y-4">
       <PageHeader
         title="Portfolio"
-        subtitle="Wallet balance, trading allocation, open position value and available capital are tracked separately."
+        subtitle="Your wallet balance is your capital. Open position value and what is still available to trade are tracked separately."
       />
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <Stat label="Connected wallet" value={pf.wallet?.balanceUsd != null ? usd(pf.wallet.balanceUsd) : "—"} sub={pf.wallet ? `${pf.wallet.summary || "no balance"} (not part of allocation)` : <Link href="/wallet" className="text-accent">Link a wallet</Link>} />
-        <Stat label="Trading allocation" value={usd(pf.capital.capitalUsd)} sub="max the bot may use" />
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
+        <Stat label="Connected wallet" value={pf.wallet?.balanceUsd != null ? usd(pf.wallet.balanceUsd) : "—"} sub={pf.wallet ? pf.wallet.summary || "no balance" : <Link href="/wallet" className="text-accent">Link a wallet</Link>} />
         <Stat label="Open position value" value={usd(pf.openPositionValueUsd)} sub={`${pf.positions} positions`} />
-        <Stat label="Available capital" value={usd(pf.capital.availableUsd)} sub={`${usd(pf.capital.deployedUsd)} deployed`} />
+        <Stat label="Available to trade" value={pf.capital.availableUsd !== null ? usd(pf.capital.availableUsd) : "—"} sub={`${usd(pf.capital.deployedUsd)} deployed`} />
         <Stat label="Unrealized P/L" value={usd(pf.unrealizedPnlUsd)} tone={pf.unrealizedPnlUsd >= 0 ? "up" : "down"} />
         <Stat label="Realized P/L" value={usd(pf.realizedPnlUsd)} tone={pf.realizedPnlUsd >= 0 ? "up" : "down"} sub={`Est. equity ${usd(total)}`} />
       </div>

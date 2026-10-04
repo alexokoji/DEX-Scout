@@ -12,6 +12,7 @@ import { logEvent, safeMessage } from "@/lib/events";
 import type { Environment, Json, TokenDoc, TradeDoc, TradeKind } from "@/lib/models";
 import { analyzeSnapshot, loadAnalysis, persistAnalysis } from "./analysis";
 import { getSettings, type UserSettings } from "./settings";
+import { spendableUsd } from "./walletBalance";
 
 export class TradeError extends Error {
   constructor(message: string, public status = 400, public violations: string[] = []) {
@@ -52,10 +53,12 @@ export async function getOrCreateAccount(userId: string, environment: Environmen
   return withId(acct);
 }
 
-export async function capitalState(userId: string, environment: Environment, session?: ClientSession): Promise<CapitalState> {
+/** Open exposure, plus — when `chain` is given — what the user's wallet can spend on that chain (null if unknown). */
+export async function capitalState(userId: string, environment: Environment, session?: ClientSession, chain?: ChainId): Promise<CapitalState> {
   const positions = await collections.positions();
   const open = await positions.find({ userId, environment, status: { $ne: "CLOSED" } }, { projection: { costBasisUsd: 1 }, session }).toArray();
-  return { deployedUsd: open.reduce((s, p) => s + p.costBasisUsd, 0), openPositions: open.length };
+  const walletUsd = chain ? await spendableUsd(userId, chain).catch(() => null) : undefined;
+  return { deployedUsd: open.reduce((s, p) => s + p.costBasisUsd, 0), openPositions: open.length, walletUsd };
 }
 
 function quoteJson(q: SwapQuote): Json {
@@ -120,7 +123,7 @@ export async function quoteTrade(userId: string, input: PrepareTradeInput, autom
   }
   const analysis = await ensureAnalysis(withId(token));
   const sim = await p.dex.simulateSwap({ chain: input.chain, side: "SELL", tokenAddress: token.address, amountUsd: input.amountUsd, slippageBps: input.slippageBps });
-  const state = await capitalState(userId, input.environment);
+  const state = await capitalState(userId, input.environment, undefined, input.chain);
   const candidate = toCandidate(analysis, quote, sim.ok);
   const violations = evaluateEntryRules(settings, state, input, candidate, automatic);
   // manual buys get the user's own preference thresholds as warnings; only the bot is blocked by them

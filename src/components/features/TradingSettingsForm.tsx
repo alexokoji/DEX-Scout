@@ -73,11 +73,10 @@ export function TradingSettingsForm({ initial, liveEnabled }: { initial: S; live
       <Card>
         <CardHeader title="Capital & position limits" sub="Enforced server-side on every entry; client values are never trusted." />
         <CardBody className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          <Num label="Trading capital" hint="USD" value={s.capitalUsd} onChange={(v) => set("capitalUsd", v)} err={errors.capitalUsd} />
           <Num label="Maximum position size" hint="USD" value={s.maxPositionUsd} onChange={(v) => set("maxPositionUsd", v)} err={errors.maxPositionUsd} />
           <Num label="Minimum position size" hint="USD" value={s.minPositionUsd} onChange={(v) => set("minPositionUsd", v)} err={errors.minPositionUsd} />
           <Num label="Maximum open positions" value={s.maxOpenPositions} step="1" min={1} onChange={(v) => set("maxOpenPositions", v)} err={errors.maxOpenPositions} />
-          <Num label="Maximum capital deployed" hint="USD" value={s.maxDeployedUsd} onChange={(v) => set("maxDeployedUsd", v)} err={errors.maxDeployedUsd} />
+          <Num label="Maximum capital deployed" hint="USD (blank = your wallet balance)" value={s.maxDeployedUsd} onChange={(v) => set("maxDeployedUsd", v || null)} err={errors.maxDeployedUsd} />
           <Num label="Maximum position age" hint="hours (blank = none)" value={s.maxPositionAgeHours} step="1" min={1} onChange={(v) => set("maxPositionAgeHours", v || null)} />
         </CardBody>
       </Card>
