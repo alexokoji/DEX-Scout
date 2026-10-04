@@ -29,3 +29,5 @@ Max position age only closes positions that are **in profit**; losers are held w
 
 ## Live path
 Every trade is LIVE — there is no simulated/paper mode. `prepareTrade` builds an unsigned transaction (Jupiter on Solana, 0x on EVM); the user's wallet signs and sends; `/execute` records the signature; `reconcileLiveTrade` follows it on-chain and only then creates/updates the Position. The bot cannot sign, so it holds no withdrawal authority. Live position exits are queued the same way.
+## Notifications
+When the monitor queues a sell (profit target, emergency exit, max-age), `prepareLiveSell` calls `notifyUser`: it is recorded in the in-app bell (header; also raises a toast and, if allowed, a browser notification while the app is open) and pushed to the user's optional free channels — an ntfy.sh topic and/or a Discord webhook (Settings → Notifications). Hosts are fixed server-side, so a saved value can't make the server call an arbitrary URL. A sell that expires unsigned is re-queued by the next monitor run, but the same position/kind only notifies once per hour. Delivery never throws into the trade flow.

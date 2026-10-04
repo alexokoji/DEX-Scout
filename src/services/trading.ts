@@ -12,6 +12,7 @@ import { logEvent, safeMessage } from "@/lib/events";
 import type { Environment, Json, TokenDoc, TradeDoc, TradeKind } from "@/lib/models";
 import { analyzeSnapshot, loadAnalysis, persistAnalysis } from "./analysis";
 import { getSettings, type UserSettings } from "./settings";
+import { notifyUser } from "./notifications";
 import { spendableUsd } from "./walletBalance";
 
 export class TradeError extends Error {
@@ -429,6 +430,20 @@ export async function reconcileLiveTrade(tradeId: string) {
 }
 
 /** Prepare an unsigned LIVE sell that waits in the user's approval queue (no keys are held server-side). */
+/** Wording for the "a sell is waiting for your signature" notification. */
+export function sellQueuedNotification(kind: TradeKind, symbol: string, chainName: string, reason: string, fraction: number, usdValue: number, tradeId: string, positionId = "") {
+  const pct = Math.round(Math.min(1, Math.max(0, fraction)) * 100);
+  const title = kind === "EMERGENCY_EXIT" ? `Emergency exit ready: ${symbol}` : kind === "TARGET_EXIT" ? `Target hit: ${symbol} sell ready to sign` : `Sell ready to sign: ${symbol}`;
+  return {
+    type: "SELL_QUEUED" as const,
+    title,
+    body: `${reason}. Sell ${pct}% (~$${usdValue.toFixed(2)}) on ${chainName}. Open DEX Scout and approve it in your wallet within 10 minutes.`,
+    url: "/wallet",
+    tradeId,
+    dedupeKey: `sell:${positionId}:${kind}`,
+  };
+}
+
 export async function prepareLiveSell(userId: string, positionId: string, sellAmount: number, kind: TradeKind, reason: string, targetLevel?: number) {
   assertEnvironment("LIVE");
   const positions = await collections.positions();
@@ -456,6 +471,8 @@ export async function prepareLiveSell(userId: string, positionId: string, sellAm
   };
   await trades.insertOne(doc);
   await logEvent({ type: "TRADE_REQUESTED", source: "live", userId, message: `LIVE ${kind} for ${token.symbol} awaiting wallet approval: ${reason}`, data: { tradeId } });
+  // The bot can't sign, so a queued sell does nothing until the user approves it: tell them it's waiting.
+  await notifyUser(userId, sellQueuedNotification(kind, token.symbol, CHAINS[token.chain as ChainId]?.name ?? token.chain, reason, amount / pos.amount, doc.inputUsd, tradeId, pos._id));
   return { trade: withId(doc), created: true as const };
 }
 

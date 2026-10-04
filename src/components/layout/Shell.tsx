@@ -1,12 +1,13 @@
 "use client";
 
-import { Activity, Bot, Briefcase, Gauge, LineChart, ListChecks, LogOut, Menu, Radar, Settings, Wallet, X, Zap, Layers, Plug } from "lucide-react";
+import { Activity, Bot, Briefcase, Gauge, LineChart, ListChecks, LogOut, Menu, Radar, Settings, Wallet, X, Zap, Layers, Plug, BellRing } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
 import { Badge } from "@/components/ui/badges";
 import { cn } from "@/lib/utils";
 import { ConnectWalletButton } from "./ConnectWallet";
+import { NotificationBell } from "./NotificationBell";
 
 const NAV = [
   { href: "/", label: "Dashboard", icon: Gauge },
@@ -20,6 +21,7 @@ const NAV = [
   { href: "/strategies", label: "Strategies", icon: LineChart },
   { href: "/activity", label: "Activity", icon: Activity },
   { href: "/settings/trading", label: "Settings", icon: Settings },
+  { href: "/settings/notifications", label: "Notifications", icon: BellRing },
   { href: "/settings/integrations", label: "Integrations", icon: Plug },
   { href: "/wallet", label: "Wallet", icon: Wallet },
 ];
@@ -94,6 +96,7 @@ export function Shell({ children, mock, liveEnabled, email, mode }: { children: 
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <NotificationBell />
             <ConnectWalletButton />
           </div>
         </header>

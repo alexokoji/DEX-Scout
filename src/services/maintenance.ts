@@ -1,4 +1,5 @@
 import { collections } from "@/lib/db";
+import { pruneNotifications } from "./notifications";
 import { logEvent } from "@/lib/events";
 
 const DAY = 86_400_000;
@@ -23,7 +24,8 @@ export async function pruneOldData(now = new Date()) {
     botRuns.deleteMany({ startedAt: { $lt: ago(14) }, tradesExecuted: 0 }),
     trades.deleteMany({ status: { $in: ["EXPIRED", "CANCELLED"] }, createdAt: { $lt: ago(14) } }),
   ]);
-  const total = metrics.deletedCount + prices.deletedCount + volumes.deletedCount + debugEvents.deletedCount + events.deletedCount + runs.deletedCount + oldTrades.deletedCount;
+  const oldNotifications = await pruneNotifications(30);
+  const total = oldNotifications + metrics.deletedCount + prices.deletedCount + volumes.deletedCount + debugEvents.deletedCount + events.deletedCount + runs.deletedCount + oldTrades.deletedCount;
   if (total > 0) await logEvent({ type: "SCANNER_COMPLETED", source: "maintenance", level: "DEBUG", message: `Retention pruned ${total} rows`, data: { metrics: metrics.deletedCount, prices: prices.deletedCount, volumes: volumes.deletedCount, events: events.deletedCount + debugEvents.deletedCount } });
   return total;
 }

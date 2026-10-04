@@ -25,6 +25,8 @@ import type {
   VolumeSnapshotDoc,
   WalletDoc,
   WorkerStateDoc,
+  NotificationDoc,
+  NotificationPrefsDoc,
 } from "./models";
 
 function mongoUri(): string {
@@ -75,6 +77,8 @@ export const collections = {
   trades: col<TradeDoc>("trades"),
   systemEvents: col<SystemEventDoc>("systemEvents"),
   workerStates: col<WorkerStateDoc>("workerStates"),
+  notifications: col<NotificationDoc>("notifications"),
+  notificationPrefs: col<NotificationPrefsDoc>("notificationPrefs"),
 };
 
 /** New application-level id. Stored as `_id` on every document (never a driver-generated ObjectId). */
@@ -169,6 +173,7 @@ export async function ensureIndexes(): Promise<void> {
         { key: { "transaction.signature": 1 }, name: "transaction_signature_string_unique", unique: true, partialFilterExpression: { "transaction.signature": { $type: "string" } } },
       ]);
     })(),
+    idx("notifications", [{ key: { userId: 1, createdAt: -1 }, name: "userId_createdAt" }]),
     idx("systemEvents", [
       { key: { ts: 1 }, name: "ts" },
       { key: { type: 1, ts: 1 }, name: "type_ts" },

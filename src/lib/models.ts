@@ -352,6 +352,32 @@ export interface TradeDoc {
   transaction: TransactionEmbed | null;
 }
 
+/** An in-app notification (the bell). Also pushed to the user's ntfy/Discord channels if they set any. */
+export interface NotificationDoc {
+  _id: string;
+  userId: string;
+  type: "SELL_QUEUED";
+  title: string;
+  body: string;
+  /** in-app path to open */
+  url: string;
+  tradeId: string | null;
+  /** at most one notification per key per reminder window (a sell that keeps re-queuing must not ping every 10 minutes) */
+  dedupeKey: string | null;
+  createdAt: Date;
+  readAt: Date | null;
+}
+
+/** Where to send notifications beyond the in-app bell. Keyed by userId. Both optional. */
+export interface NotificationPrefsDoc {
+  _id: string; // userId
+  /** ntfy.sh topic (free, no account): install the ntfy app and subscribe to this topic */
+  ntfyTopic: string | null;
+  /** Discord channel webhook URL */
+  discordWebhook: string | null;
+  updatedAt: Date;
+}
+
 export interface SystemEventDoc {
   _id: string;
   ts: Date;
