@@ -93,6 +93,7 @@ d("wallet approval queue", () => {
     const { providers } = await import("@/core/providers/registry");
     // The mock market keeps moving while this (persistent) database row stays put, and the entry guards now — correctly —
     // refuse a buy whose fill price has run away from the listed one. These tests are about the approval flow, so pin the fill.
+    await (await collections.tokens()).updateOne({ _id: token._id }, { $set: { priceUsd: token.priceUsd, lastScannedAt: new Date() } });
     const real = providers().dex.getQuote.bind(providers().dex);
     vi.spyOn(providers().dex, "getQuote").mockImplementation(async (req) => ({ ...(await real(req)), effectivePriceUsd: token.priceUsd, priceImpactPct: 0.3 }));
     return vi.spyOn(providers().dex, "buildSwapTransaction").mockResolvedValue({ unsignedTxBase64: tx });

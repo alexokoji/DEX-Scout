@@ -78,19 +78,31 @@ export async function chainsForThisTick(enabled: ChainId[], perTick: number): Pr
   return { chains: picked, of: ordered.length };
 }
 
-/** Per chain per tick: how many already-tracked tokens get a price refresh (DexScreener batches of 30, ~2 requests). */
-const REFRESH_PER_CHAIN = 60;
+/** Per chain per tick: how many already-tracked tokens get a price refresh (DexScreener batches of 30, up to 5 requests). */
+const REFRESH_PER_CHAIN = 150;
 
-/** Re-fetch the stalest tokens that pass filters on this tick's chains and weren't just discovered. Best-effort. */
+/**
+ * Re-fetch prices for tracked tokens on this tick's chains that weren't just discovered. Tokens someone is exposed to
+ * come first (open positions, active signals — even if they no longer pass filters), then the stalest passing ones.
+ * Best-effort: a provider failure just leaves those prices to age (and be shown as aged / hidden).
+ */
 export async function refreshTrackedPrices(p: ReturnType<typeof providers>, chains: ChainId[], alreadyFresh: TokenSnapshot[]): Promise<TokenSnapshot[]> {
   const refresh = p.data.refresh?.bind(p.data);
   if (!refresh) return [];
   const fresh = new Set(alreadyFresh.map((s) => `${s.chain}:${s.address}`));
   const tokens = await collections.tokens();
+  const [signalTokens, positionTokens] = await Promise.all([
+    (await collections.signals()).distinct("tokenId", { status: "ACTIVE" }),
+    (await collections.positions()).distinct("tokenId", { status: { $ne: "CLOSED" } }),
+  ]);
+  const exposed = [...new Set([...signalTokens, ...positionTokens])];
   const perChain = await Promise.all(
     chains.map(async (chain) => {
-      const stale = await tokens.find({ chain, passedFilters: true }, { projection: { address: 1 } }).sort({ lastScannedAt: 1 }).limit(REFRESH_PER_CHAIN + fresh.size).toArray();
-      const addrs = stale.map((t) => t.address).filter((a) => !fresh.has(`${chain}:${a}`)).slice(0, REFRESH_PER_CHAIN);
+      const [priority, stale] = await Promise.all([
+        exposed.length ? tokens.find({ chain, _id: { $in: exposed } }, { projection: { address: 1 } }).toArray() : Promise.resolve([]),
+        tokens.find({ chain, passedFilters: true }, { projection: { address: 1 } }).sort({ lastScannedAt: 1 }).limit(REFRESH_PER_CHAIN + fresh.size).toArray(),
+      ]);
+      const addrs = [...new Set([...priority, ...stale].map((t) => t.address))].filter((a) => !fresh.has(`${chain}:${a}`)).slice(0, REFRESH_PER_CHAIN);
       if (!addrs.length) return [] as TokenSnapshot[];
       return withTimeout(refresh(chain, addrs), 12_000, `refresh(${chain})`).catch(() => [] as TokenSnapshot[]);
     }),

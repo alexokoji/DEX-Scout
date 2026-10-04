@@ -302,6 +302,8 @@ export interface PositionDoc {
   updatedAt: Date;
   closedAt: Date | null;
   lastAnalysisAt: Date | null;
+  /** when currentPriceUsd was last actually fetched (a failed fetch must not look like a fresh price) */
+  priceAt?: Date | null;
 }
 
 export interface PositionEventDoc {

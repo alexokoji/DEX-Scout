@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { EnvBadge, HealthBadge, PnL, SignalBadge, Badge } from "@/components/ui/badges";
 import { EmptyState } from "@/components/ui/card";
-import { age, price, timeAgo, tokens, usd } from "@/lib/format";
+import { age, price, tokens, usd } from "@/lib/format";
 import { ClosePositionButton } from "./ClosePositionButton";
+import { PriceAge } from "./PriceAge";
 
 interface PV {
   id: string;
@@ -14,6 +15,7 @@ interface PV {
   origin: string;
   entryPriceUsd: number;
   currentPriceUsd: number;
+  priceAt?: Date | string | null;
   amount: number;
   investedUsd: number;
   realizedPnlUsd: number;
@@ -44,7 +46,7 @@ export function PositionsView({ positions, actions = true }: { positions: PV[]; 
                   <Badge>{p.origin}</Badge>
                   {p.signal && <span className="flex items-center gap-1 text-[11px] text-muted">opened by <SignalBadge type={p.signal.type} /> {p.signal.score.toFixed(0)}</span>}
                 </div>
-                <div className="mt-1 text-[11px] text-muted">opened {age(p.openedAt)} ago · updated {timeAgo(p.updatedAt)}</div>
+                <div className="mt-1 text-[11px] text-muted">opened {age(p.openedAt)} ago · <PriceAge at={p.priceAt ?? null} label="price" /></div>
               </div>
               <div className="flex items-center gap-3">
                 <PnL value={p.metrics.unrealizedPnlUsd} pct={p.metrics.pnlPct} className="text-base font-semibold" />

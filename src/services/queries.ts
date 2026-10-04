@@ -1,11 +1,13 @@
 import type { Filter, Sort } from "mongodb";
 import { z } from "zod";
 import { capitalSnapshot } from "@/core/trading/capital";
+import { PRICE_MAX_AGE_MS } from "@/core/config";
 import { computeMetrics } from "@/core/trading/positions";
 import { collections, withId, withIds } from "@/lib/db";
 import type { Environment, RiskLevel, SignalDoc, TokenDoc } from "@/lib/models";
 import { getSettings } from "./settings";
 import { capitalState } from "./trading";
+import { refreshTokenIfStale } from "./tokenPrice";
 import { walletBalances } from "./walletBalance";
 
 export { walletBalances };
@@ -30,6 +32,8 @@ export const tokenQuerySchema = z.object({
   chain: z.string().optional(),
   /** true = only tokens passing scanner filters (Signals page); false/undefined = everything discovered */
   passing: z.enum(["true", "false"]).optional(),
+  /** "true" also lists tokens whose price hasn't been refreshed within PRICE_MAX_AGE_MS (hidden by default: their price is not real) */
+  stale: z.enum(["true"]).optional(),
 });
 export type TokenQuery = z.infer<typeof tokenQuerySchema>;
 
@@ -43,8 +47,10 @@ export async function findToken(address: string, chain?: string) {
 
 /** The token page + its detail API: the token plus its one active signal (with the signal's own embedded AI analysis), if any. */
 export async function getTokenDetail(address: string, chain?: string) {
-  const token = await findToken(address, chain);
+  let token = await findToken(address, chain);
   if (!token) return null;
+  // Someone opening a token page may be about to trade it: make sure the price on screen is live, not whatever the last scan left.
+  if (await refreshTokenIfStale(token)) token = (await findToken(address, chain)) ?? token;
   const signalsCol = await collections.signals();
   const sig = await signalsCol.findOne({ tokenId: token.id, status: "ACTIVE" }, { sort: { createdAt: -1 } });
   return { token, signal: sig ? withId(sig) : null };
@@ -68,6 +74,9 @@ export async function listTokens(query: TokenQuery) {
   if (query.dex) where.dex = new RegExp(`^${escapeRegex(query.dex)}$`, "i");
   if (query.chain) where.chain = query.chain;
   if (query.passing === "true") where.passedFilters = true;
+  // A price that hasn't been refreshed recently isn't a price: keep those out of the lists unless asked.
+  const staleCutoff = new Date(Date.now() - PRICE_MAX_AGE_MS);
+  if (query.stale !== "true") where.lastScannedAt = { $gte: staleCutoff };
   if (query.signal) {
     const cond = query.signal === "BUY" || query.signal === "WATCH" ? { status: "ACTIVE" as const, type: query.signal } : { status: "ACTIVE" as const, type: { $in: ["BUY", "WATCH"] as const } };
     const ids = await signalsCol.distinct("tokenId", cond);
@@ -85,7 +94,9 @@ export async function listTokens(query: TokenQuery) {
   const signalByToken = new Map<string, { id: string; type: string; score: number }>();
   for (const s of activeSignals) if (!signalByToken.has(s.tokenId)) signalByToken.set(s.tokenId, { id: s._id, type: s.type, score: s.score });
   const withSignals = withIds(rows).map((t) => ({ ...t, signals: signalByToken.has(t.id) ? [signalByToken.get(t.id)!] : [] }));
-  return { total, page: query.page, pageSize: query.pageSize, pages: Math.max(1, Math.ceil(total / query.pageSize)), rows: withSignals };
+  // how many matching tokens were left out for having an old price (for the "show them" link)
+  const staleHidden = query.stale === "true" ? 0 : await tokensCol.countDocuments({ ...where, lastScannedAt: { $lt: staleCutoff } });
+  return { total, page: query.page, pageSize: query.pageSize, pages: Math.max(1, Math.ceil(total / query.pageSize)), staleHidden, rows: withSignals };
 }
 
 export async function attachTokens<T extends { tokenId: string }>(rows: T[]): Promise<(T & { token: ReturnType<typeof withId<TokenDoc>> })[]> {
@@ -189,6 +200,7 @@ export async function dashboard(userId: string) {
     collections.signals(), collections.trades(), collections.bots(), collections.tokens(), collections.systemEvents(),
   ]);
 
+  const fresh = new Date(Date.now() - PRICE_MAX_AGE_MS); // counts and market averages only use tokens whose price is current
   const [pf, todaySignals, activeSignals, tradesToday, recentSignalsRaw, positions, recentTradesRaw, botRaw, workers, tokenCount, passing, events, marketAgg] = await Promise.all([
     portfolio(userId, env),
     signalsCol.countDocuments({ createdAt: { $gte: startOfDay } }),
@@ -199,11 +211,11 @@ export async function dashboard(userId: string) {
     tradesCol.find({ userId }).sort({ createdAt: -1 }).limit(6).toArray(),
     botsCol.findOne({ userId }),
     workerStatuses(),
-    tokensCol.countDocuments({}),
-    tokensCol.countDocuments({ passedFilters: true }),
+    tokensCol.countDocuments({ lastScannedAt: { $gte: fresh } }),
+    tokensCol.countDocuments({ passedFilters: true, lastScannedAt: { $gte: fresh } }),
     eventsCol.find({}).sort({ ts: -1 }).limit(8).toArray(),
     tokensCol.aggregate<{ avgChange1h: number | null; avgBuySellRatio: number | null; sumVolume24h: number | null }>([
-      { $match: { passedFilters: true } },
+      { $match: { passedFilters: true, lastScannedAt: { $gte: fresh } } },
       { $group: { _id: null, avgChange1h: { $avg: "$change1h" }, avgBuySellRatio: { $avg: "$buySellRatio" }, sumVolume24h: { $sum: "$volume24hUsd" } } },
     ]).toArray(),
   ]);

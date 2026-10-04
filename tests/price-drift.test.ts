@@ -99,6 +99,8 @@ describe("price refresh request shape", () => {
 
   /** a live quote that would fill `pct`% above the listed price */
   async function quoteAbove(pct: number) {
+    // a quote now also refreshes the stored price, so put the listed price back where each test expects it
+    await (await collections.tokens()).updateOne({ _id: token._id }, { $set: { priceUsd: token.priceUsd, lastScannedAt: new Date() } });
     const { providers } = await import("@/core/providers/registry");
     const real = providers().dex.getQuote.bind(providers().dex);
     vi.spyOn(providers().dex, "getQuote").mockImplementation(async (req) => {

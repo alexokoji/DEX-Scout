@@ -59,6 +59,7 @@ export async function monitorPosition(pos: PositionDoc, token: TokenDoc): Promis
     {
       $set: {
         currentPriceUsd: price,
+        ...(snap ? { priceAt: new Date() } : {}),
         health: assessment.health,
         status,
         lastAnalysisAt: new Date(),

@@ -52,6 +52,11 @@ export function age(from: Date | string | null | undefined): string {
   return `${Math.floor(h / 24)}d`;
 }
 
+/** Milliseconds since `from` (Infinity when unknown). */
+export function ageMs(from: Date | string | null | undefined): number {
+  return from ? Date.now() - new Date(from).getTime() : Infinity;
+}
+
 export function timeAgo(from: Date | string | null | undefined): string {
   const a = age(from);
   return a === "now" || a === "—" ? a : `${a} ago`;

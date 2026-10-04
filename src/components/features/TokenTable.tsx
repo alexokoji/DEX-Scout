@@ -3,6 +3,7 @@ import { Change, RiskBadge, ScoreBar, SignalBadge } from "@/components/ui/badges
 import { EmptyState } from "@/components/ui/card";
 import { chainMeta } from "@/core/chains";
 import { age, compactUsd, int, price } from "@/lib/format";
+import { PriceAge } from "./PriceAge";
 
 export interface TokenRow {
   id: string;
@@ -13,6 +14,7 @@ export interface TokenRow {
   dex: string;
   dataSource: string;
   priceUsd: number;
+  lastScannedAt?: Date | string | null;
   marketCapUsd: number;
   liquidityUsd: number;
   volume24hUsd: number;
@@ -65,7 +67,7 @@ export function TokenTable({ rows, showStage = false }: { rows: TokenRow[]; show
                     <span className="text-[11px] text-muted">{t.name} · {chainMeta(t.chain).name} · {t.dex}</span>
                   </Link>
                 </td>
-                <td className="num px-3 py-2">{price(t.priceUsd)}</td>
+                <td className="num px-3 py-2">{price(t.priceUsd)}<div><PriceAge at={t.lastScannedAt} label="" /></div></td>
                 <td className="num px-3 py-2">{compactUsd(t.marketCapUsd)}</td>
                 <td className="num px-3 py-2">{compactUsd(t.liquidityUsd)}</td>
                 <td className="num px-3 py-2">{compactUsd(t.volume24hUsd)}</td>
@@ -91,7 +93,7 @@ export function TokenTable({ rows, showStage = false }: { rows: TokenRow[]; show
               <SignalBadge type={t.signals[0]?.type} />
             </div>
             <div className="mt-1 grid grid-cols-3 gap-2 text-xs">
-              <div><div className="text-muted">Price</div><div className="num">{price(t.priceUsd)}</div></div>
+              <div><div className="text-muted">Price</div><div className="num">{price(t.priceUsd)}</div><PriceAge at={t.lastScannedAt} label="" /></div>
               <div><div className="text-muted">Mcap</div><div className="num">{compactUsd(t.marketCapUsd)}</div></div>
               <div><div className="text-muted">Liq</div><div className="num">{compactUsd(t.liquidityUsd)}</div></div>
               <div><div className="text-muted">5m</div><Change value={t.change5m} /></div>

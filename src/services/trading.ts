@@ -13,6 +13,7 @@ import type { Environment, Json, TokenDoc, TradeDoc, TradeKind } from "@/lib/mod
 import { analyzeSnapshot, loadAnalysis, persistAnalysis } from "./analysis";
 import { getSettings, type UserSettings } from "./settings";
 import { notifyUser } from "./notifications";
+import { applyLiveSnapshot } from "./tokenPrice";
 import { spendableUsd } from "./walletBalance";
 
 export class TradeError extends Error {
@@ -129,6 +130,8 @@ export async function quoteTrade(userId: string, input: PrepareTradeInput, autom
   const violations = evaluateEntryRules(settings, state, input, candidate, automatic);
   // How far is what we'd actually pay from the price the app has been showing (and, for the bot, the price it signalled on)?
   const pricing = priceDrift(token.priceUsd, quote.effectivePriceUsd, token.lastScannedAt);
+  // the live snapshot we just analysed is newer than what's stored: bring the displayed price up to date
+  if (Date.now() - analysis.computedAt.getTime() < 2 * 60_000 && analysis.snapshot.priceUsd > 0) await applyLiveSnapshot(token._id, analysis.snapshot).catch(() => {});
   if (automatic && pricing.driftPct > AUTO_MAX_CHASE_PCT) violations.push(`Price already moved ${pricing.driftPct.toFixed(0)}% above the listed price (${fmtPrice(token.priceUsd)} → ${fmtPrice(quote.effectivePriceUsd)}); not chasing it`);
   // manual buys get the user's own preference thresholds as warnings; only the bot is blocked by them
   const warnings = automatic ? [] : [...entryWarnings(candidate, settings), ...(pricing.warning ? [pricing.warning] : [])];

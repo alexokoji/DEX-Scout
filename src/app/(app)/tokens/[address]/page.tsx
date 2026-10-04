@@ -11,6 +11,7 @@ import type { ChainId, MarketAnalysis, OnChainAnalysis, ScoreComponent } from "@
 import { requireUser } from "@/lib/auth";
 import { liveTradingAllowed } from "@/lib/env";
 import { age, compactUsd, int, price, shortAddr, timeAgo } from "@/lib/format";
+import { PriceAge } from "@/components/features/PriceAge";
 import { getTokenDetail } from "@/services/queries";
 import { getSettings } from "@/services/settings";
 
@@ -48,7 +49,7 @@ export default async function TokenPage({ params, searchParams }: { params: Prom
       />
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <Stat label="Price" value={price(token.priceUsd)} sub={<span className="flex gap-2"><span>5m <Change value={token.change5m} /></span><span>1h <Change value={token.change1h} /></span><span className="text-muted">· updated {timeAgo(token.lastScannedAt)}</span></span>} />
+        <Stat label="Price" value={price(token.priceUsd)} sub={<span className="flex gap-2"><span>5m <Change value={token.change5m} /></span><span>1h <Change value={token.change1h} /></span><PriceAge at={token.lastScannedAt} /></span>} />
         <Stat label="Market cap" value={compactUsd(token.marketCapUsd)} sub={`FDV ${compactUsd(token.fdvUsd)}`} />
         <Stat label="Liquidity" value={compactUsd(token.liquidityUsd)} sub={`${token.pairCount} pair(s)`} />
         <Stat label="24h volume" value={compactUsd(token.volume24hUsd)} sub={`1h ${compactUsd(token.volume1hUsd)}`} />

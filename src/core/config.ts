@@ -43,6 +43,14 @@ export const DEFAULT_WEIGHTS: ScoreWeights = scoreWeightsSchema.parse({});
  * needs an acceptable risk level and a trend that isn't down or overextended. Every trade — manual or the
  * bot's — still needs the user's own wallet signature, so a lower bar widens the list, not anyone's authority.
  */
+/**
+ * A listed price older than this is not shown as current anywhere (lists, signals) and a token with one cannot be
+ * signalled. Prices move a lot in minutes on these tokens; the scanner refreshes tracked ones every few minutes.
+ */
+export const PRICE_MAX_AGE_MS = 30 * 60_000;
+/** Past this a price is shown as aging (amber) so the user knows it is not live. */
+export const PRICE_WARN_AGE_MS = 5 * 60_000;
+
 export const SIGNAL_THRESHOLDS = { buy: 56, watch: 50 } as const;
 
 /** How long a generated signal stays actionable. */

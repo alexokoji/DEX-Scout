@@ -25,6 +25,11 @@ export async function TokenListPage({ searchParams, basePath, title, subtitle, d
   const [result, dexes] = await Promise.all([listTokens(query), tokensCol.distinct("dex")]);
   dexes.sort();
   const params: Record<string, string | undefined> = Object.fromEntries(Object.entries(flat).filter(([k]) => k !== "page"));
+  const staleLink = (p: Record<string, string | undefined>, on: boolean) => {
+    const sp = new URLSearchParams(Object.entries(p).filter(([k, v]) => v && k !== "stale") as [string, string][]);
+    if (on) sp.set("stale", "true");
+    return sp.toString();
+  };
   const tab = (label: string, passing: string) => {
     const sp = new URLSearchParams(Object.entries(params).filter(([, v]) => v) as [string, string][]);
     sp.set("passing", passing);
@@ -49,6 +54,16 @@ export async function TokenListPage({ searchParams, basePath, title, subtitle, d
           <div className="flex items-center gap-1 border-b border-border px-3 py-2">
             {tab("All discovered", "false")}
             {tab("Passing filters", "true")}
+          </div>
+        )}
+        {(result.staleHidden > 0 || query.stale === "true") && (
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-surface2/40 px-3 py-2 text-xs text-muted">
+            {query.stale === "true" ? (
+              <span className="text-warn">Showing tokens with old prices too. Their prices are not live — open a token to refresh it.</span>
+            ) : (
+              <span>{result.staleHidden} token(s) hidden: their price hasn&apos;t been refreshed in the last 30 minutes, so it isn&apos;t shown as current.</span>
+            )}
+            <Link href={`${basePath}?${staleLink(params, query.stale !== "true")}`} className="text-accent">{query.stale === "true" ? "Hide them" : "Show them"}</Link>
           </div>
         )}
         <TokenTable rows={result.rows} showStage={defaults.showStage} />
