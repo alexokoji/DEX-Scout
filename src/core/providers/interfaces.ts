@@ -16,6 +16,8 @@ export interface TokenDataProvider {
   /** Every token currently visible to the provider. Must not truncate results artificially. */
   discover(chain: ChainId): Promise<TokenSnapshot[]>;
   getSnapshot(chain: ChainId, address: string): Promise<TokenSnapshot | null>;
+  /** Optional: current snapshots for tokens we already track (batched, cheap). Providers without it are simply not refreshed. */
+  refresh?(chain: ChainId, addresses: string[]): Promise<TokenSnapshot[]>;
   getCandles(chain: ChainId, address: string, timeframe: Timeframe, limit: number): Promise<Candle[]>;
   /** Raw on-chain facts used by the safety + on-chain engines. */
   getOnChain(chain: ChainId, address: string, snapshot: TokenSnapshot): Promise<OnChainRaw>;

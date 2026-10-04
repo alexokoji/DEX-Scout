@@ -168,7 +168,19 @@ export class DexScreenerDataProvider implements TokenDataProvider {
       if (l.status === "fulfilled") for (const t of l.value) if (t.chainId === slug) addrs.add(t.tokenAddress);
     }
     if (addrs.size === 0 && lists.every((l) => l.status === "rejected")) throw new Error("DexScreener discovery failed");
-    const all = [...addrs];
+    return this.lookupSnapshots(chain, [...addrs]);
+  }
+
+  /**
+   * Fresh snapshots for specific tokens, 30 per DexScreener request (no GeckoTerminal queue involved). Used to keep the
+   * price of tokens we already track current, since discovery only re-reports a token while it is on a trending list.
+   */
+  async refresh(chain: ChainId, addresses: string[]): Promise<TokenSnapshot[]> {
+    return this.lookupSnapshots(chain, addresses);
+  }
+
+  private async lookupSnapshots(chain: ChainId, all: string[]): Promise<TokenSnapshot[]> {
+    const slug = CHAINS[chain].dexScreenerId;
     const chunks: string[][] = [];
     for (let i = 0; i < all.length; i += 30) chunks.push(all.slice(i, i + 30));
     const pairLists = await Promise.all(

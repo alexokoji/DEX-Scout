@@ -78,6 +78,26 @@ export async function chainsForThisTick(enabled: ChainId[], perTick: number): Pr
   return { chains: picked, of: ordered.length };
 }
 
+/** Per chain per tick: how many already-tracked tokens get a price refresh (DexScreener batches of 30, ~2 requests). */
+const REFRESH_PER_CHAIN = 60;
+
+/** Re-fetch the stalest tokens that pass filters on this tick's chains and weren't just discovered. Best-effort. */
+export async function refreshTrackedPrices(p: ReturnType<typeof providers>, chains: ChainId[], alreadyFresh: TokenSnapshot[]): Promise<TokenSnapshot[]> {
+  const refresh = p.data.refresh?.bind(p.data);
+  if (!refresh) return [];
+  const fresh = new Set(alreadyFresh.map((s) => `${s.chain}:${s.address}`));
+  const tokens = await collections.tokens();
+  const perChain = await Promise.all(
+    chains.map(async (chain) => {
+      const stale = await tokens.find({ chain, passedFilters: true }, { projection: { address: 1 } }).sort({ lastScannedAt: 1 }).limit(REFRESH_PER_CHAIN + fresh.size).toArray();
+      const addrs = stale.map((t) => t.address).filter((a) => !fresh.has(`${chain}:${a}`)).slice(0, REFRESH_PER_CHAIN);
+      if (!addrs.length) return [] as TokenSnapshot[];
+      return withTimeout(refresh(chain, addrs), 12_000, `refresh(${chain})`).catch(() => [] as TokenSnapshot[]);
+    }),
+  );
+  return perChain.flat();
+}
+
 export async function runScanCycle(opts: { chainsPerTick?: number } = {}): Promise<ScanResult> {
   const started = Date.now();
   const p = providers();
@@ -88,7 +108,7 @@ export async function runScanCycle(opts: { chainsPerTick?: number } = {}): Promi
     // Each chain is capped independently so one slow/misbehaving chain (a provider outage, a retry
     // cascade) contributes zero tokens for this tick instead of holding up every other chain's discovery
     // — and, transitively, the whole serverless request's 60s budget (see withTimeout's docstring).
-    const snaps = (
+    const discovered = (
       await Promise.all(
         tick.chains.map((c) =>
           withTimeout(p.data.discover(c), 20_000, `discover(${c})`).catch(async (err) => {
@@ -98,6 +118,10 @@ export async function runScanCycle(opts: { chainsPerTick?: number } = {}): Promi
         ),
       )
     ).flat();
+    // Discovery only re-reports a token while it sits on a trending/boost list, so a token we track that fell off one
+    // kept its old price for hours — and that stale price is what the app showed (and what buys were judged against).
+    const refreshed = await refreshTrackedPrices(p, tick.chains, discovered);
+    const snaps = [...discovered, ...refreshed];
     const now = new Date();
 
     const tokens = await collections.tokens();
@@ -193,12 +217,12 @@ export async function runScanCycle(opts: { chainsPerTick?: number } = {}): Promi
       await logEvent({ type: "TOKEN_DISCOVERED", source: "scanner", message: `${newTokens} new token(s) discovered`, data: { newTokens } });
     }
     const filtered = snaps.length - passed;
-    const result: ScanResult = { discovered: snaps.length, newTokens, passed, filtered, durationMs: Date.now() - started };
+    const result: ScanResult = { discovered: discovered.length, newTokens, passed, filtered, durationMs: Date.now() - started };
     await logEvent({
       type: "SCANNER_COMPLETED",
       source: "scanner",
       level: "DEBUG",
-      message: `Scanned ${snaps.length} tokens on ${tick.chains.join(", ")}: ${passed} passed filters, ${filtered} filtered`,
+      message: `Scanned ${discovered.length} tokens (+${refreshed.length} price refreshes) on ${tick.chains.join(", ")}: ${passed} passed filters, ${filtered} filtered`,
       data: { ...result, chains: tick.chains, chainsEnabled: tick.of },
     });
     await touchWorker("scanner-worker", null, { ...result, chains: tick.chains, chainsEnabled: tick.of });

@@ -127,9 +127,30 @@ export async function quoteTrade(userId: string, input: PrepareTradeInput, autom
   const state = await capitalState(userId, input.environment, undefined, input.chain);
   const candidate = toCandidate(analysis, quote, sim.ok);
   const violations = evaluateEntryRules(settings, state, input, candidate, automatic);
+  // How far is what we'd actually pay from the price the app has been showing (and, for the bot, the price it signalled on)?
+  const pricing = priceDrift(token.priceUsd, quote.effectivePriceUsd, token.lastScannedAt);
+  if (automatic && pricing.driftPct > AUTO_MAX_CHASE_PCT) violations.push(`Price already moved ${pricing.driftPct.toFixed(0)}% above the listed price (${fmtPrice(token.priceUsd)} → ${fmtPrice(quote.effectivePriceUsd)}); not chasing it`);
   // manual buys get the user's own preference thresholds as warnings; only the bot is blocked by them
-  const warnings = automatic ? [] : entryWarnings(candidate, settings);
-  return { quote, violations, warnings, analysis: { riskLevel: analysis.safety.riskLevel, warnings: analysis.safety.warnings, criticalIssues: analysis.safety.criticalIssues }, source: p.mock ? ("MOCK" as const) : ("LIVE" as const) };
+  const warnings = automatic ? [] : [...entryWarnings(candidate, settings), ...(pricing.warning ? [pricing.warning] : [])];
+  return { quote, pricing, violations, warnings, analysis: { riskLevel: analysis.safety.riskLevel, warnings: analysis.safety.warnings, criticalIssues: analysis.safety.criticalIssues }, source: p.mock ? ("MOCK" as const) : ("LIVE" as const) };
+}
+
+/** The bot won't buy more than this far above the price it saw; the rest of the move is not ours to chase. */
+export const AUTO_MAX_CHASE_PCT = 10;
+/** Differences smaller than this are ordinary spread/impact, not news. */
+const DRIFT_WARN_PCT = 5;
+
+const fmtPrice = (n: number) => `$${n >= 1 ? n.toFixed(2) : n.toPrecision(3)}`;
+
+/** Compares the price the app has listed with what a live quote would actually fill at. Pure. */
+export function priceDrift(listedUsd: number, effectiveUsd: number, listedAt: Date | null | undefined, now = Date.now()) {
+  const ageSec = listedAt ? Math.max(0, Math.round((now - listedAt.getTime()) / 1000)) : null;
+  const driftPct = listedUsd > 0 && effectiveUsd > 0 ? (effectiveUsd / listedUsd - 1) * 100 : 0;
+  const age = ageSec === null ? "" : ageSec < 90 ? " (seconds old)" : ageSec < 5400 ? ` (${Math.round(ageSec / 60)} min old)` : ` (${(ageSec / 3600).toFixed(1)} h old)`;
+  const warning = Math.abs(driftPct) >= DRIFT_WARN_PCT
+    ? `The listed price ${fmtPrice(listedUsd)}${age} no longer matches the market: you would buy at about ${fmtPrice(effectiveUsd)} (${driftPct >= 0 ? "+" : ""}${driftPct.toFixed(0)}%).`
+    : null;
+  return { listedPriceUsd: listedUsd, effectivePriceUsd: effectiveUsd, listedAgeSec: ageSec, driftPct, warning };
 }
 
 function toCandidate(analysis: Analysis, quote: SwapQuote, sellSimOk: boolean): TradeCandidate {
@@ -256,6 +277,9 @@ export async function refreshPreparedTrade(userId: string, tradeId: string) {
   if (trade.side === "BUY") {
     const q = await quoteTrade(userId, { chain, tokenAddress: token.address, amountUsd: trade.inputUsd, slippageBps: trade.slippageBps, environment: "LIVE" }, false);
     if (q.violations.length) throw new TradeError("Trade no longer passes validation", 422, q.violations);
+    // A queued buy was priced when it was queued; if the market has run away since, entering now is chasing, not the trade that was approved.
+    const movedPct = trade.priceUsd > 0 ? (q.quote.effectivePriceUsd / trade.priceUsd - 1) * 100 : 0;
+    if (movedPct > AUTO_MAX_CHASE_PCT) throw new TradeError("Price has moved since this trade was queued", 422, [`Queued at ${fmtPrice(trade.priceUsd)}, now ${fmtPrice(q.quote.effectivePriceUsd)} (+${movedPct.toFixed(0)}%). Skipped so you don't enter at a worse price; buy manually if you still want it.`]);
     quote = q.quote;
   } else {
     try {
