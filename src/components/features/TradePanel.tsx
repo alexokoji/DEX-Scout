@@ -11,6 +11,7 @@ import { CHAINS } from "@/core/chains";
 import type { ChainId } from "@/core/types";
 import { price, usd } from "@/lib/format";
 import { explainWalletError } from "@/lib/txErrors";
+import { useMarketPrice } from "./LivePrice";
 import { useSigner } from "./useSigner";
 
 interface Quote {
@@ -39,6 +40,7 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
   const meta = CHAINS[chain];
   const [amount, setAmount] = useState(String(defaults.amountUsd));
   const [slippagePct, setSlippagePct] = useState(String(defaults.slippageBps / 100));
+  const market = useMarketPrice(chain, address);
   const [priority, setPriority] = useState(meta.family === "evm" ? "0" : "0.0001");
   const [q, setQ] = useState<QuoteResp | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -146,7 +148,9 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
               <Row k="Route" v={q.quote.route.join(" → ")} />
               <Row k="Est. output" v={`${q.quote.outputAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${symbol}`} />
               <Row k="Min received" v={`${q.quote.minReceived.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${symbol}`} />
-              <Row k="Effective price" v={price(q.quote.effectivePriceUsd)} />
+              {market && <Row k="Market price (live)" v={price(market.priceUsd)} />}
+              <Row k="Effective price (what you pay per token)" v={price(q.quote.effectivePriceUsd)} />
+              {market && market.priceUsd > 0 && <Row k="You pay vs market" v={`${((q.quote.effectivePriceUsd / market.priceUsd - 1) * 100).toFixed(2)}% (price impact + fees + spread)`} warn={q.quote.effectivePriceUsd / market.priceUsd - 1 > 0.03} />}
               <Row k="Price impact" v={`${q.quote.priceImpactPct.toFixed(2)}%`} warn={q.quote.priceImpactPct > 2} />
               <Row k="Network + priority fee" v={usd(q.quote.networkFeeUsd + q.quote.priorityFeeUsd, 4)} />
               <Row k="Swap fee" v={usd(q.quote.platformFeeUsd, 3)} />

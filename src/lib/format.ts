@@ -3,6 +3,23 @@ export function usd(n: number | null | undefined, digits = 2): string {
   return n.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
 
+/** Dollars for a wallet balance: real cents, and "<$0.01" instead of a long run of zeros for dust. */
+export function usdBalance(n: number | null | undefined): string {
+  if (n === null || n === undefined || !Number.isFinite(n)) return "—";
+  if (n <= 0) return "$0.00";
+  if (n < 0.01) return "<$0.01";
+  return usd(n);
+}
+
+/** A coin amount people can read: 12.5, 0.0123, <0.0001 (never 0.000000123). */
+export function nativeAmount(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "0";
+  if (n >= 1000) return n.toLocaleString("en-US", { maximumFractionDigits: 0 });
+  if (n >= 1) return n.toLocaleString("en-US", { maximumFractionDigits: 3 });
+  if (n >= 0.0001) return n.toPrecision(3).replace(/.?0+$/, "");
+  return "<0.0001";
+}
+
 export function compactUsd(n: number | null | undefined): string {
   if (n === null || n === undefined || !Number.isFinite(n)) return "—";
   const a = Math.abs(n);

@@ -18,6 +18,21 @@ vi.mock("@/core/providers/limitOrders/cow", async (importOriginal) => ({
   getCowTradeHashes: vi.fn(async () => ["0x" + "cd".repeat(32)]),
   cancelCowOrders: vi.fn(async () => undefined),
 }));
+vi.mock("@/core/providers/limitOrders/kyber", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/core/providers/limitOrders/kyber")>()),
+  kyberContract: vi.fn(async () => "0xcab2FA2eeab7065B45CBcF6E3936dDE2506b4f6C"),
+  erc20Allowance: vi.fn(async () => BigInt(0)),
+  kyberSignMessage: vi.fn(async (req: { chainId: string }) => ({
+    types: { EIP712Domain: [{ name: "name", type: "string" }], Order: [{ name: "salt", type: "uint256" }] },
+    domain: { name: "Kyber DSLO Protocol", version: "1", chainId: Number(req.chainId), verifyingContract: "0xcab2FA2eeab7065B45CBcF6E3936dDE2506b4f6C" },
+    primaryType: "Order",
+    message: { salt: "12345678901234567890" },
+  })),
+  submitKyberOrder: vi.fn(async () => ({ id: null as number | null })),
+  kyberFindOrder: vi.fn(),
+  kyberCancelSign: vi.fn(async () => ({ types: {}, domain: {}, primaryType: "CancelOrder", message: { orderIds: [777] } })),
+  cancelKyberOrders: vi.fn(async () => undefined),
+}));
 vi.mock("@/core/providers/limitOrders/jupiter", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/core/providers/limitOrders/jupiter")>()),
   createJupiterOrder: vi.fn(async () => ({ order: "OrderPubkey1111111111111111111111111111111111", requestId: "r", transaction: "dHg=" })),
@@ -27,6 +42,7 @@ vi.mock("@/core/providers/limitOrders/jupiter", async (importOriginal) => ({
 
 import * as cow from "@/core/providers/limitOrders/cow";
 import * as jup from "@/core/providers/limitOrders/jupiter";
+import * as kyber from "@/core/providers/limitOrders/kyber";
 import { closeDb, collections, newId } from "@/lib/db";
 import type { AutoSellOrderDoc, NotificationType, PositionDoc, TokenDoc } from "@/lib/models";
 
@@ -119,7 +135,7 @@ const E18 = BigInt("1000000000000000000");
     expect(a.approval?.to.toLowerCase()).toBe(token.address);
     expect(a.orders[0].typedData.message).toMatchObject({ kind: "sell", partiallyFillable: false, feeAmount: "0", buyToken: "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE" });
     // 2500 tokens (shaved by 1e-9) for at least 2500 * 0.0108 / 3000 ETH
-    const first = a.orders[0].typedData.message;
+    const first = a.orders[0].typedData.message as { sellAmount: string; buyAmount: string };
     expect(BigInt(first.sellAmount)).toBe((BigInt(2500) * E18 * BigInt(999_999_999)) / BigInt(1_000_000_000));
     expect(Number(BigInt(first.buyAmount)) / 1e18).toBeCloseTo((2500 * 0.0108) / 3000, 9);
     expect((await orders(pos._id)).filter((o) => o.status === "SUGGESTED")).toHaveLength(4);
@@ -348,9 +364,101 @@ const E18 = BigInt("1000000000000000000");
     expect(failed.error).toMatch(/never landed/);
   });
 
+  it("Kyber chains (e.g. Optimism): approval goes to Kyber's contract, the order is signed as Kyber built it, the salt is kept and posted back unchanged", async () => {
+    const { prepareArmEvm, activateEvm } = await import("@/services/autoSell");
+    const token = await makeToken("optimism", 0.01);
+    const pos = await makePosition(token);
+    const a = await prepareArmEvm(userId, pos._id);
+    expect(a.venue).toBe("kyber");
+    expect(a.chainId).toBe(10);
+    expect(a.orders).toHaveLength(4);
+    expect(a.approval?.to.toLowerCase()).toBe(token.address);
+    expect(a.note).toMatch(/wrapped/);
+    // what Kyber was asked to build: sell the token for the chain's WRAPPED coin, at the stored amounts and expiry
+    const asked = vi.mocked(kyber.kyberSignMessage).mock.calls[0][0];
+    expect(asked).toMatchObject({ chainId: "10", makerAsset: token.address, takerAsset: "0x4200000000000000000000000000000000000006", maker: "0x" + "1".repeat(40) });
+    const stored = (await orders(pos._id))[0];
+    expect(asked.makingAmount).toBe(stored.sellAmountRaw);
+    expect(asked.takingAmount).toBe(stored.minBuyRaw);
+    expect(stored.venueData).toMatchObject({ salt: "12345678901234567890", takerAsset: "0x4200000000000000000000000000000000000006", expiredAt: asked.expiredAt });
+    // arming: posted with the stored salt and the same fields, whatever the browser sends
+    const r = await activateEvm(userId, pos._id, Object.fromEntries(a.orders.map((o) => [o.id, uniqueSig()])));
+    expect(r.activated).toHaveLength(4);
+    const [req, salt] = vi.mocked(kyber.submitKyberOrder).mock.calls[0];
+    expect(salt).toBe("12345678901234567890");
+    expect(req).toMatchObject({ makingAmount: stored.sellAmountRaw, takingAmount: stored.minBuyRaw, expiredAt: asked.expiredAt });
+    expect((await orders(pos._id)).every((d) => d.status === "ACTIVE" && d.orderRef === "pending:12345678901234567890")).toBe(true);
+  });
+
+  it("Kyber: an order whose id wasn't returned is found in the maker's listing, then fills are booked from its filled amounts", async () => {
+    const { prepareArmEvm, activateEvm, syncAutoSells } = await import("@/services/autoSell");
+    await isolate();
+    const token = await makeToken("optimism", 0.0108);
+    const pos = await makePosition(token);
+    const a = await prepareArmEvm(userId, pos._id);
+    await activateEvm(userId, pos._id, Object.fromEntries(a.orders.map((o) => [o.id, uniqueSig()])));
+    const docs = await orders(pos._id);
+    const first = docs[0];
+    // Kyber's real listing shape: 2500 tokens sold, 0.009 WETH received, with the settlement transaction
+    // pending orders are matched by ALL of their fields; every target here sells the same 2500 tokens, so the amount they
+    // ask for (which differs by target price) is what tells them apart
+    vi.mocked(kyber.kyberFindOrder).mockImplementation(async (_c, _m, ref) => {
+      const idx = ref.req ? docs.findIndex((d) => d.minBuyRaw === ref.req!.takingAmount) : ref.id! - 4242;
+      const id = 4242 + idx;
+      const isFirst = idx === 0;
+      return {
+        id, status: isFirst ? "filled" : "open", makerAsset: token.address, takerAsset: "0x42", makingAmount: first.sellAmountRaw, takingAmount: first.minBuyRaw, expiredAt: 1,
+        filledMakingAmount: isFirst ? first.sellAmountRaw : "0", filledTakingAmount: isFirst ? "9000000000000000" : "0",
+        transactions: isFirst ? [{ txHash: "0x" + "ee".repeat(32) }] : [],
+      };
+    });
+    const r = await syncAutoSells();
+    expect(r.booked).toBeGreaterThanOrEqual(1);
+    const after = (await (await collections.positions()).findOne({ _id: pos._id }))!;
+    expect(after.amount).toBeCloseTo(7500, 3);
+    expect(after.targetsHit).toBe(1);
+    const sale = (await (await collections.trades()).find({ positionId: pos._id, side: "SELL" }).toArray())[0];
+    expect(sale.transaction?.signature).toBe("0x" + "ee".repeat(32));
+    expect(sale.inputUsd).toBeCloseTo(0.009 * 2704.72 || 0, -1); // WETH proceeds priced at the (mock) ETH price
+    expect((await mine("PROFIT_TAKEN")).length).toBeGreaterThanOrEqual(1);
+    // the pending reference was replaced by Kyber's real order id
+    expect((await orders(pos._id)).some((d) => d.orderRef === "4242")).toBe(true);
+  });
+
+  it("Kyber: cancelling signs Kyber's cancel message with the real order ids, then marks the orders cancelled", async () => {
+    const { prepareArmEvm, activateEvm, prepareCancelEvm, confirmCancelEvm } = await import("@/services/autoSell");
+    await isolate();
+    const token = await makeToken("optimism", 0.0108);
+    const pos = await makePosition(token);
+    const a = await prepareArmEvm(userId, pos._id);
+    vi.mocked(kyber.submitKyberOrder).mockImplementation(async () => ({ id: Math.floor(Math.random() * 1e6) }));
+    await activateEvm(userId, pos._id, Object.fromEntries(a.orders.map((o) => [o.id, uniqueSig()])));
+    const c = await prepareCancelEvm(userId, pos._id);
+    expect(c.chainId).toBe(10);
+    const idsAsked = vi.mocked(kyber.kyberCancelSign).mock.calls[0][2];
+    expect(idsAsked).toHaveLength(4);
+    expect(idsAsked.every((n) => Number.isInteger(n))).toBe(true);
+    expect((await confirmCancelEvm(userId, pos._id, SIG("c"))).cancelled).toBe(4);
+    expect(vi.mocked(kyber.cancelKyberOrders)).toHaveBeenCalledWith("optimism", "0x" + "1".repeat(40), idsAsked, SIG("c"));
+    expect((await orders(pos._id)).every((d) => d.status === "CANCELLED")).toBe(true);
+    vi.mocked(kyber.submitKyberOrder).mockImplementation(async () => ({ id: null }));
+  });
+
+  it("Kyber rejecting an order's size is explained, not shown as a bare 'out of range'", async () => {
+    const { prepareArmEvm, activateEvm } = await import("@/services/autoSell");
+    await isolate();
+    const pos = await makePosition(await makeToken("optimism", 0.01));
+    const a = await prepareArmEvm(userId, pos._id);
+    vi.mocked(kyber.submitKyberOrder).mockRejectedValue(new Error("Input is out of range: makingAmount (makingAmount)"));
+    const r = await activateEvm(userId, pos._id, Object.fromEntries(a.orders.map((o) => [o.id, uniqueSig()])));
+    expect(r.failed).toHaveLength(4);
+    expect(r.failed[0].error).toMatch(/below its minimum, or the wallet does not hold or has not approved enough/);
+    vi.mocked(kyber.submitKyberOrder).mockResolvedValue({ id: null });
+  });
+
   it("a chain with no limit-order venue is refused politely", async () => {
     const { prepareArmEvm } = await import("@/services/autoSell");
-    const pos = await makePosition(await makeToken("optimism", 0.01));
+    const pos = await makePosition(await makeToken("scroll", 0.01));
     await expect(prepareArmEvm(userId, pos._id)).rejects.toMatchObject({ status: 422 });
   });
 

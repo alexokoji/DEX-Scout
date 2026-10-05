@@ -21,6 +21,9 @@ export interface CapitalState {
    * itself refuses an unaffordable transaction and an unreachable node must not block trading.
    */
   walletUsd?: number | null;
+  /** the wallet's whole native balance on that chain, and the part kept back for fees (to explain a low or zero walletUsd) */
+  walletBalanceUsd?: number | null;
+  reserveUsd?: number | null;
   /** realised P/L that has been added back to the capital pool (optional compounding) */
   realizedPnlUsd?: number;
 }
@@ -50,9 +53,16 @@ export function capitalSnapshot(s: CapitalSettings, st: CapitalState): CapitalSn
 
 export type AllocationResult = { ok: true; amountUsd: number } | { ok: false; reason: string };
 
+/** An empty wallet and a balance too small to cover fees are different problems: say which. */
+function noSpendableReason(st: CapitalState): string {
+  const bal = st.walletBalanceUsd;
+  if (bal != null && bal > 0.005) return `Your balance on this chain is $${bal.toFixed(2)}, which is below the ~$${(st.reserveUsd ?? 0).toFixed(2)} kept back for network fees. Add a little more to trade here.`;
+  return "Your wallet has no balance on this chain to trade with";
+}
+
 /** Why nothing is available: an empty wallet and a hit deployed cap need different fixes. */
 function noCapitalReason(s: CapitalSettings, st: CapitalState): string {
-  if (st.walletUsd != null && st.walletUsd <= 0) return "Your wallet has no balance on this chain to trade with";
+  if (st.walletUsd != null && st.walletUsd <= 0) return noSpendableReason(st);
   if (s.maxDeployedUsd !== null && st.deployedUsd >= s.maxDeployedUsd) return `Maximum capital deployed reached ($${s.maxDeployedUsd})`;
   return "No available capital";
 }
@@ -82,7 +92,9 @@ export function checkManualAmount(s: CapitalSettings, st: CapitalState, amountUs
   if (amountUsd < s.minPositionUsd) return `Amount is below minimum position size ($${s.minPositionUsd})`;
   if (snap.availableUsd !== null && amountUsd > snap.availableUsd) {
     return st.walletUsd != null && amountUsd > st.walletUsd
-      ? `Amount exceeds your wallet balance on this chain ($${st.walletUsd.toFixed(2)} after keeping a little back for network fees)`
+      ? st.walletBalanceUsd != null && st.reserveUsd != null
+        ? `Amount exceeds what you can spend on this chain: you hold $${st.walletBalanceUsd.toFixed(2)}, ~$${st.reserveUsd.toFixed(2)} is kept back for network fees, leaving $${st.walletUsd.toFixed(2)}`
+        : `Amount exceeds your wallet balance on this chain ($${st.walletUsd.toFixed(2)} after keeping a little back for network fees)`
       : `Amount exceeds available capital ($${snap.availableUsd.toFixed(2)})`;
   }
   return null;

@@ -44,6 +44,8 @@ export async function evmRpc<T>(chain: ChainId, method: string, params: unknown[
   throw last;
 }
 
+import { nativeUsdFromPairs, type DsNativePair } from "./nativePrice";
+
 const priceCache = new Map<ChainId, { at: number; usd: number }>();
 export async function nativeUsd(chain: ChainId): Promise<number> {
   const hit = priceCache.get(chain);
@@ -56,14 +58,16 @@ export async function nativeUsd(chain: ChainId): Promise<number> {
     return usd;
   }
   try {
-    const j = await getJson<{ pairs?: { chainId: string; priceUsd?: string; liquidity?: { usd?: number } }[] }>(`${env().MARKET_DATA_URL}/latest/dex/tokens/${meta.wrappedNative}`);
-    const best = (j.pairs ?? []).filter((p) => p.chainId === meta.dexScreenerId).sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
-    const usd = Number(best?.priceUsd);
-    if (usd > 0) priceCache.set(chain, { at: Date.now(), usd });
+    const j = await getJson<{ pairs?: DsNativePair[] }>(`${env().MARKET_DATA_URL}/latest/dex/tokens/${meta.wrappedNative}`);
+    const usd = nativeUsdFromPairs(j.pairs ?? [], meta.wrappedNative, meta.dexScreenerId);
+    if (usd && usd > 0) priceCache.set(chain, { at: Date.now(), usd });
   } catch {
-    /* use stale/default */
+    /* fall through to a stale price, if there is one */
   }
-  return priceCache.get(chain)?.usd ?? meta.mockNativeUsd;
+  // A stale live price is fine. A GUESS (the old hard-coded fallback) is not: it sizes real trades and balances, so say it's unknown.
+  const known = priceCache.get(chain);
+  if (!known) throw new Error(`No live ${meta.nativeSymbol} price available for ${meta.name} right now`);
+  return known.usd;
 }
 
 export class EvmChainAdapter implements ChainAdapter {

@@ -288,6 +288,8 @@ export interface PositionDoc {
   origin: string; // "MANUAL" | "AUTO"
   sourceSignalId: string | null;
   entryPriceUsd: number;
+  /** the market price when the buy confirmed, to compare with what was actually paid (price impact and spread) */
+  entryMarketPriceUsd?: number;
   currentPriceUsd: number;
   initialAmount: number;
   amount: number;
@@ -385,7 +387,9 @@ export interface AutoSellOrderDoc {
   positionId: string;
   tokenId: string;
   chain: string;
-  venue: "cow" | "jupiter";
+  venue: "cow" | "kyber" | "jupiter";
+  /** Kyber: what was signed (its salt, the wrapped-native taker asset, the contract, the expiry) so the order can be posted and found again */
+  venueData?: { salt: string; takerAsset: string; contract: string; expiredAt: number };
   /** target levels this order covers */
   levels: number[];
   gainPct: number;

@@ -15,7 +15,7 @@ import { getSettings, type UserSettings } from "./settings";
 import { notifyUser } from "./notifications";
 import { buyQueued, profitTaken, sellQueued, tradeConfirmed, tradeExpired, tradeFailed, type Message } from "./notificationMessages";
 import { applyLiveSnapshot } from "./tokenPrice";
-import { spendableUsd } from "./walletBalance";
+import { spendableDetail } from "./walletBalance";
 
 export class TradeError extends Error {
   constructor(message: string, public status = 400, public violations: string[] = [], /** machine-readable suggestion for the UI, e.g. { slippageBps } */ public hint?: Record<string, number | string>) {
@@ -101,8 +101,8 @@ export async function getOrCreateAccount(userId: string, environment: Environmen
 export async function capitalState(userId: string, environment: Environment, session?: ClientSession, chain?: ChainId): Promise<CapitalState> {
   const positions = await collections.positions();
   const open = await positions.find({ userId, environment, status: { $ne: "CLOSED" } }, { projection: { costBasisUsd: 1 }, session }).toArray();
-  const walletUsd = chain ? await spendableUsd(userId, chain).catch(() => null) : undefined;
-  return { deployedUsd: open.reduce((s, p) => s + p.costBasisUsd, 0), openPositions: open.length, walletUsd };
+  const detail = chain ? await spendableDetail(userId, chain).catch(() => null) : undefined;
+  return { deployedUsd: open.reduce((s, p) => s + p.costBasisUsd, 0), openPositions: open.length, walletUsd: chain ? (detail?.spendableUsd ?? null) : undefined, walletBalanceUsd: detail?.balanceUsd ?? null, reserveUsd: detail?.reserveUsd ?? null };
 }
 
 function quoteJson(q: SwapQuote): Json {
@@ -460,13 +460,20 @@ export async function reconcileLiveTrade(tradeId: string) {
   const nativeUsdNow = insp && insp.nativeDelta !== 0 ? await providers().chains[tChain].nativeUsdPrice().catch(() => 0) : 0;
   const realTokens = insp ? Math.abs(insp.tokenDelta) : 0;
   const tokenAmountActual = realTokens > 0 ? realTokens : trade.tokenAmount;
-  const buyCostUsd = insp && nativeUsdNow > 0 ? Math.abs(insp.nativeDelta) * nativeUsdNow : trade.inputUsd + trade.networkFeeUsd;
+  // What a buy cost = the amount swapped + the fees. NOT the native coin that actually left the wallet: on Solana that also
+  // contains the one-off ~0.002 SOL deposit for the new token account (about 3% of a $10 buy, recoverable, not a trading
+  // cost), which made every new position open several percent "down" against the chart. The entry PRICE is the swap alone.
+  const swapUsd = trade.inputUsd;
+  const buyCostUsd = swapUsd + trade.networkFeeUsd;
   const sellProceedsUsd = insp && nativeUsdNow > 0 ? Math.max(0, insp.nativeDelta) * nativeUsdNow : trade.inputUsd - trade.feesUsd - trade.networkFeeUsd;
 
   const positions = await collections.positions();
   const positionEvents = await collections.positionEvents();
   const tradingAccounts = await collections.tradingAccounts();
 
+  // the market price right now, so the new position doesn't start out marked at whatever the last scan stored
+  const fresh = trade.side === "BUY" ? await providers().data.getSnapshot(tChain, token.address).catch(() => null) : null;
+  const openPriceUsd = fresh && fresh.priceUsd > 0 ? fresh.priceUsd : token.priceUsd;
   let confirmed: Message | null = null;
   let openedPositionId: string | null = null;
   const chainName = CHAINS[tChain]?.name ?? token.chain;
@@ -483,7 +490,7 @@ export async function reconcileLiveTrade(tradeId: string) {
           healthNotes: { entryLiquidityUsd: token.liquidityUsd },
           origin: trade.kind === "AUTO_ENTRY" ? "AUTO" : "MANUAL",
           sourceSignalId: signalId,
-          entryPriceUsd: buyCostUsd / tokenAmountActual, currentPriceUsd: token.priceUsd, initialAmount: tokenAmountActual, amount: tokenAmountActual,
+          entryPriceUsd: swapUsd / tokenAmountActual, entryMarketPriceUsd: openPriceUsd, currentPriceUsd: openPriceUsd, priceAt: now, initialAmount: tokenAmountActual, amount: tokenAmountActual,
           investedUsd: buyCostUsd, costBasisUsd: buyCostUsd, realizedPnlUsd: 0, targetsHit: 0,
           targetsSnapshot: settings.targets, emergencyEnabled: settings.emergencyEnabled, emergencyAutoExit: settings.emergencyAutoExit,
           openedAt: now, updatedAt: now, closedAt: null, lastAnalysisAt: null,

@@ -168,7 +168,11 @@ export class MultiEvmDexAdapter implements DexAdapter {
         if (out.buyAmount <= BigInt(0)) throw new Error("zero output");
         const outputAmount = buying ? Number(out.buyAmount) / 10 ** dec : (Number(out.buyAmount) / 1e18) * nat;
         const effective = buying ? req.amountUsd / outputAmount : outputAmount / (req.tokenAmount ?? 1);
-        const impact = Math.max(0, buying ? (effective / snap.priceUsd - 1) * 100 : (1 - effective / snap.priceUsd) * 100);
+        const signedImpact = buying ? (effective / snap.priceUsd - 1) * 100 : (1 - effective / snap.priceUsd) * 100;
+        // A fill far BETTER than the market is not a bargain, it's a sign something upstream is wrong (a bad native price sizes the
+        // order wrongly, a wrong pool, a unit mix-up). Refuse it rather than sign it.
+        if (signedImpact < -25) throw new Error(`quote is ${Math.abs(signedImpact).toFixed(0)}% away from the market price in the user's favour; refusing as it points to bad pricing data`);
+        const impact = Math.max(0, signedImpact);
         const raw: StoredRaw = {
           aggregator: agg.name, sellAmount: sellAmount.toString(), sellToken: input.sellToken, buyToken: input.buyToken, sellDecimals: input.sellDecimals,
           buyDecimals: input.buyDecimals, slippageBps: req.slippageBps, buyAmount: out.buyAmount.toString(), networkFeeUsd: out.networkFeeUsd, route: out.route, payload: out.payload,

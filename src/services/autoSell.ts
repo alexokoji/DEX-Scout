@@ -3,6 +3,7 @@ import { fillDelta, mergeForMinimum, minProceedsRaw, planAutoSells, toRaw, type 
 import { cancelCowOrders, cowAllowance, cowApprovalTx, cowCancelTypedData, cowTypedData, buildCowOrder, getCowOrder, getCowTradeHashes, submitCowOrder, COW_RELAYER } from "@/core/providers/limitOrders/cow";
 import { cancelJupiterOrder, createJupiterOrder, getJupiterOrder, jupiterFills, JUP_FEE_FRACTION, JUP_MIN_ORDER_USD } from "@/core/providers/limitOrders/jupiter";
 import { tokenDecimals } from "@/core/providers/evm/evmProviders";
+import { cancelKyberOrders, erc20Allowance, erc20ApprovalTx, kyberCancelSign, kyberContract, kyberFills, kyberFindOrder, kyberSignMessage, submitKyberOrder, type KyberOrder, type KyberOrderRequest } from "@/core/providers/limitOrders/kyber";
 import { providers } from "@/core/providers/registry";
 import { mintDecimals } from "@/core/providers/solana/solanaProviders";
 import type { ChainId } from "@/core/types";
@@ -15,20 +16,22 @@ import { recordExternalSell, TradeError } from "./trading";
 
 /**
  * Auto-sell. After a buy confirms, the app prepares one limit sell per profit target. The user signs them once (an
- * approval + off-chain signatures on EVM via CoW Protocol; one escrow transaction per order on Solana via Jupiter) and a
+ * approval + off-chain signatures on EVM via CoW Protocol or KyberSwap limit orders; one escrow transaction per order on
+ * Solana via Jupiter) and a
  * keeper network fills each on-chain when its price is reached, even if the user is away. The app never holds keys: it
  * builds what the wallet signs, submits the signed orders, and then watches the venue for fills to book profit.
  */
 
-const ORDER_LIFETIME_MS = 14 * 24 * 3_600_000; // CoW orders lapse; Jupiter orders stay until filled or cancelled
+const ORDER_LIFETIME_MS = 14 * 24 * 3_600_000; // CoW and Kyber orders lapse; Jupiter orders stay until filled or cancelled
 const SOLANA_LAND_GRACE_MS = 4 * 60_000;
 const COW_LAND_GRACE_MS = 10 * 60_000;
 const ACTIVE_OR_PENDING: AutoSellOrderDoc["status"][] = ["SUGGESTED", "ACTIVE"];
 
-export type Venue = "cow" | "jupiter";
+export type Venue = "cow" | "kyber" | "jupiter";
 export const venueFor = (chain: string): Venue | null => (chain in CHAINS ? autoSellVenue(chain as ChainId) : null);
 
-const nativeDecimals = (venue: Venue) => (venue === "cow" ? 18 : 9);
+/** CoW pays the native coin, Kyber its wrapped form: both 18 decimals. Jupiter pays SOL (9). */
+const nativeDecimals = (venue: Venue) => (venue === "jupiter" ? 9 : 18);
 
 async function decimalsOf(chain: string, address: string): Promise<number> {
   return CHAINS[chain as ChainId].family === "evm" ? tokenDecimals(chain as ChainId, address) : mintDecimals(address);
@@ -54,6 +57,9 @@ export async function buildPlan(pos: PositionDoc, token: TokenDoc): Promise<{ ve
   const venue = venueFor(token.chain);
   if (!venue) return null;
   const planned = planAutoSells({ entryPriceUsd: pos.entryPriceUsd, initialAmount: pos.initialAmount, amount: pos.amount, costBasisUsd: pos.costBasisUsd, targetsHit: pos.targetsHit }, pos.targetsSnapshot ?? []);
+  if (venue === "kyber") {
+    return { venue, orders: planned, note: "Proceeds arrive as the wrapped version of the chain's coin (for example WETH), which you can unwrap in your wallet." + (token.chain === "ethereum" && pos.amount * token.priceUsd < 100 ? " On Ethereum mainnet, small orders may not fill because the network fee can exceed the order's value." : "") };
+  }
   if (venue === "cow") {
     const note = token.chain === "ethereum" && pos.amount * token.priceUsd < 100 ? "On Ethereum mainnet, small orders may not fill because the network fee can exceed the order's value." : null;
     return { venue, orders: planned, note };
@@ -76,7 +82,7 @@ async function toDocs(userId: string, pos: PositionDoc, token: TokenDoc, venue: 
     // a position's amount is a float built from on-chain deltas; shave 1e-9 so rounding can never ask to sell more than the wallet holds
     sellAmount: o.tokenAmount, sellAmountRaw: ((toRaw(o.tokenAmount, dec) * BigInt(999_999_999)) / BigInt(1_000_000_000)).toString(),
     minBuyRaw: minProceedsRaw(o.tokenAmount, o.targetPriceUsd, nat, nativeDecimals(venue), venue === "jupiter" ? JUP_FEE_FRACTION : 0).toString(),
-    status: "SUGGESTED", orderRef: null, validTo: venue === "cow" ? new Date(now.getTime() + ORDER_LIFETIME_MS) : null, bookedSellRaw: "0", bookedBuyRaw: "0", txHashes: [], error: null,
+    status: "SUGGESTED", orderRef: null, validTo: venue !== "jupiter" ? new Date(now.getTime() + ORDER_LIFETIME_MS) : null, bookedSellRaw: "0", bookedBuyRaw: "0", txHashes: [], error: null,
     createdAt: now, activatedAt: null, updatedAt: now, lastSyncAt: null,
   }));
   return docs.filter((d) => BigInt(d.sellAmountRaw) > BigInt(0) && BigInt(d.minBuyRaw) > BigInt(0));
@@ -117,14 +123,40 @@ export async function suggestAutoSells(positionId: string): Promise<number> {
 
 // ───────────────────────────── arming ─────────────────────────────
 
+/** Kyber rejects an order for reasons that read as input errors; say what they usually mean. */
+function friendlyOrderError(msg: string): string {
+  if (/out of range.*makingAmount|makingAmount/i.test(msg)) return "The venue refused this order's size: it is below its minimum, or the wallet does not hold or has not approved enough of the token. " + msg;
+  if (/insufficient\s*allowance/i.test(msg)) return "The token approval did not go through, so the venue cannot reserve the tokens. " + msg;
+  return msg;
+}
+
+/** Everything the wallet needs to arm an EVM position: an exact-amount approval (if short) and one typed order per target. */
 export async function prepareArmEvm(userId: string, positionId: string) {
   const { pos, token } = await loadOpenPosition(userId, positionId);
-  if (CHAINS[token.chain as ChainId].family !== "evm") throw new TradeError("Not an EVM position", 400);
+  const chain = token.chain as ChainId;
+  if (CHAINS[chain].family !== "evm") throw new TradeError("Not an EVM position", 400);
   const wallet = await ownerWallet(userId, token.chain);
   const { plan, docs } = await replan(userId, pos, token);
-  const chainId = CHAINS[token.chain as ChainId].evmChainId!;
+  const chainId = CHAINS[chain].evmChainId!;
   const total = docs.reduce((s, d) => s + BigInt(d.sellAmountRaw), BigInt(0));
-  const allowance = await cowAllowance(token.chain as ChainId, token.address, wallet.address).catch(() => BigInt(0));
+  const col = await collections.autoSellOrders();
+
+  if (plan.venue === "kyber") {
+    const contract = await kyberContract(chain);
+    const taker = CHAINS[chain].wrappedNative;
+    const allowance = await erc20Allowance(chain, token.address, wallet.address, contract).catch(() => BigInt(0));
+    const orders = [];
+    for (const d of docs) {
+      const req: KyberOrderRequest = { chainId: String(chainId), makerAsset: token.address, takerAsset: taker, maker: wallet.address, allowedSenders: [], makingAmount: d.sellAmountRaw, takingAmount: d.minBuyRaw, expiredAt: Math.floor(d.validTo!.getTime() / 1000) };
+      const typed = await kyberSignMessage(req);
+      // the salt is chosen by Kyber and is part of what gets signed: keep it, so the order can be posted exactly as signed
+      await col.updateOne({ _id: d._id }, { $set: { venueData: { salt: String(typed.message.salt), takerAsset: taker, contract, expiredAt: req.expiredAt } } });
+      orders.push({ id: d._id, levels: d.levels, gainPct: d.gainPct, targetPriceUsd: d.targetPriceUsd, sellAmount: d.sellAmount, typedData: typed });
+    }
+    return { venue: "kyber" as const, chain: token.chain, chainId, note: plan.note, approval: allowance >= total ? null : erc20ApprovalTx(token.address, contract, total), orders };
+  }
+
+  const allowance = await cowAllowance(chain, token.address, wallet.address).catch(() => BigInt(0));
   return {
     venue: "cow" as const,
     chain: token.chain,
@@ -143,6 +175,12 @@ export async function prepareArmEvm(userId: string, positionId: string) {
   };
 }
 
+function kyberRequest(d: AutoSellOrderDoc, token: TokenDoc, maker: string): KyberOrderRequest {
+  const v = d.venueData;
+  if (!v) throw new TradeError("Order was not prepared", 409);
+  return { chainId: String(CHAINS[d.chain as ChainId].evmChainId), makerAsset: token.address, takerAsset: v.takerAsset, maker, allowedSenders: [], makingAmount: d.sellAmountRaw, takingAmount: d.minBuyRaw, expiredAt: v.expiredAt };
+}
+
 /** Post the signed orders. The order content is rebuilt here from what was stored, never taken from the browser. */
 export async function activateEvm(userId: string, positionId: string, signatures: Record<string, string>) {
   const { pos, token } = await loadOpenPosition(userId, positionId);
@@ -158,12 +196,19 @@ export async function activateEvm(userId: string, positionId: string, signatures
       continue;
     }
     try {
-      const order = buildCowOrder({ owner: wallet.address, sellToken: token.address, sellAmountRaw: BigInt(d.sellAmountRaw), minBuyRaw: BigInt(d.minBuyRaw), validTo: Math.floor(d.validTo!.getTime() / 1000) });
-      const uid = await submitCowOrder(token.chain as ChainId, order, wallet.address, sig);
-      await col.updateOne({ _id: d._id }, { $set: { status: "ACTIVE", orderRef: uid, activatedAt: new Date(), updatedAt: new Date(), error: null } });
+      let ref: string;
+      if (d.venue === "kyber") {
+        const req = kyberRequest(d, token, wallet.address);
+        const r = await submitKyberOrder(req, d.venueData!.salt, sig);
+        ref = r.id !== null ? String(r.id) : `pending:${d.venueData!.salt}`; // found in the maker's listing on the next sync
+      } else {
+        const order = buildCowOrder({ owner: wallet.address, sellToken: token.address, sellAmountRaw: BigInt(d.sellAmountRaw), minBuyRaw: BigInt(d.minBuyRaw), validTo: Math.floor(d.validTo!.getTime() / 1000) });
+        ref = await submitCowOrder(token.chain as ChainId, order, wallet.address, sig);
+      }
+      await col.updateOne({ _id: d._id }, { $set: { status: "ACTIVE", orderRef: ref, activatedAt: new Date(), updatedAt: new Date(), error: null } });
       activated.push(d._id);
     } catch (err) {
-      const msg = safeMessage(err);
+      const msg = friendlyOrderError(safeMessage(err));
       await col.updateOne({ _id: d._id }, { $set: { status: "FAILED", error: msg, updatedAt: new Date() } });
       failed.push({ id: d._id, error: msg });
     }
@@ -205,20 +250,49 @@ export async function activateSolana(userId: string, orderId: string, signature:
 
 // ───────────────────────────── cancelling ─────────────────────────────
 
+/** Kyber's own id for each armed order (an order whose id wasn't returned at creation is looked up in the maker's listing). */
+async function kyberIds(docs: AutoSellOrderDoc[], chain: ChainId, maker: string): Promise<number[]> {
+  const col = await collections.autoSellOrders();
+  const ids: number[] = [];
+  for (const d of docs) {
+    let ref = d.orderRef!;
+    if (ref.startsWith("pending:")) {
+      const token = await (await collections.tokens()).findOne({ _id: d.tokenId });
+      const found = token ? await kyberFindOrder(chain, maker, { req: kyberRequest(d, token, maker) }) : null;
+      if (!found) throw new TradeError("An order is still being registered with Kyber; try again in a minute.", 409);
+      ref = String(found.id);
+      await col.updateOne({ _id: d._id }, { $set: { orderRef: ref } });
+    }
+    ids.push(Number(ref));
+  }
+  return ids;
+}
+
 export async function prepareCancelEvm(userId: string, positionId: string) {
   const col = await collections.autoSellOrders();
-  const docs = await col.find({ positionId, userId, status: "ACTIVE", venue: "cow" }).toArray();
+  const docs = await col.find({ positionId, userId, status: "ACTIVE", venue: { $in: ["cow", "kyber"] } }).toArray();
   if (!docs.length) throw new TradeError("No active auto-sell orders", 404);
   const chain = docs[0].chain as ChainId;
-  return { chain, chainId: CHAINS[chain].evmChainId!, typedData: cowCancelTypedData(CHAINS[chain].evmChainId!, docs.map((d) => d.orderRef!)) };
+  const chainId = CHAINS[chain].evmChainId!;
+  if (docs[0].venue === "kyber") {
+    const wallet = await ownerWallet(userId, chain);
+    return { chain, chainId, typedData: await kyberCancelSign(chain, wallet.address, await kyberIds(docs, chain, wallet.address)) };
+  }
+  return { chain, chainId, typedData: cowCancelTypedData(chainId, docs.map((d) => d.orderRef!)) };
 }
 
 export async function confirmCancelEvm(userId: string, positionId: string, signature: string) {
   if (!/^0x[0-9a-fA-F]{130}$/.test(signature)) throw new TradeError("A valid signature is required", 400);
   const col = await collections.autoSellOrders();
-  const docs = await col.find({ positionId, userId, status: "ACTIVE", venue: "cow" }).toArray();
+  const docs = await col.find({ positionId, userId, status: "ACTIVE", venue: { $in: ["cow", "kyber"] } }).toArray();
   if (!docs.length) return { cancelled: 0 };
-  await cancelCowOrders(docs[0].chain as ChainId, docs.map((d) => d.orderRef!), signature);
+  const chain = docs[0].chain as ChainId;
+  if (docs[0].venue === "kyber") {
+    const wallet = await ownerWallet(userId, chain);
+    await cancelKyberOrders(chain, wallet.address, await kyberIds(docs, chain, wallet.address), signature);
+  } else {
+    await cancelCowOrders(chain, docs.map((d) => d.orderRef!), signature);
+  }
   await col.updateMany({ _id: { $in: docs.map((d) => d._id) } }, { $set: { status: "CANCELLED", updatedAt: new Date() } });
   return { cancelled: docs.length };
 }
@@ -253,6 +327,20 @@ export interface VenueState {
 }
 
 async function venueState(d: AutoSellOrderDoc): Promise<VenueState> {
+  if (d.venue === "kyber") {
+    const chain = d.chain as ChainId;
+    const wallet = await ownerWallet(d.userId, d.chain);
+    const token = await (await collections.tokens()).findOne({ _id: d.tokenId });
+    const ref = d.orderRef!;
+    const o: KyberOrder | null = ref.startsWith("pending:")
+      ? token ? await kyberFindOrder(chain, wallet.address, { req: kyberRequest(d, token, wallet.address) }) : null
+      : await kyberFindOrder(chain, wallet.address, { id: Number(ref) });
+    if (!o) return { state: "missing", sellRaw: BigInt(0), buyRaw: BigInt(0), txHash: null };
+    if (ref.startsWith("pending:")) await (await collections.autoSellOrders()).updateOne({ _id: d._id }, { $set: { orderRef: String(o.id) } });
+    const f = kyberFills(o);
+    const state = o.status === "filled" ? "filled" : o.status === "cancelled" ? "cancelled" : o.status === "expired" ? "expired" : "open";
+    return { state, sellRaw: f.sellRaw, buyRaw: f.buyRaw, txHash: f.txHash };
+  }
   if (d.venue === "cow") {
     const o = await getCowOrder(d.chain as ChainId, d.orderRef!);
     if (!o) return { state: "missing", sellRaw: BigInt(0), buyRaw: BigInt(0), txHash: null };
@@ -298,9 +386,9 @@ async function syncOne(d: AutoSellOrderDoc): Promise<number> {
   let booked = 0;
 
   if (st.state === "missing") {
-    const grace = d.venue === "cow" ? COW_LAND_GRACE_MS : SOLANA_LAND_GRACE_MS;
+    const grace = d.venue === "jupiter" ? SOLANA_LAND_GRACE_MS : COW_LAND_GRACE_MS;
     if (d.activatedAt && now.getTime() - d.activatedAt.getTime() > grace) {
-      const detail = d.venue === "jupiter" ? "The order transaction never landed on Solana, so your tokens did not leave your wallet." : "The order is no longer known to CoW Protocol.";
+      const detail = d.venue === "jupiter" ? "The order transaction never landed on Solana, so your tokens did not leave your wallet." : `The order is no longer known to ${d.venue === "kyber" ? "KyberSwap" : "CoW Protocol"}.`;
       await col.updateOne({ _id: d._id }, { $set: { status: "FAILED", error: detail, updatedAt: now } });
       await notifyUser(d.userId, autoSellProblem("failed", symbol, detail, d.positionId));
     }

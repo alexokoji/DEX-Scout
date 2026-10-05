@@ -63,7 +63,7 @@ export function AutoSellPanel({ positionId, chain, orders }: { positionId: strin
 
   const arm = () =>
     run(async () => {
-      if (venue === "cow") {
+      if (venue !== "jupiter") {
         const p = await post<{ chainId: number; approval: { to: string; data: string; value?: string } | null; orders: { id: string; typedData: unknown }[] }>("prepare", { positionId });
         const sigs = await signer.signEvmOrders(p.chainId, p.approval, p.orders.map((o) => o.typedData));
         const res = await post<{ activated: string[]; failed: { id: string; error: string }[] }>("activate", { positionId, signatures: Object.fromEntries(p.orders.map((o, i) => [o.id, sigs[i]])) });
@@ -80,7 +80,7 @@ export function AutoSellPanel({ positionId, chain, orders }: { positionId: strin
 
   const cancel = () =>
     run(async () => {
-      if (venue === "cow") {
+      if (venue !== "jupiter") {
         const p = await post<{ chainId: number; typedData: unknown }>("cancel-prepare", { positionId });
         const signature = await signer.signTyped(p.chainId, p.typedData);
         await post("cancel-confirm", { positionId, signature });
@@ -126,7 +126,7 @@ export function AutoSellPanel({ positionId, chain, orders }: { positionId: strin
         </div>
       )}
       <div className="mt-1.5 text-[10px] text-muted">
-        {venue === "cow" ? "Limit orders via CoW Protocol: one token approval for the exact amount, then gasless signatures." : "Limit orders via Jupiter: each order moves its tokens into Jupiter's escrow until it fills or you cancel. Jupiter keeps about 0.8% of the proceeds."}
+        {venue === "cow" ? "Limit orders via CoW Protocol: one token approval for the exact amount, then gasless signatures." : venue === "kyber" ? "Limit orders via KyberSwap: one token approval for the exact amount, then gasless signatures. You receive the wrapped coin (e.g. WETH), which you can unwrap in your wallet." : "Limit orders via Jupiter: each order moves its tokens into Jupiter's escrow until it fills or you cancel. Jupiter keeps about 0.8% of the proceeds."}
       </div>
     </div>
   );

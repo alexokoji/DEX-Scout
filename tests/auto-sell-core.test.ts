@@ -87,12 +87,19 @@ describe("amounts", () => {
 });
 
 describe("venue coverage", () => {
-  it("auto-sell exists on Solana and exactly the CoW-served EVM chains; everything else is told so", () => {
+  it("auto-sell covers Solana (Jupiter), eight chains on CoW, seven more on Kyber, and only these five are left without a venue", () => {
     expect(autoSellVenue("solana")).toBe("jupiter");
     const cow = CHAIN_IDS.filter((c) => autoSellVenue(c) === "cow");
-    expect(cow.sort()).toEqual(["arbitrum", "avalanche", "base", "bsc", "ethereum", "ink", "linea", "polygon"]);
-    for (const c of ["optimism", "sonic", "robinhood", "hyperevm", "monad"] as const) expect(autoSellVenue(c)).toBeNull();
+    expect([...cow].sort()).toEqual(["arbitrum", "avalanche", "base", "bsc", "ethereum", "ink", "linea", "polygon"]);
+    const kyber = CHAIN_IDS.filter((c) => autoSellVenue(c) === "kyber");
+    expect([...kyber].sort()).toEqual(["berachain", "hyperevm", "monad", "optimism", "robinhood", "sonic", "unichain"]);
+    const none = CHAIN_IDS.filter((c) => autoSellVenue(c) === null);
+    expect([...none].sort()).toEqual(["abstract", "blast", "mantle", "scroll", "world"]);
     for (const c of cow) expect(CHAINS[c].cowNetwork).toBeTruthy();
+    for (const c of [...cow, ...kyber]) expect(CHAINS[c].family).toBe("evm");
+    for (const c of kyber) expect(CHAINS[c].kyberLimitOrders).toBe(true);
+    // the wrapped coin Kyber pays out in must exist for every Kyber chain
+    for (const c of kyber) expect(CHAINS[c].wrappedNative).toMatch(/^0x[0-9a-fA-F]{40}$/);
   });
 });
 

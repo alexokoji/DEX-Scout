@@ -4,6 +4,7 @@ import { EmptyState } from "@/components/ui/card";
 import { age, price, tokens, usd } from "@/lib/format";
 import { ClosePositionButton } from "./ClosePositionButton";
 import { AutoSellPanel, type AutoSellView } from "./AutoSellPanel";
+import { LivePositionPrice } from "./LivePrice";
 import { PriceAge } from "./PriceAge";
 
 interface PV {
@@ -15,6 +16,8 @@ interface PV {
   healthNotes: unknown;
   origin: string;
   entryPriceUsd: number;
+  entryMarketPriceUsd?: number;
+  costBasisUsd: number;
   currentPriceUsd: number;
   priceAt?: Date | string | null;
   amount: number;
@@ -57,8 +60,12 @@ export function PositionsView({ positions, actions = true }: { positions: PV[]; 
             </div>
 
             <div className="mt-3 grid grid-cols-2 gap-3 text-xs sm:grid-cols-4 lg:grid-cols-7">
-              <Cell k="Entry" v={price(p.entryPriceUsd)} />
-              <Cell k="Current" v={price(p.currentPriceUsd)} />
+              <div>
+                <div className="text-muted">Entry (price paid)</div>
+                <div className="num">{price(p.entryPriceUsd)}</div>
+                {p.entryMarketPriceUsd ? <div className="text-[10px] text-muted">market then {price(p.entryMarketPriceUsd)}</div> : null}
+              </div>
+              {closed ? <Cell k="Current" v={price(p.currentPriceUsd)} /> : <LivePositionPrice chain={p.token.chain} address={p.token.address} fallbackUsd={p.currentPriceUsd} amount={p.amount} costBasisUsd={p.costBasisUsd} />}
               <Cell k="Amount" v={tokens(p.amount)} />
               <Cell k="Invested" v={usd(p.investedUsd)} />
               <Cell k="Value" v={usd(p.metrics.currentValueUsd)} />

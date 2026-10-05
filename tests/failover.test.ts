@@ -72,14 +72,16 @@ describe("EVM swaps work with no API key", () => {
     vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const u = String(input);
       if (u.includes("/tokens/v1/")) return json([DS_PAIR]);
-      if (u.includes("/latest/dex/tokens/")) return json({ pairs: [{ chainId: "base", priceUsd: "3000", liquidity: { usd: 9e7 } }] });
+      if (u.includes("/latest/dex/tokens/")) return json({ pairs: [{ chainId: "ethereum", baseToken: { address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" }, quoteToken: { address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" }, priceUsd: "3000", priceNative: "1", liquidity: { usd: 9e7 } }] });
       if (u.includes("api.paraswap.io/prices")) {
         if (opts.paraswap === "fail") return new Response("err", { status: 500 });
         if (opts.paraswap === "empty") return json({ error: "No routes found" });
-        return json({ priceRoute: { destAmount: "10000000000000000000", gasCostUSD: "0.004", tokenTransferProxy: "0x6a000f20005980200259b80c5102003040001068", bestRoute: [{ swaps: [{ swapExchanges: [{ exchange: "AerodromeV3" }] }] }] } });
+        // buying: $10 of ETH buys 10 tokens at $0.80 each. selling 12.5 tokens ($10) returns about 0.0033 ETH. A realistic fill either way: the adapter refuses quotes wildly off the market.
+        const selling = u.includes(`srcToken=${TOKEN}`);
+        return json({ priceRoute: { destAmount: selling ? "3300000000000000" : "10000000000000000000", gasCostUSD: "0.004", tokenTransferProxy: "0x6a000f20005980200259b80c5102003040001068", bestRoute: [{ swaps: [{ swapExchanges: [{ exchange: "AerodromeV3" }] }] }] } });
       }
       if (u.includes("api.paraswap.io/transactions")) return json({ to: "0x6a000f20005980200259b80c5102003040001068", data: "0xdeadbeef", value: "3000000000000000", chainId: 8453 });
-      if (u.includes("kyberswap.com") && u.includes("/routes")) return opts.kyber === "fail" ? new Response("err", { status: 500 }) : json({ data: { routeSummary: { amountOut: "9900000000000000000", gasUsd: "0.01" }, routerAddress: "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5" } });
+      if (u.includes("kyberswap.com") && u.includes("/routes")) return opts.kyber === "fail" ? new Response("err", { status: 500 }) : json({ data: { routeSummary: { amountOut: u.includes(`tokenIn=${TOKEN}`) ? "3250000000000000" : "9900000000000000000", gasUsd: "0.01" }, routerAddress: "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5" } });
       if (u.includes("kyberswap.com") && u.includes("/route/build")) return json({ data: { data: "0xcafebabe", routerAddress: "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5", transactionValue: "3000000000000000", gas: "330000" } });
       if (init?.method === "POST" && u.includes("rpc")) return json({ jsonrpc: "2.0", id: 1, result: "0x" + (18).toString(16).padStart(64, "0") });
       if (init?.method === "POST") return json({ jsonrpc: "2.0", id: 1, result: "0x" + (18).toString(16).padStart(64, "0") }); // any RPC (decimals)
@@ -119,6 +121,19 @@ describe("EVM swaps work with no API key", () => {
     const built = JSON.parse((await dex.buildSwapTransaction(q, "0x71C7656EC7ab88b098defB751B7401B5f6d8976F")).unsignedTxBase64);
     expect(built.approval.to.toLowerCase()).toBe(TOKEN.toLowerCase());
     expect(built.approval.data.startsWith("0x095ea7b3")).toBe(true); // approve(address,uint256)
+  });
+
+  it("refuses a quote that is absurdly better than the market (the sign of a wrong native price, as on HyperEVM) instead of signing it", async () => {
+    vi.stubEnv("ZEROX_API_KEY", "");
+    const normal = routeFetch({ paraswap: "ok", kyber: "ok" });
+    // both aggregators claim 94x more tokens than $10 can buy, which is what a $1 HYPE (really ~$94) produced
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const u = String(input);
+      if (u.includes("api.paraswap.io/prices")) return json({ priceRoute: { destAmount: "940000000000000000000", gasCostUSD: "0.004", tokenTransferProxy: "0x6a000f20005980200259b80c5102003040001068", bestRoute: [] } });
+      if (u.includes("kyberswap.com") && u.includes("/routes")) return json({ data: { routeSummary: { amountOut: "940000000000000000000", gasUsd: "0.01" }, routerAddress: "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5" } });
+      return normal(input, init);
+    }));
+    await expect(new MultiEvmDexAdapter().getQuote({ chain: "base", side: "BUY", tokenAddress: TOKEN, amountUsd: 10, slippageBps: 300 })).rejects.toThrow(/in the user's favour; refusing as it points to bad pricing data/);
   });
 
   it("reports every aggregator's reason when none can route, and never mentions a missing API key", async () => {

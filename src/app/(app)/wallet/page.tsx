@@ -7,7 +7,7 @@ import { CHAINS } from "@/core/chains";
 import { requireUser } from "@/lib/auth";
 import { collections, withIds } from "@/lib/db";
 import { liveTradingAllowed } from "@/lib/env";
-import { shortAddr, usd } from "@/lib/format";
+import { shortAddr, usd, nativeAmount, usdBalance } from "@/lib/format";
 import { portfolio, walletBalances } from "@/services/queries";
 
 export default async function WalletPage() {
@@ -45,15 +45,21 @@ export default async function WalletPage() {
       </Card>
       {wb.balances.length > 0 && (
         <Card>
-          <CardHeader title="Native balances by chain" sub="Native token on each chain: this is what the bot and your manual buys can spend, and it pays gas." />
+          <CardHeader title="Native balances by chain" sub="What you hold of each chain's own coin, in dollars. This is what the bot and your manual buys spend (a little is kept back for network fees)." />
           <div className="divide-y divide-border text-sm">
-            {wb.balances.map((b) => (
+            {wb.balances.filter((b) => b.usd >= 0.01).map((b) => (
               <div key={`${b.address}:${b.chain}`} className="flex items-center justify-between px-4 py-2">
                 <span>{CHAINS[b.chain as keyof typeof CHAINS].name}</span>
-                <span className="num">{b.amount.toFixed(4)} {b.symbol} <span className="text-muted">({usd(b.usd)})</span></span>
+                <span className="num"><span className="font-medium">{usdBalance(b.usd)}</span> <span className="text-muted">· {nativeAmount(b.amount)} {b.symbol}</span></span>
               </div>
             ))}
+            {wb.balances.every((b) => b.usd < 0.01) && <div className="px-4 py-3 text-xs text-muted">No balance found on any chain yet.</div>}
           </div>
+          {wb.balances.some((b) => b.usd < 0.01) && (
+            <div className="border-t border-border px-4 py-2 text-[11px] text-muted">
+              Nothing (under 1 cent) on: {wb.balances.filter((b) => b.usd < 0.01).map((b) => CHAINS[b.chain as keyof typeof CHAINS].name).join(", ")}.
+            </div>
+          )}
         </Card>
       )}
       <Card>
