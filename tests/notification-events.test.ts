@@ -23,7 +23,7 @@ afterAll(async () => {
   if (dbUp) await closeDb();
 });
 
-const ALL_TYPES: NotificationType[] = ["BUY_QUEUED", "SELL_QUEUED", "TRADE_EXPIRED", "TRADE_CONFIRMED", "TRADE_FAILED", "POSITION_ALERT", "SYSTEM_ALERT"];
+const ALL_TYPES: NotificationType[] = ["BUY_QUEUED", "SELL_QUEUED", "AUTOSELL_SUGGESTED", "AUTOSELL_PROBLEM", "PROFIT_TAKEN", "TRADE_EXPIRED", "TRADE_CONFIRMED", "TRADE_FAILED", "POSITION_ALERT", "SYSTEM_ALERT"];
 
 describe("wording", () => {
   it("every type belongs to exactly one switchable category", () => {
@@ -45,12 +45,15 @@ describe("wording", () => {
     expect(buy.title).toBe("Bought PEPE");
     expect(buy.body).toContain("1,234.57 PEPE for about $10.02");
     const win = tradeConfirmed({ side: "SELL", symbol: "PEPE", chainName: "Base", usd: 12.5, tokens: 300, tradeId: "t", realizedDeltaUsd: 2.5, closed: false });
-    expect(win.title).toBe("Sold part of PEPE");
-    expect(win.body).toContain("Realised +$2.50");
+    // a sell now leads with the profit percentage: $2.50 made on a slice that cost $10 is +25%
+    expect(win.type).toBe("PROFIT_TAKEN");
+    expect(win.title).toBe("Profit taken: PEPE +25.0%");
+    expect(win.body).toContain("profit +$2.50 (+25.0% on that portion)");
     expect(win.body).toContain("rest stays open");
     const loss = tradeConfirmed({ side: "SELL", symbol: "PEPE", chainName: "Base", usd: 7, tokens: 300, tradeId: "t", realizedDeltaUsd: -3, closed: true });
-    expect(loss.title).toBe("Sold PEPE - position closed");
-    expect(loss.body).toContain("Realised -$3.00");
+    expect(loss.title).toBe("Sold PEPE at a loss: -30.0%");
+    expect(loss.body).toContain("loss -$3.00");
+    expect(loss.body).toContain("Position closed");
   });
 
   it("failures, expiries, position alerts and scanner outages are specific and ASCII-titled", () => {
@@ -204,9 +207,10 @@ describe("category switches are validated", () => {
     const pos = (await (await collections.positions()).findOne({ _id: positionId }))!;
     await (await collections.trades()).updateOne({ _id: sellId }, { $set: { tokenAmount: pos.amount / 2 } });
     expect(await reconcileLiveTrade(sellId)).toMatchObject({ ok: true });
-    const sold = (await mine("TRADE_CONFIRMED")).find((n) => n.tradeId === sellId)!;
-    expect(sold.title).toBe(`Sold part of ${token.symbol}`);
-    expect(sold.body).toMatch(/Realised [+-]\$\d/);
+    const sold = (await mine("PROFIT_TAKEN")).find((n) => n.tradeId === sellId)!;
+    expect(sold.title).toContain(token.symbol);
+    expect(sold.title).toMatch(/^(Profit taken|Sold .* at a loss)/);
+    expect(sold.body).toMatch(/% on that portion\)/); // the percentage made (or lost) on what was sold
   });
 
   it("a trade that fails on-chain notifies with the reason, once", async () => {

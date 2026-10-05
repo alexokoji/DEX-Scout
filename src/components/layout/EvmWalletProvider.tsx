@@ -39,6 +39,8 @@ interface EvmWalletApi {
   connect(walletId?: string): Promise<string>;
   disconnect(): void;
   signMessage(message: string): Promise<string>;
+  /** EIP-712 (eth_signTypedData_v4): a gasless signature over structured data, e.g. a limit order. */
+  signTypedData(typedData: unknown): Promise<string>;
   switchChain(chainId: number): Promise<void>;
   sendTransaction(tx: EvmTx): Promise<string>;
   waitForReceipt(hash: string, timeoutMs?: number): Promise<boolean>;
@@ -139,6 +141,11 @@ export function EvmWalletProvider({ children }: { children: React.ReactNode }) {
         setAddress(null);
         setActiveId(null);
         try { localStorage.removeItem(LAST_KEY); } catch { /* storage blocked */ }
+      },
+      async signTypedData(typedData) {
+        const eth = providerFor(activeId);
+        if (!eth || !address) throw new Error("Connect your wallet first");
+        return (await eth.request({ method: "eth_signTypedData_v4", params: [address, JSON.stringify(typedData)] })) as string;
       },
       async signMessage(message) {
         const eth = providerFor(activeId);

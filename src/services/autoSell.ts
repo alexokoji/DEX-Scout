@@ -1,0 +1,346 @@
+import { autoSellVenue, CHAINS } from "@/core/chains";
+import { fillDelta, mergeForMinimum, minProceedsRaw, planAutoSells, toRaw, type PlannedOrder } from "@/core/trading/autoSell";
+import { cancelCowOrders, cowAllowance, cowApprovalTx, cowCancelTypedData, cowTypedData, buildCowOrder, getCowOrder, getCowTradeHashes, submitCowOrder, COW_RELAYER } from "@/core/providers/limitOrders/cow";
+import { cancelJupiterOrder, createJupiterOrder, getJupiterOrder, jupiterFills, JUP_FEE_FRACTION, JUP_MIN_ORDER_USD } from "@/core/providers/limitOrders/jupiter";
+import { tokenDecimals } from "@/core/providers/evm/evmProviders";
+import { providers } from "@/core/providers/registry";
+import { mintDecimals } from "@/core/providers/solana/solanaProviders";
+import type { ChainId } from "@/core/types";
+import { collections, newId } from "@/lib/db";
+import { logEvent, safeMessage } from "@/lib/events";
+import type { AutoSellOrderDoc, PositionDoc, TokenDoc } from "@/lib/models";
+import { autoSellProblem, autoSellSuggested } from "./notificationMessages";
+import { notifyUser } from "./notifications";
+import { recordExternalSell, TradeError } from "./trading";
+
+/**
+ * Auto-sell. After a buy confirms, the app prepares one limit sell per profit target. The user signs them once (an
+ * approval + off-chain signatures on EVM via CoW Protocol; one escrow transaction per order on Solana via Jupiter) and a
+ * keeper network fills each on-chain when its price is reached, even if the user is away. The app never holds keys: it
+ * builds what the wallet signs, submits the signed orders, and then watches the venue for fills to book profit.
+ */
+
+const ORDER_LIFETIME_MS = 14 * 24 * 3_600_000; // CoW orders lapse; Jupiter orders stay until filled or cancelled
+const SOLANA_LAND_GRACE_MS = 4 * 60_000;
+const COW_LAND_GRACE_MS = 10 * 60_000;
+const ACTIVE_OR_PENDING: AutoSellOrderDoc["status"][] = ["SUGGESTED", "ACTIVE"];
+
+export type Venue = "cow" | "jupiter";
+export const venueFor = (chain: string): Venue | null => (chain in CHAINS ? autoSellVenue(chain as ChainId) : null);
+
+const nativeDecimals = (venue: Venue) => (venue === "cow" ? 18 : 9);
+
+async function decimalsOf(chain: string, address: string): Promise<number> {
+  return CHAINS[chain as ChainId].family === "evm" ? tokenDecimals(chain as ChainId, address) : mintDecimals(address);
+}
+
+async function ownerWallet(userId: string, chain: string) {
+  const family = CHAINS[chain as ChainId].family === "evm" ? "evm" : "solana";
+  const w = await (await collections.wallets()).findOne({ userId, chain: family }, { sort: { createdAt: -1 } });
+  if (!w) throw new TradeError(`Connect and verify a ${family === "evm" ? "EVM" : "Solana"} wallet first`, 400);
+  return w;
+}
+
+async function loadOpenPosition(userId: string, positionId: string): Promise<{ pos: PositionDoc; token: TokenDoc }> {
+  const pos = await (await collections.positions()).findOne({ _id: positionId, userId, environment: "LIVE" });
+  if (!pos || pos.status === "CLOSED" || pos.amount <= 0) throw new TradeError("Position not found or already closed", 404);
+  const token = await (await collections.tokens()).findOne({ _id: pos.tokenId });
+  if (!token) throw new TradeError("Token not found", 404);
+  return { pos, token };
+}
+
+/** The sell plan for a position as it stands now, as order documents (not yet signed or placed). */
+export async function buildPlan(pos: PositionDoc, token: TokenDoc): Promise<{ venue: Venue; orders: PlannedOrder[]; note: string | null } | null> {
+  const venue = venueFor(token.chain);
+  if (!venue) return null;
+  const planned = planAutoSells({ entryPriceUsd: pos.entryPriceUsd, initialAmount: pos.initialAmount, amount: pos.amount, costBasisUsd: pos.costBasisUsd, targetsHit: pos.targetsHit }, pos.targetsSnapshot ?? []);
+  if (venue === "cow") {
+    const note = token.chain === "ethereum" && pos.amount * token.priceUsd < 100 ? "On Ethereum mainnet, small orders may not fill because the network fee can exceed the order's value." : null;
+    return { venue, orders: planned, note };
+  }
+  const merged = mergeForMinimum(planned, token.priceUsd, JUP_MIN_ORDER_USD);
+  const note = !merged.length
+    ? "This position is below Jupiter's $5 minimum order, so auto-sell can't be used; you'll get a notification to sign target sells instead."
+    : merged.length < planned.length
+      ? "Jupiter orders must be at least $5 each, so some small targets were merged into fewer, larger sells at the earlier target."
+      : null;
+  return { venue, orders: merged, note };
+}
+
+async function toDocs(userId: string, pos: PositionDoc, token: TokenDoc, venue: Venue, orders: PlannedOrder[]): Promise<AutoSellOrderDoc[]> {
+  const dec = await decimalsOf(token.chain, token.address);
+  const nat = await providers().chains[token.chain as ChainId].nativeUsdPrice();
+  const now = new Date();
+  const docs = orders.map((o): AutoSellOrderDoc => ({
+    _id: newId(), userId, positionId: pos._id, tokenId: token._id, chain: token.chain, venue, levels: o.levels, gainPct: o.gainPct, targetPriceUsd: o.targetPriceUsd,
+    // a position's amount is a float built from on-chain deltas; shave 1e-9 so rounding can never ask to sell more than the wallet holds
+    sellAmount: o.tokenAmount, sellAmountRaw: ((toRaw(o.tokenAmount, dec) * BigInt(999_999_999)) / BigInt(1_000_000_000)).toString(),
+    minBuyRaw: minProceedsRaw(o.tokenAmount, o.targetPriceUsd, nat, nativeDecimals(venue), venue === "jupiter" ? JUP_FEE_FRACTION : 0).toString(),
+    status: "SUGGESTED", orderRef: null, validTo: venue === "cow" ? new Date(now.getTime() + ORDER_LIFETIME_MS) : null, bookedSellRaw: "0", bookedBuyRaw: "0", txHashes: [], error: null,
+    createdAt: now, activatedAt: null, updatedAt: now, lastSyncAt: null,
+  }));
+  return docs.filter((d) => BigInt(d.sellAmountRaw) > BigInt(0) && BigInt(d.minBuyRaw) > BigInt(0));
+}
+
+/** Replace any not-yet-placed suggestions with a fresh plan for the position's current size. */
+async function replan(userId: string, pos: PositionDoc, token: TokenDoc) {
+  const col = await collections.autoSellOrders();
+  const placed = await col.countDocuments({ positionId: pos._id, status: "ACTIVE" });
+  if (placed) throw new TradeError("Auto-sell is already armed for this position. Cancel it first to change it.", 409);
+  const plan = await buildPlan(pos, token);
+  if (!plan) throw new TradeError(`Auto-sell isn't available on ${CHAINS[token.chain as ChainId].name} yet; target sells will be queued for you to sign instead.`, 422);
+  await col.deleteMany({ positionId: pos._id, status: "SUGGESTED" });
+  const docs = await toDocs(userId, pos, token, plan.venue, plan.orders);
+  if (!docs.length) throw new TradeError(plan.note ?? "Nothing to sell: the position is too small for auto-sell orders", 422);
+  await col.insertMany(docs);
+  return { plan, docs };
+}
+
+/** Called when a buy confirms: prepare the suggestion and tell the user. Idempotent. Never throws. */
+export async function suggestAutoSells(positionId: string): Promise<number> {
+  try {
+    const pos = await (await collections.positions()).findOne({ _id: positionId });
+    if (!pos || pos.status === "CLOSED") return 0;
+    const token = await (await collections.tokens()).findOne({ _id: pos.tokenId });
+    if (!token) return 0;
+    const col = await collections.autoSellOrders();
+    if (await col.countDocuments({ positionId, status: { $in: ACTIVE_OR_PENDING } })) return 0;
+    const { docs } = await replan(pos.userId, pos, token).catch(() => ({ docs: [] as AutoSellOrderDoc[] }));
+    if (!docs.length) return 0;
+    await notifyUser(pos.userId, autoSellSuggested(token.symbol, CHAINS[token.chain as ChainId].name, docs.map((d) => ({ gainPct: d.gainPct, sellPct: (d.sellAmount / pos.initialAmount) * 100 })), positionId));
+    return docs.length;
+  } catch (err) {
+    await logEvent({ type: "WORKER_ERROR", source: "autosell", level: "WARN", message: `Could not suggest auto-sell: ${safeMessage(err)}` }).catch(() => {});
+    return 0;
+  }
+}
+
+// ───────────────────────────── arming ─────────────────────────────
+
+export async function prepareArmEvm(userId: string, positionId: string) {
+  const { pos, token } = await loadOpenPosition(userId, positionId);
+  if (CHAINS[token.chain as ChainId].family !== "evm") throw new TradeError("Not an EVM position", 400);
+  const wallet = await ownerWallet(userId, token.chain);
+  const { plan, docs } = await replan(userId, pos, token);
+  const chainId = CHAINS[token.chain as ChainId].evmChainId!;
+  const total = docs.reduce((s, d) => s + BigInt(d.sellAmountRaw), BigInt(0));
+  const allowance = await cowAllowance(token.chain as ChainId, token.address, wallet.address).catch(() => BigInt(0));
+  return {
+    venue: "cow" as const,
+    chain: token.chain,
+    chainId,
+    note: plan.note,
+    relayer: COW_RELAYER,
+    approval: allowance >= total ? null : cowApprovalTx(token.address, total),
+    orders: docs.map((d) => ({
+      id: d._id,
+      levels: d.levels,
+      gainPct: d.gainPct,
+      targetPriceUsd: d.targetPriceUsd,
+      sellAmount: d.sellAmount,
+      typedData: cowTypedData(chainId, buildCowOrder({ owner: wallet.address, sellToken: token.address, sellAmountRaw: BigInt(d.sellAmountRaw), minBuyRaw: BigInt(d.minBuyRaw), validTo: Math.floor(d.validTo!.getTime() / 1000) })),
+    })),
+  };
+}
+
+/** Post the signed orders. The order content is rebuilt here from what was stored, never taken from the browser. */
+export async function activateEvm(userId: string, positionId: string, signatures: Record<string, string>) {
+  const { pos, token } = await loadOpenPosition(userId, positionId);
+  const wallet = await ownerWallet(userId, token.chain);
+  const col = await collections.autoSellOrders();
+  const docs = await col.find({ positionId: pos._id, userId, status: "SUGGESTED" }).toArray();
+  const activated: string[] = [];
+  const failed: { id: string; error: string }[] = [];
+  for (const d of docs) {
+    const sig = signatures[d._id];
+    if (!sig || !/^0x[0-9a-fA-F]{130}$/.test(sig)) {
+      failed.push({ id: d._id, error: "No valid signature for this order" });
+      continue;
+    }
+    try {
+      const order = buildCowOrder({ owner: wallet.address, sellToken: token.address, sellAmountRaw: BigInt(d.sellAmountRaw), minBuyRaw: BigInt(d.minBuyRaw), validTo: Math.floor(d.validTo!.getTime() / 1000) });
+      const uid = await submitCowOrder(token.chain as ChainId, order, wallet.address, sig);
+      await col.updateOne({ _id: d._id }, { $set: { status: "ACTIVE", orderRef: uid, activatedAt: new Date(), updatedAt: new Date(), error: null } });
+      activated.push(d._id);
+    } catch (err) {
+      const msg = safeMessage(err);
+      await col.updateOne({ _id: d._id }, { $set: { status: "FAILED", error: msg, updatedAt: new Date() } });
+      failed.push({ id: d._id, error: msg });
+    }
+  }
+  if (activated.length) await logEvent({ type: "TRADE_REQUESTED", source: "autosell", userId, message: `Auto-sell armed for ${token.symbol}: ${activated.length} order(s)`, data: { positionId } });
+  return { activated, failed };
+}
+
+/** Solana: the plan first (so the UI can list the orders), then one fresh transaction per order as the user signs them. */
+export async function prepareArmSolanaPlan(userId: string, positionId: string) {
+  const { pos, token } = await loadOpenPosition(userId, positionId);
+  if (CHAINS[token.chain as ChainId].family !== "svm") throw new TradeError("Not a Solana position", 400);
+  await ownerWallet(userId, token.chain);
+  const { plan, docs } = await replan(userId, pos, token);
+  return { venue: "jupiter" as const, chain: token.chain, note: plan.note, orders: docs.map((d) => ({ id: d._id, levels: d.levels, gainPct: d.gainPct, targetPriceUsd: d.targetPriceUsd, sellAmount: d.sellAmount })) };
+}
+
+export async function prepareSolanaOrder(userId: string, orderId: string) {
+  const col = await collections.autoSellOrders();
+  const d = await col.findOne({ _id: orderId, userId, status: "SUGGESTED" });
+  if (!d) throw new TradeError("Order not found or already placed", 404);
+  const token = await (await collections.tokens()).findOne({ _id: d.tokenId });
+  if (!token) throw new TradeError("Token not found", 404);
+  const wallet = await ownerWallet(userId, d.chain);
+  const o = await createJupiterOrder({ maker: wallet.address, inputMint: token.address, makingRaw: BigInt(d.sellAmountRaw), takingRaw: BigInt(d.minBuyRaw) });
+  await col.updateOne({ _id: d._id }, { $set: { orderRef: o.order, updatedAt: new Date(), error: null } });
+  return { orderId: d._id, unsignedTxBase64: o.transaction };
+}
+
+const SOL_SIGNATURE = /^[1-9A-HJ-NP-Za-km-z]{64,90}$/;
+export async function activateSolana(userId: string, orderId: string, signature: string) {
+  if (!SOL_SIGNATURE.test(signature)) throw new TradeError("A valid transaction signature is required", 400);
+  const col = await collections.autoSellOrders();
+  const d = await col.findOne({ _id: orderId, userId, status: "SUGGESTED" });
+  if (!d?.orderRef) throw new TradeError("Order not prepared", 409);
+  await col.updateOne({ _id: d._id }, { $set: { status: "ACTIVE", activatedAt: new Date(), updatedAt: new Date(), txHashes: [signature] } });
+  return { ok: true };
+}
+
+// ───────────────────────────── cancelling ─────────────────────────────
+
+export async function prepareCancelEvm(userId: string, positionId: string) {
+  const col = await collections.autoSellOrders();
+  const docs = await col.find({ positionId, userId, status: "ACTIVE", venue: "cow" }).toArray();
+  if (!docs.length) throw new TradeError("No active auto-sell orders", 404);
+  const chain = docs[0].chain as ChainId;
+  return { chain, chainId: CHAINS[chain].evmChainId!, typedData: cowCancelTypedData(CHAINS[chain].evmChainId!, docs.map((d) => d.orderRef!)) };
+}
+
+export async function confirmCancelEvm(userId: string, positionId: string, signature: string) {
+  if (!/^0x[0-9a-fA-F]{130}$/.test(signature)) throw new TradeError("A valid signature is required", 400);
+  const col = await collections.autoSellOrders();
+  const docs = await col.find({ positionId, userId, status: "ACTIVE", venue: "cow" }).toArray();
+  if (!docs.length) return { cancelled: 0 };
+  await cancelCowOrders(docs[0].chain as ChainId, docs.map((d) => d.orderRef!), signature);
+  await col.updateMany({ _id: { $in: docs.map((d) => d._id) } }, { $set: { status: "CANCELLED", updatedAt: new Date() } });
+  return { cancelled: docs.length };
+}
+
+export async function prepareCancelSolana(userId: string, orderId: string) {
+  const d = await (await collections.autoSellOrders()).findOne({ _id: orderId, userId, status: "ACTIVE", venue: "jupiter" });
+  if (!d?.orderRef) throw new TradeError("Active order not found", 404);
+  const wallet = await ownerWallet(userId, d.chain);
+  return { orderId: d._id, unsignedTxBase64: await cancelJupiterOrder(wallet.address, d.orderRef) };
+}
+
+export async function confirmCancelSolana(userId: string, orderId: string, signature: string) {
+  if (!SOL_SIGNATURE.test(signature)) throw new TradeError("A valid transaction signature is required", 400);
+  const col = await collections.autoSellOrders();
+  await col.updateOne({ _id: orderId, userId, status: "ACTIVE" }, { $set: { status: "CANCELLED", updatedAt: new Date(), txHashes: [signature] } });
+  return { ok: true };
+}
+
+// ───────────────────────────── following the orders ─────────────────────────────
+
+/** Target levels currently covered by an armed order: the manual "sign this sell" flow must not also sell them. */
+export async function activeAutoSellLevels(positionId: string): Promise<Set<number>> {
+  const docs = await (await collections.autoSellOrders()).find({ positionId, status: "ACTIVE" }, { projection: { levels: 1 } }).toArray();
+  return new Set(docs.flatMap((d) => d.levels));
+}
+
+export interface VenueState {
+  state: "open" | "filled" | "cancelled" | "expired" | "missing";
+  sellRaw: bigint;
+  buyRaw: bigint;
+  txHash: string | null;
+}
+
+async function venueState(d: AutoSellOrderDoc): Promise<VenueState> {
+  if (d.venue === "cow") {
+    const o = await getCowOrder(d.chain as ChainId, d.orderRef!);
+    if (!o) return { state: "missing", sellRaw: BigInt(0), buyRaw: BigInt(0), txHash: null };
+    const sellRaw = BigInt(o.executedSellAmount || "0");
+    const buyRaw = BigInt(o.executedBuyAmount || "0");
+    const hashes = sellRaw > BigInt(d.bookedSellRaw) ? await getCowTradeHashes(d.chain as ChainId, d.orderRef!) : [];
+    const state = o.status === "fulfilled" ? "filled" : o.status === "cancelled" ? "cancelled" : o.status === "expired" ? "expired" : "open";
+    return { state, sellRaw, buyRaw, txHash: hashes[hashes.length - 1] ?? null };
+  }
+  const wallet = await ownerWallet(d.userId, d.chain);
+  const o = await getJupiterOrder(wallet.address, d.orderRef!);
+  if (!o) return { state: "missing", sellRaw: BigInt(0), buyRaw: BigInt(0), txHash: null };
+  const f = jupiterFills(o);
+  const state = o.status === "Completed" ? "filled" : o.status === "Cancelled" ? "cancelled" : o.status === "Open" ? "open" : "expired";
+  return { state, sellRaw: f.sellRaw, buyRaw: f.buyRaw, txHash: f.txIds[f.txIds.length - 1] ?? null };
+}
+
+/**
+ * Check every armed order with its venue, book new fills into the position (profit notification included) and close out
+ * orders that finished, expired, were cancelled elsewhere, or never landed. Safe to run repeatedly: only the part of a
+ * fill not yet booked is added.
+ */
+export async function syncAutoSells(): Promise<{ checked: number; booked: number }> {
+  const col = await collections.autoSellOrders();
+  const docs = await col.find({ status: "ACTIVE" }).toArray();
+  let booked = 0;
+  for (const d of docs) {
+    try {
+      booked += await syncOne(d);
+    } catch (err) {
+      await logEvent({ type: "PROVIDER_ERROR", source: "autosell", userId: d.userId, level: "WARN", message: `Auto-sell check failed: ${safeMessage(err)}` });
+    }
+  }
+  return { checked: docs.length, booked };
+}
+
+async function syncOne(d: AutoSellOrderDoc): Promise<number> {
+  const col = await collections.autoSellOrders();
+  const token = await (await collections.tokens()).findOne({ _id: d.tokenId });
+  const symbol = token?.symbol ?? "token";
+  const now = new Date();
+  const st = await venueState(d);
+  let booked = 0;
+
+  if (st.state === "missing") {
+    const grace = d.venue === "cow" ? COW_LAND_GRACE_MS : SOLANA_LAND_GRACE_MS;
+    if (d.activatedAt && now.getTime() - d.activatedAt.getTime() > grace) {
+      const detail = d.venue === "jupiter" ? "The order transaction never landed on Solana, so your tokens did not leave your wallet." : "The order is no longer known to CoW Protocol.";
+      await col.updateOne({ _id: d._id }, { $set: { status: "FAILED", error: detail, updatedAt: now } });
+      await notifyUser(d.userId, autoSellProblem("failed", symbol, detail, d.positionId));
+    }
+    return 0;
+  }
+
+  const delta = fillDelta({ sellRaw: BigInt(d.bookedSellRaw), buyRaw: BigInt(d.bookedBuyRaw) }, { sellRaw: st.sellRaw, buyRaw: st.buyRaw });
+  if (delta) {
+    // claim the new part first (compare-and-set): if booking then fails the position is under-booked, never double-booked
+    const claim = await col.updateOne({ _id: d._id, bookedSellRaw: d.bookedSellRaw }, { $set: { bookedSellRaw: st.sellRaw.toString(), bookedBuyRaw: st.buyRaw.toString(), updatedAt: now, lastSyncAt: now }, $addToSet: { txHashes: st.txHash ?? "" } });
+    if (claim.modifiedCount) {
+      const dec = await decimalsOf(d.chain, token?.address ?? "");
+      const nat = await providers().chains[d.chain as ChainId].nativeUsdPrice();
+      const tokens = Number(delta.sellRaw) / 10 ** dec;
+      const proceedsUsd = (Number(delta.buyRaw) / 10 ** nativeDecimals(d.venue)) * nat;
+      const reason = `Target ${d.levels.join("+")} reached (+${d.gainPct.toFixed(0)}%)`;
+      const r = await recordExternalSell({ userId: d.userId, positionId: d.positionId, tokens, proceedsUsd, levels: d.levels, txHash: st.txHash, reason, orderId: d._id });
+      if (r) booked++;
+      else await col.updateOne({ _id: d._id }, { $set: { status: "SUPERSEDED", updatedAt: now } });
+    }
+  } else {
+    await col.updateOne({ _id: d._id }, { $set: { lastSyncAt: now } });
+  }
+
+  if (st.state === "filled") await col.updateOne({ _id: d._id, status: "ACTIVE" }, { $set: { status: "FILLED", updatedAt: now } });
+  else if (st.state === "cancelled") {
+    await col.updateOne({ _id: d._id, status: "ACTIVE" }, { $set: { status: "CANCELLED", updatedAt: now } });
+    await notifyUser(d.userId, autoSellProblem("cancelled", symbol, `An auto-sell order for ${symbol} was cancelled, so that part of the position will not sell by itself.`, d.positionId));
+  } else if (st.state === "expired") {
+    await col.updateOne({ _id: d._id, status: "ACTIVE" }, { $set: { status: "EXPIRED", updatedAt: now } });
+    await notifyUser(d.userId, autoSellProblem("expired", symbol, `An auto-sell order for ${symbol} expired before its price was reached.`, d.positionId));
+  }
+  return booked;
+}
+
+/** Orders for display next to a position. */
+export async function autoSellsFor(positionIds: string[]) {
+  if (!positionIds.length) return new Map<string, AutoSellOrderDoc[]>();
+  const rows = await (await collections.autoSellOrders()).find({ positionId: { $in: positionIds }, status: { $nin: ["SUPERSEDED"] } }).sort({ gainPct: 1 }).toArray();
+  const map = new Map<string, AutoSellOrderDoc[]>();
+  for (const r of rows) map.set(r.positionId, [...(map.get(r.positionId) ?? []), r]);
+  return map;
+}

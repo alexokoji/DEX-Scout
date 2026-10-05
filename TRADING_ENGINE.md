@@ -40,3 +40,15 @@ Everything is recorded in the in-app bell (header; also a toast and, if allowed,
 | System problems | no scan for 20 minutes (`checkScannerHealth`, run by the monitor job so it works when the scan job is the thing that died; sent to users with a linked wallet) |
 
 Repeats are suppressed per key (a sell that keeps re-queuing, a flapping position, the same token queued again, the scanner outage) with a reminder window of 30 min–6 h. Emergencies go to ntfy at urgent priority. Hand-made buys/sells you sign right away don't notify. Old notifications are pruned after 30 days.
+
+## Auto-sell (sell by itself when a target is reached)
+The bot never holds keys, so it cannot sell for you. What it can do is prepare the sells in advance and let a keeper network execute them on-chain. When a buy confirms, `suggestAutoSells` prepares one limit sell per remaining profit target (the same amounts the manual target logic would sell) and notifies you. On the Positions page one wallet interaction **arms** them; from then on each sells on-chain when its price is reached, even if you're away. Nothing sells by itself until you arm it, and you can cancel at any time.
+
+| Venue | Chains | How it is armed | Notes |
+|---|---|---|---|
+| CoW Protocol (keyless) | Ethereum, Base, Arbitrum, BNB, Polygon, Avalanche, Linea, Ink | one exact-amount token approval (only if the allowance is short) + one gasless EIP-712 signature per order | pays the chain's native currency to your wallet; orders last 14 days; fill-or-nothing; small orders may not fill on Ethereum mainnet (gas) |
+| Jupiter trigger orders v1 (keyless on lite-api) | Solana | one transaction per order (each moves its tokens into Jupiter's escrow) | min order about $5, so small positions are merged into fewer, larger sells at the earlier target; Jupiter keeps about 0.8% (the limit is grossed up so you net the target); orders stay until filled or cancelled |
+
+Other chains have no keyless limit-order venue yet: target sells are queued for you to sign, as before. Orders are rebuilt on the server from stored data when posted (the browser sends only ids and signatures). The monitor job books fills (`syncAutoSells`: venue state is compared with what is already booked, so partial fills and repeated syncs never double-count), records a CONFIRMED sell in the ledger, and notifies **Profit taken: SYMBOL +X%** with dollars and the overall result when a position closes. While an order covers a target the manual "sign this sell" flow skips it; uncovered targets still queue as before. Orders that expire, are cancelled elsewhere, or never land (Solana: 4 min, CoW: 10 min) are closed out with a notification.
+
+Verified against the live services while building: CoW accepts our signed order and cancellation formats and its contracts exist on all eight chains; Jupiter's createOrder works keyless and the history/fill shapes used for booking were taken from real accounts. Not exercised against a real fill of our own orders (that needs a funded wallet), and Jupiter's cancelOrder success response is parsed defensively because no real order was available to cancel.

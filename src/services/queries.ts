@@ -7,6 +7,7 @@ import { collections, withId, withIds } from "@/lib/db";
 import type { Environment, RiskLevel, SignalDoc, TokenDoc } from "@/lib/models";
 import { getSettings } from "./settings";
 import { capitalState } from "./trading";
+import { autoSellsFor } from "./autoSell";
 import { refreshTokenIfStale } from "./tokenPrice";
 import { walletBalances } from "./walletBalance";
 
@@ -155,6 +156,7 @@ export async function positionViews(userId: string, environment?: Environment, i
   const signals = signalIds.length ? await signalsCol.find({ _id: { $in: signalIds } }, { projection: { _id: 1, type: 1, score: 1, createdAt: 1 } }).toArray() : [];
   const signalById = new Map(signals.map((s) => [s._id, { id: s._id, type: s.type, score: s.score, createdAt: s.createdAt }]));
 
+  const autoSells = await autoSellsFor(withToken.map((p) => p.id));
   return withToken.map((p) => {
     const targets = p.targetsSnapshot ?? [];
     const m = computeMetrics(
@@ -162,7 +164,7 @@ export async function positionViews(userId: string, environment?: Environment, i
       p.currentPriceUsd,
       targets,
     );
-    return { ...p, targets, signal: p.sourceSignalId ? (signalById.get(p.sourceSignalId) ?? null) : null, metrics: m };
+    return { ...p, autoSells: (autoSells.get(p.id) ?? []).map(({ _id, ...o }) => ({ id: _id, ...o })), targets, signal: p.sourceSignalId ? (signalById.get(p.sourceSignalId) ?? null) : null, metrics: m };
   });
 }
 

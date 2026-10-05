@@ -13,8 +13,8 @@ interface Prefs {
 }
 
 const CATEGORIES: { id: string; title: string; sub: string }[] = [
-  { id: "approvals", title: "Waiting for your signature", sub: "A buy the bot queued, a target or emergency sell, and one that expired unsigned" },
-  { id: "results", title: "Trade results", sub: "A buy or sell confirmed on-chain (with profit/loss), or one that failed" },
+  { id: "approvals", title: "Waiting for your signature", sub: "A buy the bot queued, sell orders ready to arm after a buy, a target or emergency sell, and one that expired unsigned" },
+  { id: "results", title: "Trade results", sub: "Profit taken (with the percent made), a buy confirmed, or a trade that failed" },
   { id: "positions", title: "Position alerts", sub: "A position's health turning to warning or emergency (liquidity drop, dangerous holders…)" },
   { id: "system", title: "System problems", sub: "The scanner stopped running, so prices and signals are going stale" },
 ];

@@ -13,6 +13,9 @@ export const CATEGORY_OF: Record<NotificationType, NotificationCategory> = {
   BUY_QUEUED: "approvals",
   SELL_QUEUED: "approvals",
   TRADE_EXPIRED: "approvals",
+  AUTOSELL_SUGGESTED: "approvals",
+  AUTOSELL_PROBLEM: "approvals",
+  PROFIT_TAKEN: "results",
   TRADE_CONFIRMED: "results",
   TRADE_FAILED: "results",
   POSITION_ALERT: "positions",
@@ -75,14 +78,64 @@ export function tradeExpired(kind: TradeKind, side: "BUY" | "SELL", symbol: stri
   };
 }
 
-export function tradeConfirmed(args: { side: "BUY" | "SELL"; symbol: string; chainName: string; usd: number; tokens: number; tradeId: string; realizedDeltaUsd?: number; closed?: boolean }): Message {
+export function tradeConfirmed(args: { side: "BUY" | "SELL"; symbol: string; chainName: string; usd: number; tokens: number; tradeId: string; realizedDeltaUsd?: number; closed?: boolean; totalPnlUsd?: number; totalPnlPct?: number }): Message {
   const { side, symbol, chainName, usd, tokens, tradeId } = args;
   const amount = tokens >= 1 ? tokens.toLocaleString("en-US", { maximumFractionDigits: 2 }) : tokens.toPrecision(3);
   if (side === "BUY") {
     return { type: "TRADE_CONFIRMED", title: `Bought ${symbol}`, body: `Confirmed on ${chainName}: ${amount} ${symbol} for about ${money(usd)}. Position open; profit targets are active.`, url: "/positions", tradeId, dedupeKey: `confirmed:${tradeId}` };
   }
-  const pl = args.realizedDeltaUsd !== undefined ? ` Realised ${signed(args.realizedDeltaUsd)}.` : "";
-  return { type: "TRADE_CONFIRMED", title: args.closed ? `Sold ${symbol} - position closed` : `Sold part of ${symbol}`, body: `Confirmed on ${chainName}: sold ${amount} ${symbol} for about ${money(usd)}.${pl}${args.closed ? " Position closed." : " The rest stays open."}`, url: "/positions", tradeId, dedupeKey: `confirmed:${tradeId}` };
+  if (args.realizedDeltaUsd !== undefined) return profitTaken({ symbol, chainName, tokens, proceedsUsd: usd, realizedDeltaUsd: args.realizedDeltaUsd, closed: !!args.closed, tradeId, totalPnlUsd: args.totalPnlUsd, totalPnlPct: args.totalPnlPct });
+  return { type: "TRADE_CONFIRMED", title: args.closed ? `Sold ${symbol} - position closed` : `Sold part of ${symbol}`, body: `Confirmed on ${chainName}: sold ${amount} ${symbol} for about ${money(usd)}.${args.closed ? " Position closed." : " The rest stays open."}`, url: "/positions", tradeId, dedupeKey: `confirmed:${tradeId}` };
+}
+
+/** Percent return on the part that was sold: profit / what that part cost. */
+export function profitPct(proceedsUsd: number, realizedDeltaUsd: number): number {
+  const cost = proceedsUsd - realizedDeltaUsd;
+  return cost > 0 ? (realizedDeltaUsd / cost) * 100 : 0;
+}
+
+/** A sell settled (signed by you, or filled by an auto-sell order): how much was made, in dollars and percent. */
+export function profitTaken(args: { symbol: string; chainName: string; tokens: number; proceedsUsd: number; realizedDeltaUsd: number; closed: boolean; tradeId: string; auto?: boolean; totalPnlUsd?: number; totalPnlPct?: number }): Message {
+  const pct = profitPct(args.proceedsUsd, args.realizedDeltaUsd);
+  const win = args.realizedDeltaUsd >= 0;
+  const amount = args.tokens >= 1 ? args.tokens.toLocaleString("en-US", { maximumFractionDigits: 2 }) : args.tokens.toPrecision(3);
+  const total = args.closed && args.totalPnlUsd !== undefined && args.totalPnlPct !== undefined ? ` Position closed: ${args.totalPnlPct >= 0 ? "+" : ""}${args.totalPnlPct.toFixed(1)}% overall (${signed(args.totalPnlUsd)}).` : args.closed ? " Position closed." : " The rest stays open.";
+  return {
+    type: "PROFIT_TAKEN",
+    title: win ? `Profit taken: ${args.symbol} ${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%` : `Sold ${args.symbol} at a loss: ${pct.toFixed(1)}%`,
+    body: `${args.auto ? "Your auto-sell order filled. " : ""}Sold ${amount} ${args.symbol} on ${args.chainName} for about ${money(args.proceedsUsd)}: ${win ? "profit" : "loss"} ${signed(args.realizedDeltaUsd)} (${pct >= 0 ? "+" : ""}${pct.toFixed(1)}% on that portion).${total}`,
+    url: "/positions",
+    tradeId: args.tradeId,
+    dedupeKey: `confirmed:${args.tradeId}`,
+    priority: "high",
+  };
+}
+
+/** The bot has prepared sell orders for a position that was just bought; one wallet approval arms them all. */
+export function autoSellSuggested(symbol: string, chainName: string, orders: { gainPct: number; sellPct: number }[], positionId: string): Message {
+  const steps = orders.map((o) => `${Math.round(o.sellPct)}% at +${o.gainPct}%`).join(", ");
+  return {
+    type: "AUTOSELL_SUGGESTED",
+    title: `Arm auto-sell for ${symbol}`,
+    body: `You bought ${symbol} on ${chainName}. Suggested sell orders: ${steps}. Approve them once in your wallet (Positions page) and they sell automatically when each price is reached, even if you're away. Until then nothing sells by itself.`,
+    url: "/positions",
+    dedupeKey: `autosell-suggest:${positionId}`,
+    remindAfterMin: 360,
+    priority: "high",
+  };
+}
+
+export function autoSellProblem(kind: "expired" | "failed" | "cancelled", symbol: string, detail: string, positionId: string): Message {
+  const what = kind === "expired" ? "expired" : kind === "cancelled" ? "was cancelled" : "could not be placed";
+  return {
+    type: "AUTOSELL_PROBLEM",
+    title: `Auto-sell ${what}: ${symbol}`,
+    body: `${detail.slice(0, 220)}${kind === "cancelled" ? "" : " Open Positions to arm it again so the targets keep protecting your profit."}`,
+    url: "/positions",
+    dedupeKey: `autosell-${kind}:${positionId}`,
+    remindAfterMin: 180,
+    priority: "high",
+  };
 }
 
 export function tradeFailed(side: "BUY" | "SELL", symbol: string, reason: string, tradeId: string): Message {

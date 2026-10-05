@@ -37,6 +37,24 @@ export function useSigner() {
       }
       return ok;
     },
+    /** Auto-sell on EVM: switch to the chain, send the one-time token approval if needed, then sign each order (gasless). */
+    async signEvmOrders(chainId: number, approval: { to: string; data: string; value?: string } | null, typedData: unknown[]): Promise<string[]> {
+      if (!evm.address) throw new Error("Connect a wallet that supports this chain first");
+      await evm.switchChain(chainId);
+      if (approval) {
+        const hash = await evm.sendTransaction(approval);
+        if (!(await evm.waitForReceipt(hash))) throw new Error("The token approval was not confirmed");
+      }
+      const sigs: string[] = [];
+      for (const t of typedData) sigs.push(await evm.signTypedData(t));
+      return sigs;
+    },
+    /** One EIP-712 signature on the given chain (e.g. cancelling auto-sell orders). */
+    async signTyped(chainId: number, typedData: unknown): Promise<string> {
+      if (!evm.address) throw new Error("Connect a wallet that supports this chain first");
+      await evm.switchChain(chainId);
+      return evm.signTypedData(typedData);
+    },
     async signAndSend(chain: ChainId, payload: string): Promise<string> {
       if (CHAINS[chain].family === "svm") {
         if (!sol.connected || !sol.sendTransaction) throw new Error("Connect a wallet that supports Solana first");

@@ -11,6 +11,7 @@ import { analyzeSnapshot } from "./analysis";
 import { getSettings } from "./settings";
 import { checkScannerHealth, notifyUser } from "./notifications";
 import { positionAlert } from "./notificationMessages";
+import { activeAutoSellLevels, syncAutoSells } from "./autoSell";
 import { prepareLiveSell } from "./trading";
 import { touchWorker } from "./workerState";
 
@@ -89,11 +90,14 @@ export async function monitorPosition(pos: PositionDoc, token: TokenDoc): Promis
   // ── Profit targets ──
   if (!snap) return;
   const targets = pos.targetsSnapshot ?? [];
+  // Targets covered by an armed auto-sell order are the order's job: queueing a second sell for them would double-sell
+  // (and on Solana the tokens sit in escrow). Only what no order covers is queued for the user to sign.
+  const covered = await activeAutoSellLevels(pos._id);
   const actions = evaluateTargets(
     { entryPriceUsd: pos.entryPriceUsd, initialAmount: pos.initialAmount, amount: pos.amount, costBasisUsd: pos.costBasisUsd, targetsHit: pos.targetsHit },
     price,
     targets,
-  );
+  ).filter((a) => !covered.has(a.level));
   if (actions.length) {
     await logEvent({ type: "TARGET_REACHED", source: "monitor", userId: pos.userId, message: `${token.symbol} reached target ${actions.map((a) => a.level).join(",")}`, data: { positionId: pos._id } });
     if (liveTradingAllowed()) {
@@ -104,7 +108,7 @@ export async function monitorPosition(pos: PositionDoc, token: TokenDoc): Promis
   }
 
   // ── Max position age: only ever closes a position that is in profit; losers are held (no stop loss) ──
-  if (settings.maxPositionAgeHours && Date.now() - pos.openedAt.getTime() > settings.maxPositionAgeHours * 3_600_000) {
+  if (covered.size === 0 && settings.maxPositionAgeHours && Date.now() - pos.openedAt.getTime() > settings.maxPositionAgeHours * 3_600_000) {
     if (unrealized > 0) {
       if (liveTradingAllowed()) await prepareLiveSell(pos.userId, pos._id, pos.amount, "TARGET_EXIT", "Maximum position age reached while in profit");
     } else if (!notes.maxAgeNoted) {
@@ -118,6 +122,8 @@ export async function monitorPosition(pos: PositionDoc, token: TokenDoc): Promis
 }
 
 export async function runPositionMonitorCycle(): Promise<{ monitored: number; errors: number }> {
+  // book any auto-sell fills first, so the target logic below sees the position as it really is
+  await syncAutoSells().catch((err) => logEvent({ type: "WORKER_ERROR", source: "monitor", level: "WARN", message: `Auto-sell sync failed: ${safeMessage(err)}` }));
   const positionsCol = await collections.positions();
   const tokensCol = await collections.tokens();
   const positions = await positionsCol.find({ status: { $ne: "CLOSED" }, amount: { $gt: 0 } }).toArray();

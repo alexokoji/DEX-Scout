@@ -13,7 +13,7 @@ import type { Environment, Json, TokenDoc, TradeDoc, TradeKind } from "@/lib/mod
 import { analyzeSnapshot, loadAnalysis, persistAnalysis } from "./analysis";
 import { getSettings, type UserSettings } from "./settings";
 import { notifyUser } from "./notifications";
-import { buyQueued, sellQueued, tradeConfirmed, tradeExpired, tradeFailed, type Message } from "./notificationMessages";
+import { buyQueued, profitTaken, sellQueued, tradeConfirmed, tradeExpired, tradeFailed, type Message } from "./notificationMessages";
 import { applyLiveSnapshot } from "./tokenPrice";
 import { spendableUsd } from "./walletBalance";
 
@@ -425,6 +425,7 @@ export async function reconcileLiveTrade(tradeId: string) {
   const tradingAccounts = await collections.tradingAccounts();
 
   let confirmed: Message | null = null;
+  let openedPositionId: string | null = null;
   const chainName = CHAINS[tChain]?.name ?? token.chain;
   await withUserLock(trade.userId, async (session) => {
     const settings = await getSettings(trade.userId);
@@ -454,6 +455,7 @@ export async function reconcileLiveTrade(tradeId: string) {
       }
       await logEvent({ type: "POSITION_OPENED", source: "live", userId: trade.userId, message: `LIVE position opened: ${token.symbol}`, data: { positionId } });
       confirmed = tradeConfirmed({ side: "BUY", symbol: token.symbol, chainName, usd: buyCostUsd, tokens: tokenAmountActual, tradeId });
+      openedPositionId = positionId;
     } else if (trade.positionId) {
       const pos = await positions.findOne({ _id: trade.positionId }, { session });
       if (!pos) throw new Error(`Position ${trade.positionId} not found while confirming LIVE sell`);
@@ -478,11 +480,13 @@ export async function reconcileLiveTrade(tradeId: string) {
       await tradingAccounts.updateOne({ _id: trade.accountId }, { $inc: { realizedPnlUsd: res.realizedDeltaUsd } }, { session });
       await positionEvents.insertOne({ _id: newId(), positionId: pos._id, type: "LIVE_SELL", message: "LIVE sell confirmed on-chain", data: { tradeId }, createdAt: now }, { session });
       if (res.closed) await logEvent({ type: "POSITION_CLOSED", source: "live", userId: trade.userId, message: `LIVE position closed: ${token.symbol}`, data: { positionId: pos._id } });
-      confirmed = tradeConfirmed({ side: "SELL", symbol: token.symbol, chainName, usd: sellProceedsUsd, tokens: tokenAmountActual, tradeId, realizedDeltaUsd: res.realizedDeltaUsd, closed: res.closed });
+      confirmed = tradeConfirmed({ side: "SELL", symbol: token.symbol, chainName, usd: sellProceedsUsd, tokens: tokenAmountActual, tradeId, realizedDeltaUsd: res.realizedDeltaUsd, closed: res.closed, totalPnlUsd: res.realizedPnlUsd, totalPnlPct: pos.investedUsd > 0 ? (res.realizedPnlUsd / pos.investedUsd) * 100 : undefined });
     }
   });
   await logEvent({ type: "TRADE_EXECUTED", source: "live", userId: trade.userId, message: `LIVE ${trade.side} ${token.symbol} confirmed`, data: { tradeId } });
   if (confirmed) await notifyUser(trade.userId, confirmed);
+  // a position just opened: prepare the sell orders the user can arm with one signature (dynamic import: autoSell imports this module)
+  if (openedPositionId) await (await import("./autoSell")).suggestAutoSells(openedPositionId);
   return { ok: true as const, status: "CONFIRMED" as const };
 }
 
@@ -520,6 +524,80 @@ export async function prepareLiveSell(userId: string, positionId: string, sellAm
   // The bot can't sign, so a queued sell does nothing until the user approves it: tell them it's waiting.
   await notifyUser(userId, sellQueuedNotification(kind, token.symbol, CHAINS[token.chain as ChainId]?.name ?? token.chain, reason, amount / pos.amount, doc.inputUsd, tradeId, pos._id));
   return { trade: withId(doc), created: true as const };
+}
+
+/**
+ * Book a sell that settled on-chain WITHOUT passing through our own prepare → sign → reconcile path: a fill of an
+ * auto-sell limit order. Same accounting as reconcileLiveTrade's sell branch (position amount/cost basis, realised P/L,
+ * targets hit, ledger entry) but from the amounts the order venue itself reports. Returns null if the position is gone.
+ */
+export async function recordExternalSell(a: {
+  userId: string;
+  positionId: string;
+  tokens: number;
+  proceedsUsd: number;
+  levels: number[];
+  txHash: string | null;
+  reason: string;
+  orderId: string;
+}) {
+  const trades = await collections.trades();
+  const positions = await collections.positions();
+  const positionEvents = await collections.positionEvents();
+  const accounts = await collections.tradingAccounts();
+  const tradeId = newId();
+  type SellResult = { realizedDeltaUsd: number; closed: boolean; totalPnlUsd: number; totalPnlPct: number; symbol: string; chain: string; tokens: number };
+  let result = null as SellResult | null; // assigned inside the transaction callback
+
+  await withUserLock(a.userId, async (session) => {
+    const pos = await positions.findOne({ _id: a.positionId, userId: a.userId }, { session });
+    if (!pos || pos.status === "CLOSED" || pos.amount <= 0) return;
+    const token = await getToken(pos.tokenId, session);
+    const now = new Date();
+    // orders are sized 1e-9 under the position (see autoSell.toDocs), so selling "everything" leaves float dust: treat that as closed
+    const sold = a.tokens >= pos.amount * (1 - 1e-6) ? pos.amount : Math.min(a.tokens, pos.amount);
+    const res = applySell(
+      { entryPriceUsd: pos.entryPriceUsd, initialAmount: pos.initialAmount, amount: pos.amount, costBasisUsd: pos.costBasisUsd, targetsHit: pos.targetsHit, realizedPnlUsd: pos.realizedPnlUsd },
+      sold,
+      a.proceedsUsd,
+    );
+    const level = Math.max(0, ...a.levels);
+    const targetsHit = Math.max(pos.targetsHit, level);
+    await positions.updateOne(
+      { _id: pos._id },
+      {
+        $set: {
+          amount: res.amount, costBasisUsd: res.costBasisUsd, realizedPnlUsd: res.realizedPnlUsd, targetsHit, updatedAt: now, closedAt: res.closed ? now : null,
+          status: deriveStatus({ closed: res.closed, emergency: false, targetsHit, unrealizedPnlUsd: res.amount * pos.currentPriceUsd - res.costBasisUsd }),
+        },
+      },
+      { session },
+    );
+    // a settlement transaction can carry several of one user's orders; the signature index is unique, so only the first keeps it
+    const clash = a.txHash ? await trades.findOne({ "transaction.signature": a.txHash }, { projection: { _id: 1 }, session }) : null;
+    await trades.insertOne(
+      {
+        _id: tradeId, userId: a.userId, accountId: pos.accountId, tokenId: pos.tokenId, positionId: pos._id, side: "SELL", kind: "TARGET_EXIT", environment: "LIVE", dataSource: "LIVE", status: "CONFIRMED",
+        inputUsd: a.proceedsUsd, tokenAmount: sold, priceUsd: sold > 0 ? a.proceedsUsd / sold : 0, priceImpactPct: 0, slippageBps: 0, feesUsd: 0, networkFeeUsd: 0, realizedPnlUsd: res.realizedDeltaUsd,
+        quote: { reason: a.reason, targetLevel: level, autoSell: true, orderId: a.orderId, txHash: a.txHash } as Json,
+        failureReason: null, expiresAt: null, createdAt: now, executedAt: now,
+        transaction: { chain: token.chain, signature: clash ? null : a.txHash, status: "CONFIRMED", unsignedTx: null, error: null, slot: null, submittedAt: now, confirmedAt: now, createdAt: now },
+      },
+      { session },
+    );
+    await accounts.updateOne({ _id: pos.accountId }, { $inc: { realizedPnlUsd: res.realizedDeltaUsd } }, { session });
+    await positionEvents.insertOne({ _id: newId(), positionId: pos._id, type: "LIVE_SELL", message: `Auto-sell order filled (${a.reason})`, data: { tradeId, orderId: a.orderId }, createdAt: now }, { session });
+    result = { realizedDeltaUsd: res.realizedDeltaUsd, closed: res.closed, totalPnlUsd: res.realizedPnlUsd, totalPnlPct: pos.investedUsd > 0 ? (res.realizedPnlUsd / pos.investedUsd) * 100 : 0, symbol: token.symbol, chain: token.chain, tokens: sold };
+    if (res.closed) await logEvent({ type: "POSITION_CLOSED", source: "live", userId: a.userId, message: `LIVE position closed: ${token.symbol} (auto-sell)`, data: { positionId: pos._id } });
+  });
+  const r = result as SellResult | null;
+  if (!r) return null;
+  await logEvent({ type: "TRADE_EXECUTED", source: "live", userId: a.userId, message: `Auto-sell filled: ${r.symbol} ${a.reason}`, data: { tradeId } });
+  await notifyUser(
+    a.userId,
+    profitTaken({ symbol: r.symbol, chainName: CHAINS[r.chain as ChainId]?.name ?? r.chain, tokens: r.tokens, proceedsUsd: a.proceedsUsd, realizedDeltaUsd: r.realizedDeltaUsd, closed: r.closed, tradeId, auto: true, totalPnlUsd: r.totalPnlUsd, totalPnlPct: r.totalPnlPct }),
+  );
+  return { tradeId, ...r };
 }
 
 export const FEE_DEFAULTS = FEES;

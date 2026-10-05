@@ -355,7 +355,7 @@ export interface TradeDoc {
 }
 
 /** An in-app notification (the bell). Also pushed to the user's ntfy/Discord channels if they set any. */
-export type NotificationType = "BUY_QUEUED" | "SELL_QUEUED" | "TRADE_EXPIRED" | "TRADE_CONFIRMED" | "TRADE_FAILED" | "POSITION_ALERT" | "SYSTEM_ALERT";
+export type NotificationType = "BUY_QUEUED" | "SELL_QUEUED" | "AUTOSELL_SUGGESTED" | "AUTOSELL_PROBLEM" | "PROFIT_TAKEN" | "TRADE_EXPIRED" | "TRADE_CONFIRMED" | "TRADE_FAILED" | "POSITION_ALERT" | "SYSTEM_ALERT";
 
 export interface NotificationDoc {
   _id: string;
@@ -373,6 +373,44 @@ export interface NotificationDoc {
 }
 
 /** Where to send notifications beyond the in-app bell. Keyed by userId. Both optional. */
+export type AutoSellStatus = "SUGGESTED" | "ACTIVE" | "FILLED" | "CANCELLED" | "EXPIRED" | "FAILED" | "SUPERSEDED";
+
+/**
+ * One auto-sell limit order for a position: a target (or merged targets) the user signs once and a keeper network fills
+ * on-chain when the price is reached. See core/trading/autoSell.ts.
+ */
+export interface AutoSellOrderDoc {
+  _id: string;
+  userId: string;
+  positionId: string;
+  tokenId: string;
+  chain: string;
+  venue: "cow" | "jupiter";
+  /** target levels this order covers */
+  levels: number[];
+  gainPct: number;
+  targetPriceUsd: number;
+  /** tokens to sell (human units) and the same as an integer in the token's own decimals */
+  sellAmount: number;
+  sellAmountRaw: string;
+  /** least the order accepts, raw units of the chain's native currency (CoW: wei, Jupiter: lamports of SOL) */
+  minBuyRaw: string;
+  status: AutoSellStatus;
+  /** CoW order uid, or the Jupiter order account */
+  orderRef: string | null;
+  /** CoW: when the order lapses */
+  validTo: Date | null;
+  /** totals already booked into the position (raw), so each sync only adds the new part */
+  bookedSellRaw: string;
+  bookedBuyRaw: string;
+  txHashes: string[];
+  error: string | null;
+  createdAt: Date;
+  activatedAt: Date | null;
+  updatedAt: Date;
+  lastSyncAt: Date | null;
+}
+
 export interface NotificationPrefsDoc {
   _id: string; // userId
   /** ntfy.sh topic (free, no account): install the ntfy app and subscribe to this topic */

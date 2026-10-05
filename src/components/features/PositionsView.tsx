@@ -3,6 +3,7 @@ import { EnvBadge, HealthBadge, PnL, SignalBadge, Badge } from "@/components/ui/
 import { EmptyState } from "@/components/ui/card";
 import { age, price, tokens, usd } from "@/lib/format";
 import { ClosePositionButton } from "./ClosePositionButton";
+import { AutoSellPanel, type AutoSellView } from "./AutoSellPanel";
 import { PriceAge } from "./PriceAge";
 
 interface PV {
@@ -24,6 +25,7 @@ interface PV {
   targetsHit: number;
   signal: { id: string; type: string; score: number } | null;
   targets: { level: number; gainPct: number; sellPct: number }[];
+  autoSells?: AutoSellView[];
   metrics: { currentValueUsd: number; unrealizedPnlUsd: number; pnlPct: number; nextTargetLevel: number | null; nextTargetGainPct: number | null; targetProgress: number };
 }
 
@@ -66,6 +68,8 @@ export function PositionsView({ positions, actions = true }: { positions: PV[]; 
                 <div className="mt-1.5 h-1.5 rounded bg-surface2"><div className="h-1.5 rounded bg-up" style={{ width: `${p.metrics.targetProgress * 100}%` }} /></div>
               </div>
             </div>
+
+            {!closed && actions && p.environment === "LIVE" && <AutoSellPanel positionId={p.id} chain={p.token.chain} orders={p.autoSells ?? []} />}
 
             {!closed && (notes.positives?.length || notes.negatives?.length || notes.emergencyReasons?.length) ? (
               <div className="mt-3 space-y-0.5 text-[11px]">

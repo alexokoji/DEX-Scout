@@ -66,7 +66,7 @@ export async function solanaTry<T>(fn: (c: Connection) => Promise<T>, budgetMs =
 
 const decimalsCache = new Map<string, number>();
 /** Mint decimals via getAccountInfo (served by every free node) rather than getTokenSupply (blocked on some). */
-async function mintDecimals(mint: string): Promise<number> {
+export async function mintDecimals(mint: string): Promise<number> {
   const hit = decimalsCache.get(mint);
   if (hit !== undefined) return hit;
   const info = await solanaTry((c) => c.getParsedAccountInfo(new PublicKey(mint)));

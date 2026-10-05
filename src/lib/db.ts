@@ -26,6 +26,7 @@ import type {
   WalletDoc,
   WorkerStateDoc,
   NotificationDoc,
+  AutoSellOrderDoc,
   NotificationPrefsDoc,
 } from "./models";
 
@@ -78,6 +79,7 @@ export const collections = {
   systemEvents: col<SystemEventDoc>("systemEvents"),
   workerStates: col<WorkerStateDoc>("workerStates"),
   notifications: col<NotificationDoc>("notifications"),
+  autoSellOrders: col<AutoSellOrderDoc>("autoSellOrders"),
   notificationPrefs: col<NotificationPrefsDoc>("notificationPrefs"),
 };
 
@@ -173,6 +175,11 @@ export async function ensureIndexes(): Promise<void> {
         { key: { "transaction.signature": 1 }, name: "transaction_signature_string_unique", unique: true, partialFilterExpression: { "transaction.signature": { $type: "string" } } },
       ]);
     })(),
+    idx("autoSellOrders", [
+      { key: { positionId: 1, status: 1 }, name: "positionId_status" },
+      { key: { userId: 1, status: 1 }, name: "userId_status" },
+      { key: { status: 1 }, name: "status" },
+    ]),
     idx("notifications", [{ key: { userId: 1, createdAt: -1 }, name: "userId_createdAt" }]),
     idx("systemEvents", [
       { key: { ts: 1 }, name: "ts" },
