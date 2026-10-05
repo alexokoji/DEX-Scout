@@ -2,15 +2,16 @@
  * Real Solana providers: Solana JSON-RPC and the Jupiter aggregator. Market data comes from the shared
  * DexScreener provider. Exercised only when MOCK_PROVIDER is not "true". Endpoints/keys come from env.
  */
-import { Connection, PublicKey, VersionedTransaction } from "@solana/web3.js";
+import { Connection, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import nacl from "tweetnacl";
-import { FEES } from "../../config";
 import { CHAINS, rpcCandidates } from "../../chains";
+import { nativeUsdFromPairs, type DsNativePair } from "../evm/nativePrice";
+import { priorityLamports, swapReserveLamports, TOKEN_ACCOUNT_BYTES, type FeeConnection, type SolanaCosts } from "./fees";
 import type { ChainId, OnChainRaw, SwapQuote, TokenSnapshot } from "../../types";
 import { env } from "../../../lib/env";
 import { DexScreenerDataProvider } from "../dexscreener";
 import { getJson, withTimeout } from "../http";
-import type { ChainAdapter, DexAdapter, PreflightResult, QuoteRequest, SwapSimulation, TransactionStatus } from "../interfaces";
+import type { ChainAdapter, DexAdapter, PreflightResult, QuoteRequest, SwapReserve, SwapSimulation, TransactionStatus } from "../interfaces";
 import { explainSolanaSimulation } from "./errors";
 import { looksLikeHoneypotFlow } from "../../analysis/honeypot";
 import { sellCheckInconclusive } from "../simFailure";
@@ -22,13 +23,57 @@ let solPriceCache: { at: number; usd: number } | null = null;
 export async function solUsd(): Promise<number> {
   if (solPriceCache && Date.now() - solPriceCache.at < 60_000) return solPriceCache.usd;
   try {
-    const j = await getJson<{ pairs?: { priceUsd?: string }[] }>(`${env().MARKET_DATA_URL}/latest/dex/tokens/${SOL_MINT}`);
-    const usd = Number(j.pairs?.[0]?.priceUsd);
-    if (usd > 0) solPriceCache = { at: Date.now(), usd };
+    const j = await getJson<{ pairs?: DsNativePair[] }>(`${env().MARKET_DATA_URL}/latest/dex/tokens/${SOL_MINT}`);
+    // read through the right side of each pool (a pair's priceUsd is its BASE token's price) and take a median
+    const usd = nativeUsdFromPairs(j.pairs ?? [], SOL_MINT, "solana");
+    if (usd && usd > 0) solPriceCache = { at: Date.now(), usd };
   } catch {
-    /* fall through to stale/default */
+    /* fall through to a stale price, if there is one */
   }
-  return solPriceCache?.usd ?? CHAINS.solana.mockNativeUsd;
+  // a stale live price is fine; a hard-coded guess is not (it sizes trades and balances)
+  if (!solPriceCache) throw new Error("No live SOL price available right now");
+  return solPriceCache.usd;
+}
+
+/** @solana/web3.js's Connection as the fee estimator needs it; the base fee is asked of the chain for a real one-signature message. */
+function feeConnection(c: Connection): FeeConnection {
+  return {
+    getMinimumBalanceForRentExemption: (n) => c.getMinimumBalanceForRentExemption(n),
+    getRecentPrioritizationFees: () => c.getRecentPrioritizationFees(),
+    baseFeePerSignature: async () => {
+      // any one-signature message costs the same base fee; two distinct ordinary addresses make a valid one (the fee doesn't depend on who)
+      const payer = new PublicKey("9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM");
+      const other = new PublicKey("DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263");
+      const { blockhash } = await c.getLatestBlockhash();
+      const msg = new TransactionMessage({ payerKey: payer, recentBlockhash: blockhash, instructions: [SystemProgram.transfer({ fromPubkey: payer, toPubkey: other, lamports: 1 })] }).compileToV0Message();
+      const fee = (await c.getFeeForMessage(msg)).value;
+      if (fee == null) throw new Error("fee unavailable");
+      return fee;
+    },
+  };
+}
+
+/**
+ * What the chain says a swap costs right now. The rent and base fee barely change (cached for a while); the priority fee
+ * moves with congestion (cached for seconds). A user-set priority cap (lamports) limits the automatic one.
+ */
+let slowCache: { at: number; rent: number; base: number } | null = null;
+let fastCache: { at: number; fees: { prioritizationFee: number }[] } | null = null;
+export async function solanaCosts(capLamports?: number): Promise<SolanaCosts> {
+  const now = Date.now();
+  if (!slowCache || now - slowCache.at > 10 * 60_000) {
+    const [rent, base] = await solanaTry(async (c) => {
+      const f = feeConnection(c);
+      return Promise.all([f.getMinimumBalanceForRentExemption(TOKEN_ACCOUNT_BYTES), f.baseFeePerSignature()]);
+    }, 8_000);
+    slowCache = { at: now, rent, base };
+  }
+  if (!fastCache || now - fastCache.at > 15_000) {
+    // if this fails (no recent data from any node) we can't tell what the network charges: use none rather than a guess
+    const fees = await solanaTry((c) => c.getRecentPrioritizationFees(), 6_000).catch(() => []);
+    fastCache = { at: now, fees };
+  }
+  return { baseFeeLamports: slowCache.base, rentLamports: slowCache.rent, priorityFeeLamports: priorityLamports(fastCache.fees.map((f) => f.prioritizationFee), capLamports) };
 }
 
 const conns = new Map<string, Connection>();
@@ -100,6 +145,25 @@ export class SolanaChainAdapter implements ChainAdapter {
   }
   async getNativeBalance(address: string): Promise<number> {
     return (await solanaTry((c) => c.getBalance(new PublicKey(address)))) / 1e9;
+  }
+  /**
+   * What a buy needs beyond its own amount, from the chain: the base fee, the going priority fee, and the token-account
+   * deposit (the temporary wrapped-SOL account needs the same, returned in the same transaction). If the wallet already
+   * has a token account for this mint, that deposit isn't needed. Uses the real, current rent figure.
+   */
+  async estimateSwapReserve(owner: string, tokenAddress?: string): Promise<SwapReserve | null> {
+    let costs: SolanaCosts;
+    try {
+      costs = await solanaCosts();
+    } catch {
+      return null; // couldn't read the chain's fees: say so rather than guess
+    }
+    const has = tokenAddress
+      ? await solanaTry((c) => c.getTokenAccountsByOwner(new PublicKey(owner), { mint: new PublicKey(tokenAddress) }), 6_000).then((r) => r.value.length > 0, () => null)
+      : null;
+    const r = swapReserveLamports(costs, has);
+    const fees = costs.baseFeeLamports + costs.priorityFeeLamports;
+    return { peakNative: r.peakLamports / 1e9, feesNative: fees / 1e9, depositNative: (r.needsTokenAccount ? costs.rentLamports : 0) / 1e9 };
   }
   verifyMessageSignature(address: string, message: string, signatureBase64: string): boolean {
     try {
@@ -219,7 +283,11 @@ export class JupiterDexAdapter implements DexAdapter {
     );
     const out = Number(q.outAmount);
     const outputAmount = req.side === "BUY" ? out / 10 ** decimals : (out / 1e9) * sol;
-    const priorityFee = req.priorityFeeNative ?? FEES.defaultPriorityFeeSol;
+    // Fees as the chain currently charges them. The priority fee the user may type is a CAP on the automatic one, not a
+    // fixed price (a fixed 0.0001 SOL was twenty times the base fee when the network wasn't charging any priority at all).
+    const costs = await solanaCosts(req.priorityFeeNative && req.priorityFeeNative > 0 ? Math.floor(req.priorityFeeNative * 1e9) : undefined).catch(() => null);
+    const networkFeeUsd = ((costs?.baseFeeLamports ?? 5000) / 1e9) * sol;
+    const priorityFeeUsd = ((costs?.priorityFeeLamports ?? 0) / 1e9) * sol;
     return {
       chain: "solana",
       inputMint,
@@ -231,8 +299,8 @@ export class JupiterDexAdapter implements DexAdapter {
       priceImpactPct: Math.abs(Number(q.priceImpactPct)) * 100,
       slippageBps: req.slippageBps,
       minReceived: outputAmount * (1 - req.slippageBps / 10_000),
-      networkFeeUsd: FEES.networkFeeSol * sol,
-      priorityFeeUsd: priorityFee * sol,
+      networkFeeUsd,
+      priorityFeeUsd,
       platformFeeUsd: 0,
       route: (q.routePlan ?? []).map((r) => r.swapInfo?.label ?? "?"),
       expiresAt: new Date(Date.now() + 20_000),
@@ -249,7 +317,8 @@ export class JupiterDexAdapter implements DexAdapter {
         quoteResponse: quote.raw,
         userPublicKey: userAddress,
         dynamicComputeUnitLimit: true,
-        prioritizationFeeLamports: Math.floor((quote.priorityFeeUsd / (await solUsd())) * 1e9),
+        // the on-chain priority fee the quote was built with (none when the network isn't charging any)
+        ...(quote.priorityFeeUsd > 0 ? { prioritizationFeeLamports: Math.ceil((quote.priorityFeeUsd / (await solUsd())) * 1e9) } : {}),
       }),
     });
     return { unsignedTxBase64: j.swapTransaction };

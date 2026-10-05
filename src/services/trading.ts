@@ -98,11 +98,11 @@ export async function getOrCreateAccount(userId: string, environment: Environmen
 }
 
 /** Open exposure, plus — when `chain` is given — what the user's wallet can spend on that chain (null if unknown). */
-export async function capitalState(userId: string, environment: Environment, session?: ClientSession, chain?: ChainId, walletAddress?: string | null): Promise<CapitalState> {
+export async function capitalState(userId: string, environment: Environment, session?: ClientSession, chain?: ChainId, walletAddress?: string | null, tokenAddress?: string): Promise<CapitalState> {
   const positions = await collections.positions();
   const open = await positions.find({ userId, environment, status: { $ne: "CLOSED" } }, { projection: { costBasisUsd: 1 }, session }).toArray();
-  const detail = chain ? await spendableDetail(userId, chain, walletAddress).catch(() => null) : undefined;
-  return { deployedUsd: open.reduce((s, p) => s + p.costBasisUsd, 0), openPositions: open.length, walletUsd: chain ? (detail?.spendableUsd ?? null) : undefined, walletBalanceUsd: detail?.balanceUsd ?? null, reserveUsd: detail?.reserveUsd ?? null, walletLabel: detail?.address ? `${detail.address.slice(0, 6)}…${detail.address.slice(-4)}` : null };
+  const detail = chain ? await spendableDetail(userId, chain, walletAddress, tokenAddress).catch(() => null) : undefined;
+  return { deployedUsd: open.reduce((s, p) => s + p.costBasisUsd, 0), openPositions: open.length, walletUsd: chain ? (detail?.spendableUsd ?? null) : undefined, walletBalanceUsd: detail?.balanceUsd ?? null, reserveUsd: detail?.reserveUsd ?? null, reserveNote: detail?.reserveNote ?? null, walletLabel: detail?.address ? `${detail.address.slice(0, 6)}…${detail.address.slice(-4)}` : null };
 }
 
 function quoteJson(q: SwapQuote): Json {
@@ -168,7 +168,7 @@ export async function quoteTrade(userId: string, input: PrepareTradeInput, autom
   const analysis = await ensureAnalysis(withId(token));
   const sim = await p.dex.simulateSwap({ chain: input.chain, side: "SELL", tokenAddress: token.address, amountUsd: input.amountUsd, slippageBps: input.slippageBps });
   const wallet = await resolveWallet(userId, input.chain, input.wallet); // throws a clear 409 if the connected wallet isn't verified
-  const state = await capitalState(userId, input.environment, undefined, input.chain, wallet?.address);
+  const state = await capitalState(userId, input.environment, undefined, input.chain, wallet?.address, token.address);
   // A sell check that FAILED to run (a rate-limited or slow provider) is not the same as "this token can't be sold": only the
   // latter blocks. The former is flagged, and the swap itself is dry-run again before the wallet is ever opened.
   const sellUnverified = !sim.ok && !!sim.unknown;

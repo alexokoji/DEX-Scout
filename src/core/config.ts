@@ -64,7 +64,10 @@ export const DEFAULT_TARGETS_MULTI: ProfitTargetConfig[] = [
 ];
 export const DEFAULT_TARGETS_SINGLE: ProfitTargetConfig[] = [{ level: 1, gainPct: 10, sellPct: 100 }];
 
-/** Rough Solana fee model used by paper trading and quote estimates. */
+/**
+ * Fee model for the MOCK market only. Live trading never uses these: Solana fees are read from the chain
+ * (providers/solana/fees.ts) and EVM fees from the current gas price (providers/evm/evmProviders.ts).
+ */
 export const FEES = {
   networkFeeSol: 0.000005,
   defaultPriorityFeeSol: 0.0001,

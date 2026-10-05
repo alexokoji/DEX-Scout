@@ -44,7 +44,8 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
   const [amount, setAmount] = useState(String(defaults.amountUsd));
   const [slippagePct, setSlippagePct] = useState(String(defaults.slippageBps / 100));
   const market = useMarketPrice(chain, address);
-  const [priority, setPriority] = useState(meta.family === "evm" ? "0" : "0.0001");
+  // blank = automatic. On Solana the app reads the network's current priority fee itself; a number here is only a CAP on it.
+  const [priority, setPriority] = useState("");
   const [q, setQ] = useState<QuoteResp | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -141,8 +142,8 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
           </div>
         </div>
         <div>
-          <Label hint={meta.nativeSymbol}>{meta.family === "evm" ? "Priority fee (gas tip)" : "Priority fee"}</Label>
-          <Input type="number" min="0" step="0.00001" value={priority} onChange={(e) => setPriority(e.target.value)} />
+          <Label hint={`${meta.nativeSymbol} · blank = automatic, from the network`}>{meta.family === "evm" ? "Priority fee (gas tip)" : "Max priority fee"}</Label>
+          <Input type="number" min="0" step="0.00001" placeholder="automatic" value={priority} onChange={(e) => setPriority(e.target.value)} />
         </div>
 
         <div className="rounded-md border border-border bg-surface2 p-3 text-xs">

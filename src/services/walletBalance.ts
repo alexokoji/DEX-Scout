@@ -3,12 +3,11 @@ import { withTimeout } from "@/core/providers/http";
 import { providers } from "@/core/providers/registry";
 import type { ChainId } from "@/core/types";
 import { collections, withIds } from "@/lib/db";
+import type { SwapReserve } from "@/core/providers/interfaces";
 import { usdBalance } from "@/lib/format";
 import { resolveWallet } from "./walletResolve";
 
 const TTL_MS = 20_000;
-/** SOL kept back on Solana: token-account rent (~0.00204) + fees + priority fee, with margin. */
-export const SOLANA_RESERVE_SOL = 0.012;
 const cache = new Map<string, { at: number; amount: number | null; px: number }>();
 
 /** Native balance + USD price for one address on one chain; null amount = the RPC did not answer. Cached briefly so a page of stats isn't 20 RPC calls each time. */
@@ -59,25 +58,38 @@ export interface Spendable {
   balanceUsd: number;
   /** kept back for network fees (and, on Solana, the new token account's deposit) */
   reserveUsd: number;
+  /** what the reserve consists of, in words, for messages */
+  reserveNote: string;
   /** what a swap can actually use */
   spendableUsd: number;
 }
 
-export async function spendableUsd(userId: string, chain: ChainId, requested?: string | null): Promise<number | null> {
-  return (await spendableDetail(userId, chain, requested))?.spendableUsd ?? null;
+export async function spendableUsd(userId: string, chain: ChainId, requested?: string | null, tokenAddress?: string): Promise<number | null> {
+  return (await spendableDetail(userId, chain, requested, tokenAddress))?.spendableUsd ?? null;
 }
 
-/** Same as spendableUsd, with the parts, so a message can say "you hold $X, $Y is kept for fees" instead of a bare "no balance". */
-export async function spendableDetail(userId: string, chain: ChainId, requested?: string | null): Promise<Spendable | null> {
+/** Words for the reserve, from the measured parts: "network fee ~$0.01 + a one-time $0.18 deposit for the new token account (recoverable)". */
+export function describeReserve(r: SwapReserve, px: number): string {
+  const fee = `network fee ~${usdBalance(r.feesNative * px)}`;
+  return r.depositNative > 0 ? `${fee}, plus a one-time ~${usdBalance(r.depositNative * px)} deposit for the new token account that you get back if you close it` : fee;
+}
+
+/**
+ * Same as spendableUsd, with the parts, so a message can say "you hold $X, $Y is kept for fees" instead of a bare "no balance".
+ *
+ * The amount kept back is what the chain says a swap costs right now (the adapter reads it: Solana's base fee, priority
+ * fee and token-account rent; an EVM chain's current gas price), for this wallet and token. If the chain's fees can't be
+ * read, nothing is held back (unknown is not "expensive"); the swap dry-run before the wallet opens gives the exact answer.
+ */
+export async function spendableDetail(userId: string, chain: ChainId, requested?: string | null, tokenAddress?: string): Promise<Spendable | null> {
   // the wallet the browser is connected with if it is verified (a clear error if it is not), else the most recently verified one
   const w = await resolveWallet(userId, chain, requested);
   if (!w) return null;
   const { amount, px } = await nativeOn(chain, w.address);
   if (amount === null || !(px > 0)) return null;
-  // A swap needs more than its own amount: network fees, priority fee and (Solana) the ~0.002 SOL deposit for a new token
-  // account. Spending the whole balance fails in the wallet's simulation, so keep a little back.
   const balanceUsd = amount * px;
-  // EVM: about one and a half swaps' worth of gas. (It used to be three, which on Ethereum is $12 and made a $10 balance read as empty.)
-  const reserveUsd = chain === "solana" ? SOLANA_RESERVE_SOL * px : CHAINS[chain].typicalFeeUsd * 1.5;
-  return { address: w.address, balanceUsd, reserveUsd, spendableUsd: Math.max(0, balanceUsd - reserveUsd) };
+  const measured = await providers().chains[chain].estimateSwapReserve?.(w.address, tokenAddress).catch(() => null);
+  const reserveUsd = measured ? measured.peakNative * px : 0;
+  const reserveNote = measured ? describeReserve(measured, px) : "the network's fees couldn't be read just now";
+  return { address: w.address, balanceUsd, reserveUsd, reserveNote, spendableUsd: Math.max(0, balanceUsd - reserveUsd) };
 }

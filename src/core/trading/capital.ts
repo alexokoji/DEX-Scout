@@ -24,6 +24,8 @@ export interface CapitalState {
   /** the wallet's whole native balance on that chain, and the part kept back for fees (to explain a low or zero walletUsd) */
   walletBalanceUsd?: number | null;
   reserveUsd?: number | null;
+  /** what the reserve consists of, in words (a message can then say why, not just how much) */
+  reserveNote?: string | null;
   /** the checked wallet's short address, so a message can say WHICH wallet it looked at */
   walletLabel?: string | null;
   /** realised P/L that has been added back to the capital pool (optional compounding) */
@@ -59,7 +61,7 @@ export type AllocationResult = { ok: true; amountUsd: number } | { ok: false; re
 function noSpendableReason(st: CapitalState): string {
   const bal = st.walletBalanceUsd;
   const who = st.walletLabel ? `wallet ${st.walletLabel}` : "your wallet";
-  if (bal != null && bal > 0.005) return `${who[0].toUpperCase()}${who.slice(1)} holds $${bal.toFixed(2)} on this chain, which is below the ~$${(st.reserveUsd ?? 0).toFixed(2)} kept back for network fees. Add a little more to trade here.`;
+  if (bal != null && bal > 0.005) return `${who[0].toUpperCase()}${who.slice(1)} holds $${bal.toFixed(2)} on this chain, which is below the ~$${(st.reserveUsd ?? 0).toFixed(2)} a swap needs for fees${st.reserveNote ? ` (${st.reserveNote})` : ""}. Add a little more to trade here.`;
   return `${who[0].toUpperCase()}${who.slice(1)} holds none of this chain's coin. If your funds are in a different account, switch to it in your wallet (or verify it under Wallet).`;
 }
 
@@ -98,7 +100,7 @@ export function checkManualAmount(s: CapitalSettings, st: CapitalState, amountUs
   if (snap.availableUsd !== null && amountUsd > snap.availableUsd) {
     return st.walletUsd != null && amountUsd > st.walletUsd
       ? st.walletBalanceUsd != null && st.reserveUsd != null
-        ? `Amount exceeds what you can spend on this chain: ${st.walletLabel ? `wallet ${st.walletLabel}` : "you"} hold${st.walletLabel ? "s" : ""} $${st.walletBalanceUsd.toFixed(2)}, ~$${st.reserveUsd.toFixed(2)} is kept back for network fees, leaving $${st.walletUsd.toFixed(2)}`
+        ? `Amount exceeds what you can spend on this chain: ${st.walletLabel ? `wallet ${st.walletLabel}` : "you"} hold${st.walletLabel ? "s" : ""} $${st.walletBalanceUsd.toFixed(2)}, ~$${st.reserveUsd.toFixed(2)} is kept back for fees${st.reserveNote ? ` (${st.reserveNote})` : ""}, leaving $${st.walletUsd.toFixed(2)}`
         : `Amount exceeds your wallet balance on this chain ($${st.walletUsd.toFixed(2)} after keeping a little back for network fees)`
       : `Amount exceeds available capital ($${snap.availableUsd.toFixed(2)})`;
   }

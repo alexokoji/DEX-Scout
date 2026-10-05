@@ -10,7 +10,7 @@ import { env } from "../../../lib/env";
 import { DexScreenerDataProvider } from "../dexscreener";
 import { getJson, rpcCall } from "../http";
 import { markRpcBad, markRpcGood, orderedRpcs } from "../rpcHealth";
-import type { ChainAdapter, DexAdapter, QuoteRequest, SwapSimulation, TransactionStatus } from "../interfaces";
+import type { ChainAdapter, DexAdapter, QuoteRequest, SwapReserve, SwapSimulation, TransactionStatus } from "../interfaces";
 
 /** A contract-level answer ("execution reverted", nonce errors...) — another endpoint would say the same, so don't fail over. */
 const DEFINITIVE_RPC_ERROR = /revert|execution|out of gas|nonce|insufficient funds|already known|underpriced|invalid (sender|opcode|signature)/i;
@@ -72,12 +72,42 @@ export async function nativeUsd(chain: ChainId): Promise<number> {
   return known.usd;
 }
 
+/** Gas units a typical aggregator swap uses (a property of the swap contracts, not a price). Real units are known only once a route exists. */
+export const SWAP_GAS_UNITS = 350_000;
+/** Headroom over the gas price read now, since it can move between reading it and the transaction being mined. */
+const GAS_PRICE_MARGIN = 1.25;
+
+const gasCache = new Map<ChainId, { at: number; wei: bigint }>();
+/** The chain's CURRENT gas price in wei (eth_gasPrice), cached for a few seconds. null = couldn't be read. */
+export async function evmGasPriceWei(chain: ChainId): Promise<bigint | null> {
+  const hit = gasCache.get(chain);
+  if (hit && Date.now() - hit.at < 15_000) return hit.wei;
+  try {
+    const wei = BigInt(await evmRpc<string>(chain, "eth_gasPrice", [], 5_000));
+    if (wei > BigInt(0)) gasCache.set(chain, { at: Date.now(), wei });
+    return wei > BigInt(0) ? wei : null;
+  } catch {
+    return gasCache.get(chain)?.wei ?? null;
+  }
+}
+
+/** What one swap costs in gas right now, in the native coin (current gas price x a typical swap's gas, with a margin). null = unknown. */
+export async function evmSwapFeeNative(chain: ChainId): Promise<number | null> {
+  const wei = await evmGasPriceWei(chain);
+  return wei === null ? null : (Number(wei) * SWAP_GAS_UNITS * GAS_PRICE_MARGIN) / 1e18;
+}
+
 export class EvmChainAdapter implements ChainAdapter {
   readonly nativeSymbol: string;
   constructor(readonly chain: ChainId) {
     this.nativeSymbol = CHAINS[chain].nativeSymbol;
   }
   nativeUsdPrice = () => nativeUsd(this.chain);
+  /** Gas for a swap at the chain's current gas price; null if the gas price can't be read (the wallet then shows the exact fee). */
+  async estimateSwapReserve(): Promise<SwapReserve | null> {
+    const fee = await evmSwapFeeNative(this.chain);
+    return fee === null ? null : { peakNative: fee, feesNative: fee, depositNative: 0 };
+  }
 
   isValidAddress(address: string) {
     return isAddress(address, { strict: false });
