@@ -106,7 +106,7 @@ export function NotificationBell() {
             <Link href="/settings/notifications" onClick={() => setOpen(false)} className="text-accent">Phone alerts</Link>
           </div>
           <div className="max-h-96 divide-y divide-border overflow-y-auto">
-            {items.length === 0 && <div className="px-3 py-6 text-center text-xs text-muted">Nothing yet. You&apos;ll be told here when a target sell is ready to sign.</div>}
+            {items.length === 0 && <div className="px-3 py-6 text-center text-xs text-muted">Nothing yet. You&apos;ll be told here when a buy or sell needs your signature, a trade confirms or fails, or a position is in trouble.</div>}
             {items.map((i) => (
               <Link key={i.id} href={i.url} onClick={() => setOpen(false)} className={cn("block px-3 py-2 text-xs hover:bg-surface2", !i.readAt && "bg-surface2/60")}>
                 <div className="font-medium">{i.title}</div>

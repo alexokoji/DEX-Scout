@@ -2,6 +2,7 @@ import { z } from "zod";
 import { collections, newId, withIds } from "@/lib/db";
 import { logEvent, safeMessage } from "@/lib/events";
 import type { NotificationDoc } from "@/lib/models";
+import { scannerOffline, CATEGORY_OF, NOTIFICATION_CATEGORIES, type NotificationCategory } from "./notificationMessages";
 
 /**
  * Notifications. Every one is recorded in-app (the bell, which also raises a browser notification while the app is
@@ -14,20 +15,22 @@ const NTFY_TOPIC = /^[A-Za-z0-9_-]{8,64}$/;
 const DISCORD_WEBHOOK = /^https:\/\/(discord|discordapp)\.com\/api\/webhooks\/\d+\/[\w-]+$/;
 
 export const notificationPrefsInput = z.object({
+  muted: z.array(z.enum(NOTIFICATION_CATEGORIES as [NotificationCategory, ...NotificationCategory[]])).default([]),
   ntfyTopic: z.string().trim().regex(NTFY_TOPIC, "Use 8-64 letters, numbers, - or _ (pick something hard to guess)").nullable(),
   discordWebhook: z.string().trim().regex(DISCORD_WEBHOOK, "Must be a https://discord.com/api/webhooks/… URL").nullable(),
 });
-export type NotificationPrefsInput = z.infer<typeof notificationPrefsInput>;
+export type NotificationPrefsInput = z.input<typeof notificationPrefsInput>;
+export type NotificationPrefs = { ntfyTopic: string | null; discordWebhook: string | null; muted: NotificationCategory[] };
 
-export async function getNotificationPrefs(userId: string): Promise<NotificationPrefsInput> {
+export async function getNotificationPrefs(userId: string): Promise<NotificationPrefs> {
   const row = await (await collections.notificationPrefs()).findOne({ _id: userId });
-  return { ntfyTopic: row?.ntfyTopic ?? null, discordWebhook: row?.discordWebhook ?? null };
+  return { ntfyTopic: row?.ntfyTopic ?? null, discordWebhook: row?.discordWebhook ?? null, muted: (row?.muted ?? []).filter((c): c is NotificationCategory => (NOTIFICATION_CATEGORIES as readonly string[]).includes(c)) };
 }
 
-export async function saveNotificationPrefs(userId: string, input: NotificationPrefsInput): Promise<NotificationPrefsInput> {
+export async function saveNotificationPrefs(userId: string, input: NotificationPrefsInput): Promise<NotificationPrefs> {
   await (await collections.notificationPrefs()).updateOne(
     { _id: userId },
-    { $set: { ntfyTopic: input.ntfyTopic || null, discordWebhook: input.discordWebhook || null, updatedAt: new Date() } },
+    { $set: { ntfyTopic: input.ntfyTopic || null, discordWebhook: input.discordWebhook || null, muted: input.muted ?? [], updatedAt: new Date() } },
     { upsert: true },
   );
   return getNotificationPrefs(userId);
@@ -35,6 +38,8 @@ export async function saveNotificationPrefs(userId: string, input: NotificationP
 
 export interface NotifyInput {
   type: NotificationDoc["type"];
+  /** ntfy priority; things needing you are "high", emergencies "urgent", the rest "default" */
+  priority?: "urgent" | "high" | "default";
   title: string;
   body: string;
   /** in-app path */
@@ -64,7 +69,7 @@ export async function pushToChannels(userId: string, n: NotifyInput): Promise<{ 
   if (prefs.ntfyTopic) {
     run("ntfy", () =>
       post(`https://ntfy.sh/${prefs.ntfyTopic}`, {
-        headers: { Title: ascii(n.title) || "DEX Scout", Click: appUrl(n.url), Priority: "high", Tags: "moneybag" },
+        headers: { Title: ascii(n.title) || "DEX Scout", Click: appUrl(n.url), Priority: n.priority ?? "default", Tags: n.priority === "urgent" ? "rotating_light" : "moneybag" },
         body: n.body,
       }),
     );
@@ -83,6 +88,8 @@ export async function pushToChannels(userId: string, n: NotifyInput): Promise<{ 
 /** Record in-app and push to channels. Never throws: a notification problem must not break the trade flow that raised it. */
 export async function notifyUser(userId: string, n: NotifyInput): Promise<void> {
   try {
+    // a category the user switched off is neither shown in the bell nor pushed
+    if ((await getNotificationPrefs(userId)).muted.includes(CATEGORY_OF[n.type])) return;
     const col = await collections.notifications();
     if (n.dedupeKey && (await col.findOne({ userId, dedupeKey: n.dedupeKey, createdAt: { $gt: new Date(Date.now() - (n.remindAfterMin ?? 60) * 60_000) } }, { projection: { _id: 1 } }))) return;
     const doc: NotificationDoc = { _id: newId(), userId, type: n.type, title: n.title, body: n.body, url: n.url, tradeId: n.tradeId ?? null, dedupeKey: n.dedupeKey ?? null, createdAt: new Date(), readAt: null };
@@ -113,4 +120,21 @@ export async function markNotificationsRead(userId: string): Promise<void> {
 export async function pruneNotifications(olderThanDays = 30): Promise<number> {
   const r = await (await collections.notifications()).deleteMany({ createdAt: { $lt: new Date(Date.now() - olderThanDays * 86_400_000) } });
   return r.deletedCount;
+}
+
+/**
+ * If no scan has completed for a while the whole app quietly goes stale (prices, signals, the bot's entries). Tell users
+ * who trade here (a linked wallet) so they hear it from us rather than by buying at an old price. Called from the monitor
+ * job, which is a separate cron job from the scan, so it still runs when the scan job has died. Reminds every 3 hours.
+ */
+export async function checkScannerHealth(now = Date.now(), staleAfterMin = 20): Promise<{ stale: boolean; notified: number }> {
+  const row = await (await collections.workerStates()).findOne({ _id: "scanner-worker" });
+  // never ran at all (fresh install) is not "went offline"
+  if (!row?.lastRunAt) return { stale: false, notified: 0 };
+  const minutes = (now - row.lastRunAt.getTime()) / 60_000;
+  if (minutes < staleAfterMin) return { stale: false, notified: 0 };
+  const userIds = await (await collections.wallets()).distinct("userId");
+  const msg = scannerOffline(minutes);
+  await Promise.all(userIds.map((u) => notifyUser(u, msg)));
+  return { stale: true, notified: userIds.length };
 }

@@ -7,7 +7,7 @@ export const POST = protectedRoute(
     const results = await pushToChannels(user.id, {
       type: "SELL_QUEUED",
       title: "DEX Scout test",
-      body: "If you can read this, you will be alerted when a target sell is waiting for your signature.",
+      body: "If you can read this, you will be alerted when a trade is waiting for your signature, a trade confirms or fails, or a position is in trouble.",
       url: "/wallet",
     });
     return { results };

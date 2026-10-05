@@ -355,10 +355,12 @@ export interface TradeDoc {
 }
 
 /** An in-app notification (the bell). Also pushed to the user's ntfy/Discord channels if they set any. */
+export type NotificationType = "BUY_QUEUED" | "SELL_QUEUED" | "TRADE_EXPIRED" | "TRADE_CONFIRMED" | "TRADE_FAILED" | "POSITION_ALERT" | "SYSTEM_ALERT";
+
 export interface NotificationDoc {
   _id: string;
   userId: string;
-  type: "SELL_QUEUED";
+  type: NotificationType;
   title: string;
   body: string;
   /** in-app path to open */
@@ -377,6 +379,8 @@ export interface NotificationPrefsDoc {
   ntfyTopic: string | null;
   /** Discord channel webhook URL */
   discordWebhook: string | null;
+  /** categories the user switched off (see NOTIFICATION_CATEGORIES); absent = everything on */
+  muted?: string[];
   updatedAt: Date;
 }
 

@@ -13,6 +13,7 @@ import type { Environment, Json, TokenDoc, TradeDoc, TradeKind } from "@/lib/mod
 import { analyzeSnapshot, loadAnalysis, persistAnalysis } from "./analysis";
 import { getSettings, type UserSettings } from "./settings";
 import { notifyUser } from "./notifications";
+import { buyQueued, sellQueued, tradeConfirmed, tradeExpired, tradeFailed, type Message } from "./notificationMessages";
 import { applyLiveSnapshot } from "./tokenPrice";
 import { spendableUsd } from "./walletBalance";
 
@@ -230,6 +231,8 @@ export async function prepareTrade(userId: string, input: PrepareTradeInput, kin
   };
   await trades.insertOne(doc);
   await logEvent({ type: "TRADE_REQUESTED", source: "trading", userId, message: `${input.environment} buy of $${input.amountUsd} ${token.symbol} prepared`, data: { tradeId } });
+  // A buy the bot queued does nothing until the user signs it. (A hand-made buy is signed right away in front of them.)
+  if (kind === "AUTO_ENTRY") await notifyUser(userId, buyQueued(token.symbol, CHAINS[input.chain].name, input.amountUsd, quote.priceImpactPct, tradeId, token._id));
   return { trade: withId(doc), quote, analysis, unsignedTxBase64: unsigned };
 }
 
@@ -319,6 +322,25 @@ export async function refreshPreparedTrade(userId: string, tradeId: string) {
   return { tradeId: trade._id, unsignedTxBase64: unsigned, expiresAt, priceImpactPct: quote.priceImpactPct, side: trade.side, chain };
 }
 
+/**
+ * Mark prepared trades whose time ran out as EXPIRED, and tell the user about the ones the bot queued for them (a buy or
+ * a sell they didn't sign in time). A buy they made by hand and walked away from isn't news.
+ */
+export async function expirePreparedTrades(now = new Date()): Promise<number> {
+  const trades = await collections.trades();
+  const due = await trades.find({ status: "PREPARED", expiresAt: { $lt: now } }).toArray();
+  if (!due.length) return 0;
+  await trades.updateMany({ _id: { $in: due.map((d) => d._id) }, status: "PREPARED" }, { $set: { status: "EXPIRED" } });
+  const botQueued = due.filter((d) => d.kind === "AUTO_ENTRY" || d.kind === "TARGET_EXIT" || d.kind === "EMERGENCY_EXIT");
+  if (botQueued.length) {
+    const tokens = await collections.tokens();
+    const rows = await tokens.find({ _id: { $in: [...new Set(botQueued.map((d) => d.tokenId))] } }, { projection: { symbol: 1 } }).toArray();
+    const symbol = new Map(rows.map((r) => [r._id, r.symbol]));
+    for (const d of botQueued) await notifyUser(d.userId, tradeExpired(d.kind, d.side, symbol.get(d.tokenId) ?? "token", d._id));
+  }
+  return due.length;
+}
+
 // ───────────────────────────── LIVE ─────────────────────────────
 
 const SOLANA_SIGNATURE = /^[1-9A-HJ-NP-Za-km-z]{64,90}$/;
@@ -357,6 +379,7 @@ export async function reconcileLiveTrade(tradeId: string) {
     if (st.status === "NOT_FOUND" && trade.transaction.submittedAt && Date.now() - trade.transaction.submittedAt.getTime() > 180_000) {
       await trades.updateOne({ _id: tradeId }, { $set: { status: "FAILED", failureReason: "Transaction not found on-chain (dropped or timed out)", "transaction.status": "FAILED", "transaction.error": "timeout" } });
       await logEvent({ type: "TRADE_FAILED", source: "live", userId: trade.userId, level: "WARN", message: `LIVE trade for ${token.symbol} timed out`, data: { tradeId } });
+      await notifyUser(trade.userId, tradeFailed(trade.side, token.symbol, "Transaction not found on-chain (dropped or timed out)", tradeId));
       return { ok: false as const, status: "FAILED" as const };
     }
     return { ok: false as const, status: "PENDING" as const };
@@ -364,6 +387,7 @@ export async function reconcileLiveTrade(tradeId: string) {
   if (st.status === "FAILED") {
     await trades.updateOne({ _id: tradeId }, { $set: { status: "FAILED", failureReason: (st.error ?? "Transaction failed on-chain").slice(0, 300), "transaction.status": "FAILED", "transaction.error": st.error ?? "failed", "transaction.slot": st.slot ?? null } });
     await logEvent({ type: "TRADE_FAILED", source: "live", userId: trade.userId, level: "WARN", message: `LIVE trade for ${token.symbol} failed on-chain`, data: { tradeId, error: st.error } });
+    await notifyUser(trade.userId, tradeFailed(trade.side, token.symbol, st.error ?? "Transaction failed on-chain", tradeId));
     return { ok: false as const, status: "FAILED" as const };
   }
 
@@ -387,6 +411,7 @@ export async function reconcileLiveTrade(tradeId: string) {
   if (mismatch) {
     await trades.updateOne({ _id: tradeId }, { $set: { status: "FAILED", failureReason: mismatch, "transaction.status": "FAILED", "transaction.error": mismatch } });
     await logEvent({ type: "TRADE_FAILED", source: "live", userId: trade.userId, level: "ERROR", message: `LIVE trade ${tradeId}: ${mismatch}; position not changed`, data: { tradeId } });
+    await notifyUser(trade.userId, tradeFailed(trade.side, token.symbol, mismatch, tradeId));
     return { ok: false as const, status: "FAILED" as const };
   }
   const nativeUsdNow = insp && insp.nativeDelta !== 0 ? await providers().chains[tChain].nativeUsdPrice().catch(() => 0) : 0;
@@ -399,6 +424,8 @@ export async function reconcileLiveTrade(tradeId: string) {
   const positionEvents = await collections.positionEvents();
   const tradingAccounts = await collections.tradingAccounts();
 
+  let confirmed: Message | null = null;
+  const chainName = CHAINS[tChain]?.name ?? token.chain;
   await withUserLock(trade.userId, async (session) => {
     const settings = await getSettings(trade.userId);
     const now = new Date();
@@ -426,6 +453,7 @@ export async function reconcileLiveTrade(tradeId: string) {
         await signals.updateOne({ _id: signalId, status: "ACTIVE" }, { $set: { status: "CONSUMED", updatedAt: now } }, { session }).catch(() => {});
       }
       await logEvent({ type: "POSITION_OPENED", source: "live", userId: trade.userId, message: `LIVE position opened: ${token.symbol}`, data: { positionId } });
+      confirmed = tradeConfirmed({ side: "BUY", symbol: token.symbol, chainName, usd: buyCostUsd, tokens: tokenAmountActual, tradeId });
     } else if (trade.positionId) {
       const pos = await positions.findOne({ _id: trade.positionId }, { session });
       if (!pos) throw new Error(`Position ${trade.positionId} not found while confirming LIVE sell`);
@@ -450,26 +478,17 @@ export async function reconcileLiveTrade(tradeId: string) {
       await tradingAccounts.updateOne({ _id: trade.accountId }, { $inc: { realizedPnlUsd: res.realizedDeltaUsd } }, { session });
       await positionEvents.insertOne({ _id: newId(), positionId: pos._id, type: "LIVE_SELL", message: "LIVE sell confirmed on-chain", data: { tradeId }, createdAt: now }, { session });
       if (res.closed) await logEvent({ type: "POSITION_CLOSED", source: "live", userId: trade.userId, message: `LIVE position closed: ${token.symbol}`, data: { positionId: pos._id } });
+      confirmed = tradeConfirmed({ side: "SELL", symbol: token.symbol, chainName, usd: sellProceedsUsd, tokens: tokenAmountActual, tradeId, realizedDeltaUsd: res.realizedDeltaUsd, closed: res.closed });
     }
   });
   await logEvent({ type: "TRADE_EXECUTED", source: "live", userId: trade.userId, message: `LIVE ${trade.side} ${token.symbol} confirmed`, data: { tradeId } });
+  if (confirmed) await notifyUser(trade.userId, confirmed);
   return { ok: true as const, status: "CONFIRMED" as const };
 }
 
 /** Prepare an unsigned LIVE sell that waits in the user's approval queue (no keys are held server-side). */
-/** Wording for the "a sell is waiting for your signature" notification. */
-export function sellQueuedNotification(kind: TradeKind, symbol: string, chainName: string, reason: string, fraction: number, usdValue: number, tradeId: string, positionId = "") {
-  const pct = Math.round(Math.min(1, Math.max(0, fraction)) * 100);
-  const title = kind === "EMERGENCY_EXIT" ? `Emergency exit ready: ${symbol}` : kind === "TARGET_EXIT" ? `Target hit: ${symbol} sell ready to sign` : `Sell ready to sign: ${symbol}`;
-  return {
-    type: "SELL_QUEUED" as const,
-    title,
-    body: `${reason}. Sell ${pct}% (~$${usdValue.toFixed(2)}) on ${chainName}. Open DEX Scout and approve it in your wallet within 10 minutes.`,
-    url: "/wallet",
-    tradeId,
-    dedupeKey: `sell:${positionId}:${kind}`,
-  };
-}
+/** Wording for the "a sell is waiting for your signature" notification (kept here as an export for existing callers/tests). */
+export const sellQueuedNotification = sellQueued;
 
 export async function prepareLiveSell(userId: string, positionId: string, sellAmount: number, kind: TradeKind, reason: string, targetLevel?: number) {
   assertEnvironment("LIVE");

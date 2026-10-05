@@ -30,4 +30,13 @@ Max position age only closes positions that are **in profit**; losers are held w
 ## Live path
 Every trade is LIVE — there is no simulated/paper mode. `prepareTrade` builds an unsigned transaction (Jupiter on Solana, 0x on EVM); the user's wallet signs and sends; `/execute` records the signature; `reconcileLiveTrade` follows it on-chain and only then creates/updates the Position. The bot cannot sign, so it holds no withdrawal authority. Live position exits are queued the same way.
 ## Notifications
-When the monitor queues a sell (profit target, emergency exit, max-age), `prepareLiveSell` calls `notifyUser`: it is recorded in the in-app bell (header; also raises a toast and, if allowed, a browser notification while the app is open) and pushed to the user's optional free channels — an ntfy.sh topic and/or a Discord webhook (Settings → Notifications). Hosts are fixed server-side, so a saved value can't make the server call an arbitrary URL. A sell that expires unsigned is re-queued by the next monitor run, but the same position/kind only notifies once per hour. Delivery never throws into the trade flow.
+Everything is recorded in the in-app bell (header; also a toast and, if allowed, a browser notification while the app is open) and pushed to the user's optional free channels — an ntfy.sh topic and/or a Discord webhook (Settings → Notifications). Hosts are fixed server-side, so a saved value can't make the server call an arbitrary URL. Delivery never throws into the trade flow. Wording lives in `services/notificationMessages.ts`.
+
+| Category (switchable) | Events |
+|---|---|
+| Waiting for your signature | a buy the bot queued (`prepareTrade` AUTO_ENTRY); a target / emergency / max-age sell (`prepareLiveSell`); a bot-queued trade that expired unsigned (`expirePreparedTrades`) |
+| Trade results | a buy or sell confirmed on-chain (with realised P/L on sells); a trade that failed, timed out or didn't match the expected swap (`reconcileLiveTrade`) |
+| Position alerts | a position's health turning WARNING or EMERGENCY (`monitorPosition`) |
+| System problems | no scan for 20 minutes (`checkScannerHealth`, run by the monitor job so it works when the scan job is the thing that died; sent to users with a linked wallet) |
+
+Repeats are suppressed per key (a sell that keeps re-queuing, a flapping position, the same token queued again, the scanner outage) with a reminder window of 30 min–6 h. Emergencies go to ntfy at urgent priority. Hand-made buys/sells you sign right away don't notify. Old notifications are pruned after 30 days.

@@ -155,7 +155,8 @@ describe("channel settings are validated so the server only ever calls fixed hos
     const sells = await trades.find({ userId, side: "SELL" }).toArray();
     expect(sells).toHaveLength(1);
     expect(sells[0].status).toBe("PREPARED");
-    let n = await notifs.find({ userId }).toArray();
+    const queuedNotes = () => notifs.find({ userId, type: "SELL_QUEUED" }).toArray(); // a position-health alert may also fire for the same position
+    let n = await queuedNotes();
     expect(n).toHaveLength(1);
     expect(n[0]).toMatchObject({ type: "SELL_QUEUED", tradeId: sells[0]._id, url: "/wallet", readAt: null });
     expect(n[0].title).toContain(token.symbol);
@@ -165,7 +166,7 @@ describe("channel settings are validated so the server only ever calls fixed hos
     await trades.updateOne({ _id: sells[0]._id }, { $set: { status: "EXPIRED" } });
     await run();
     expect(await trades.countDocuments({ userId, side: "SELL", status: "PREPARED" })).toBe(1);
-    n = await notifs.find({ userId }).toArray();
+    n = await queuedNotes();
     expect(n).toHaveLength(1);
   });
 });

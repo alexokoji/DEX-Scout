@@ -9,6 +9,8 @@ import { logEvent, safeMessage } from "@/lib/events";
 import type { PositionDoc, TokenDoc } from "@/lib/models";
 import { analyzeSnapshot } from "./analysis";
 import { getSettings } from "./settings";
+import { checkScannerHealth, notifyUser } from "./notifications";
+import { positionAlert } from "./notificationMessages";
 import { prepareLiveSell } from "./trading";
 import { touchWorker } from "./workerState";
 
@@ -72,6 +74,7 @@ export async function monitorPosition(pos: PositionDoc, token: TokenDoc): Promis
     const why = [...assessment.emergencyReasons, ...assessment.negatives].join("; ");
     await positionEvents.insertOne({ _id: newId(), positionId: pos._id, type: "HEALTH_" + assessment.health, message: `Health → ${assessment.health}: ${why}`, data: null, createdAt: new Date() });
     await logEvent({ type: "EMERGENCY_WARNING", source: "monitor", userId: pos.userId, level: "WARN", message: `${token.symbol} health ${assessment.health}: ${why}`, data: { positionId: pos._id } });
+    await notifyUser(pos.userId, positionAlert(assessment.health, token.symbol, why, pos._id));
   } else if (assessment.health !== pos.health) {
     await positionEvents.insertOne({ _id: newId(), positionId: pos._id, type: "HEALTH_" + assessment.health, message: `Health → ${assessment.health}`, data: null, createdAt: new Date() });
   }
@@ -132,6 +135,8 @@ export async function runPositionMonitorCycle(): Promise<{ monitored: number; er
       await logEvent({ type: "WORKER_ERROR", source: "monitor", level: "ERROR", userId: pos.userId, message: `Monitoring ${token.symbol} failed: ${safeMessage(err)}`, data: { positionId: pos._id } });
     }
   }
+  // the monitor is its own cron job, so it still runs (and can say so) when the scan job has died
+  await checkScannerHealth().catch(() => {});
   await touchWorker("position-monitor-worker", errors && errors === positions.length ? "All position checks failed" : null, { monitored: positions.length, errors });
   return { monitored: positions.length, errors };
 }

@@ -5,7 +5,7 @@ import { allocate } from "@/core/trading/capital";
 import { collections, newId, withId } from "@/lib/db";
 import { liveTradingAllowed } from "@/lib/env";
 import { logEvent, safeMessage } from "@/lib/events";
-import { capitalState, ensureAnalysis, prepareTrade, reconcileLiveTrade, TradeError } from "./trading";
+import { capitalState, ensureAnalysis, expirePreparedTrades, prepareTrade, reconcileLiveTrade, TradeError } from "./trading";
 import { getSettings } from "./settings";
 import { touchWorker } from "./workerState";
 
@@ -95,7 +95,7 @@ export async function runBotCycle(): Promise<{ bots: number; executed: number; s
   }
 
   // follow up on LIVE trades awaiting on-chain confirmation, and expire stale prepared trades
-  await tradesCol.updateMany({ status: "PREPARED", expiresAt: { $lt: new Date() } }, { $set: { status: "EXPIRED" } });
+  await expirePreparedTrades();
   const pending = await tradesCol.find({ status: "PENDING", environment: "LIVE" }, { projection: { _id: 1 } }).toArray();
   for (const t of pending) await reconcileLiveTrade(t._id).catch(() => {});
 
