@@ -4,6 +4,7 @@ import { providers } from "@/core/providers/registry";
 import type { ChainId } from "@/core/types";
 import { collections, withIds } from "@/lib/db";
 import { usdBalance } from "@/lib/format";
+import { resolveWallet } from "./walletResolve";
 
 const TTL_MS = 20_000;
 /** SOL kept back on Solana: token-account rent (~0.00204) + fees + priority fee, with margin. */
@@ -52,6 +53,8 @@ export async function walletBalances(userId: string, chains?: readonly ChainId[]
  * never as "zero".
  */
 export interface Spendable {
+  /** the wallet address that was checked */
+  address: string;
   /** everything the wallet holds of the native coin on this chain, in USD */
   balanceUsd: number;
   /** kept back for network fees (and, on Solana, the new token account's deposit) */
@@ -60,15 +63,14 @@ export interface Spendable {
   spendableUsd: number;
 }
 
-export async function spendableUsd(userId: string, chain: ChainId): Promise<number | null> {
-  return (await spendableDetail(userId, chain))?.spendableUsd ?? null;
+export async function spendableUsd(userId: string, chain: ChainId, requested?: string | null): Promise<number | null> {
+  return (await spendableDetail(userId, chain, requested))?.spendableUsd ?? null;
 }
 
 /** Same as spendableUsd, with the parts, so a message can say "you hold $X, $Y is kept for fees" instead of a bare "no balance". */
-export async function spendableDetail(userId: string, chain: ChainId): Promise<Spendable | null> {
-  const family = CHAINS[chain].family === "evm" ? "evm" : "solana";
-  const wallets = await collections.wallets();
-  const w = await wallets.findOne({ userId, chain: family }, { sort: { createdAt: -1 } });
+export async function spendableDetail(userId: string, chain: ChainId, requested?: string | null): Promise<Spendable | null> {
+  // the wallet the browser is connected with if it is verified (a clear error if it is not), else the most recently verified one
+  const w = await resolveWallet(userId, chain, requested);
   if (!w) return null;
   const { amount, px } = await nativeOn(chain, w.address);
   if (amount === null || !(px > 0)) return null;
@@ -77,5 +79,5 @@ export async function spendableDetail(userId: string, chain: ChainId): Promise<S
   const balanceUsd = amount * px;
   // EVM: about one and a half swaps' worth of gas. (It used to be three, which on Ethereum is $12 and made a $10 balance read as empty.)
   const reserveUsd = chain === "solana" ? SOLANA_RESERVE_SOL * px : CHAINS[chain].typicalFeeUsd * 1.5;
-  return { balanceUsd, reserveUsd, spendableUsd: Math.max(0, balanceUsd - reserveUsd) };
+  return { address: w.address, balanceUsd, reserveUsd, spendableUsd: Math.max(0, balanceUsd - reserveUsd) };
 }

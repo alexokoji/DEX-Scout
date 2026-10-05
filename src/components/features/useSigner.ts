@@ -22,6 +22,10 @@ export function useSigner() {
   const connectUi = useConnectWallet();
 
   return {
+    /** The address this browser is connected with for the chain's family: sent with every request so the server checks and trades with THIS wallet, not whichever was linked last. */
+    addressFor(chain: ChainId): string | null {
+      return CHAINS[chain].family === "evm" ? (evm.address ?? null) : (sol.publicKey?.toBase58() ?? null);
+    },
     isConnected(chain: ChainId): boolean {
       return CHAINS[chain].family === "evm" ? !!evm.address : sol.connected;
     },

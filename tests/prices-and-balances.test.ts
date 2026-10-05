@@ -71,11 +71,11 @@ describe("low-balance messages say what is actually wrong", () => {
   const s = { maxPositionUsd: 1000, minPositionUsd: 1, maxOpenPositions: 5, maxDeployedUsd: null };
   it("a balance below the fee reserve is not reported as 'no balance'", () => {
     const r = allocate(s, { deployedUsd: 0, openPositions: 0, walletUsd: 0, walletBalanceUsd: 4.2, reserveUsd: 6 }, 10);
-    expect(r).toMatchObject({ ok: false, reason: expect.stringContaining("Your balance on this chain is $4.20") });
+    expect(r).toMatchObject({ ok: false, reason: expect.stringContaining("Your wallet holds $4.20 on this chain") });
     expect((r as { reason: string }).reason).toContain("~$6.00 kept back for network fees");
   });
   it("a truly empty wallet still says so", () => {
-    expect(allocate(s, { deployedUsd: 0, openPositions: 0, walletUsd: 0, walletBalanceUsd: 0, reserveUsd: 6 }, 10)).toMatchObject({ ok: false, reason: expect.stringMatching(/no balance/) });
+    expect(allocate(s, { deployedUsd: 0, openPositions: 0, walletUsd: 0, walletBalanceUsd: 0, reserveUsd: 6 }, 10)).toMatchObject({ ok: false, reason: expect.stringMatching(/holds none of this chain's coin/) });
   });
   it("a too-large manual buy shows the holding, the reserve and what is left", () => {
     expect(checkManualAmount(s, { deployedUsd: 0, openPositions: 0, walletUsd: 14, walletBalanceUsd: 20, reserveUsd: 6 }, 18)).toBe("Amount exceeds what you can spend on this chain: you hold $20.00, ~$6.00 is kept back for network fees, leaving $14.00");

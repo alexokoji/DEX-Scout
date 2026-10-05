@@ -57,7 +57,7 @@ export function PendingApprovals() {
     try {
       // A queued trade's quote and (on Solana) blockhash go stale while it waits, and wallets refuse or fail to
       // simulate a stale transaction. Rebuild it fresh right now; this also re-checks it still passes the safety limits.
-      const fr = await fetch("/api/trades/refresh", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tradeId: t.id }) });
+      const fr = await fetch("/api/trades/refresh", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tradeId: t.id, wallet: signer.addressFor(chain) ?? undefined }) });
       const fj = await fr.json();
       if (!fr.ok) {
         toast.error(fj.violations?.[0] ?? fj.error ?? "This trade can no longer be approved", { duration: 15_000 });

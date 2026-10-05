@@ -93,7 +93,7 @@ describe("capital allocation", () => {
     expect(allocate(s, st(0, 0, 3), 10)).toMatchObject({ ok: false }); // below the $5 minimum position
   });
   it("an empty wallet blocks with a reason that says so", () => {
-    expect(allocate(s, st(0, 0, 0), 10)).toMatchObject({ ok: false, reason: expect.stringMatching(/wallet has no balance/) });
+    expect(allocate(s, st(0, 0, 0), 10)).toMatchObject({ ok: false, reason: expect.stringMatching(/holds none of this chain's coin/) });
     expect(allocate(s, st(100, 3, 500), 10)).toMatchObject({ ok: false, reason: expect.stringMatching(/Maximum capital deployed/) });
   });
   it("with no deployed cap, only the wallet limits spending", () => {

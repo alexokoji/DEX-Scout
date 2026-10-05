@@ -15,13 +15,11 @@ import { getSettings, type UserSettings } from "./settings";
 import { notifyUser } from "./notifications";
 import { buyQueued, profitTaken, sellQueued, tradeConfirmed, tradeExpired, tradeFailed, type Message } from "./notificationMessages";
 import { applyLiveSnapshot } from "./tokenPrice";
+import { TradeError } from "./errors";
 import { spendableDetail } from "./walletBalance";
+import { linkedWallets, resolveWallet, walletFamilyOf } from "./walletResolve";
 
-export class TradeError extends Error {
-  constructor(message: string, public status = 400, public violations: string[] = [], /** machine-readable suggestion for the UI, e.g. { slippageBps } */ public hint?: Record<string, number | string>) {
-    super(message);
-  }
-}
+export { TradeError };
 
 /**
  * Build the unsigned swap and dry-run it as the wallet would, so a swap that would fail is explained here — with what to
@@ -73,6 +71,8 @@ export const prepareTradeInput = z.object({
   priorityFeeNative: z.number().min(0).max(1).optional(),
   environment: z.literal("LIVE"),
   signalId: z.string().optional(),
+  /** the address the browser is connected with; used only if it is one of the user's verified wallets */
+  wallet: z.string().min(20).max(64).optional(),
 });
 export type PrepareTradeInput = z.infer<typeof prepareTradeInput>;
 
@@ -98,11 +98,11 @@ export async function getOrCreateAccount(userId: string, environment: Environmen
 }
 
 /** Open exposure, plus — when `chain` is given — what the user's wallet can spend on that chain (null if unknown). */
-export async function capitalState(userId: string, environment: Environment, session?: ClientSession, chain?: ChainId): Promise<CapitalState> {
+export async function capitalState(userId: string, environment: Environment, session?: ClientSession, chain?: ChainId, walletAddress?: string | null): Promise<CapitalState> {
   const positions = await collections.positions();
   const open = await positions.find({ userId, environment, status: { $ne: "CLOSED" } }, { projection: { costBasisUsd: 1 }, session }).toArray();
-  const detail = chain ? await spendableDetail(userId, chain).catch(() => null) : undefined;
-  return { deployedUsd: open.reduce((s, p) => s + p.costBasisUsd, 0), openPositions: open.length, walletUsd: chain ? (detail?.spendableUsd ?? null) : undefined, walletBalanceUsd: detail?.balanceUsd ?? null, reserveUsd: detail?.reserveUsd ?? null };
+  const detail = chain ? await spendableDetail(userId, chain, walletAddress).catch(() => null) : undefined;
+  return { deployedUsd: open.reduce((s, p) => s + p.costBasisUsd, 0), openPositions: open.length, walletUsd: chain ? (detail?.spendableUsd ?? null) : undefined, walletBalanceUsd: detail?.balanceUsd ?? null, reserveUsd: detail?.reserveUsd ?? null, walletLabel: detail?.address ? `${detail.address.slice(0, 6)}…${detail.address.slice(-4)}` : null };
 }
 
 function quoteJson(q: SwapQuote): Json {
@@ -139,9 +139,9 @@ function assertEnvironment(env: Environment) {
 /** Wallet records are per address family: one EVM address works on every EVM chain. */
 export const walletFamily = (chain: string) => (CHAINS[chain as ChainId]?.family === "evm" ? "evm" : "solana");
 
-async function liveWallet(userId: string, chain: string) {
-  const wallets = await collections.wallets();
-  const w = await wallets.findOne({ userId, chain: walletFamily(chain) }, { sort: { createdAt: -1 } });
+/** The wallet to trade with: the one the browser is connected with (if verified), see walletResolve.ts. */
+async function liveWallet(userId: string, chain: string, requested?: string | null) {
+  const w = await resolveWallet(userId, chain, requested);
   if (!w) throw new TradeError(`Connect and verify a ${walletFamily(chain) === "evm" ? "EVM" : "Solana"} wallet before trading LIVE on ${CHAINS[chain as ChainId]?.name ?? chain}`, 400);
   return withId(w);
 }
@@ -167,7 +167,8 @@ export async function quoteTrade(userId: string, input: PrepareTradeInput, autom
   }
   const analysis = await ensureAnalysis(withId(token));
   const sim = await p.dex.simulateSwap({ chain: input.chain, side: "SELL", tokenAddress: token.address, amountUsd: input.amountUsd, slippageBps: input.slippageBps });
-  const state = await capitalState(userId, input.environment, undefined, input.chain);
+  const wallet = await resolveWallet(userId, input.chain, input.wallet); // throws a clear 409 if the connected wallet isn't verified
+  const state = await capitalState(userId, input.environment, undefined, input.chain, wallet?.address);
   const candidate = toCandidate(analysis, quote, sim.ok);
   const violations = evaluateEntryRules(settings, state, input, candidate, automatic);
   // How far is what we'd actually pay from the price the app has been showing (and, for the bot, the price it signalled on)?
@@ -177,7 +178,8 @@ export async function quoteTrade(userId: string, input: PrepareTradeInput, autom
   if (automatic && pricing.driftPct > AUTO_MAX_CHASE_PCT) violations.push(`Price already moved ${pricing.driftPct.toFixed(0)}% above the listed price (${fmtPrice(token.priceUsd)} → ${fmtPrice(quote.effectivePriceUsd)}); not chasing it`);
   // manual buys get the user's own preference thresholds as warnings; only the bot is blocked by them
   const warnings = automatic ? [] : [...entryWarnings(candidate, settings), ...(pricing.warning ? [pricing.warning] : [])];
-  return { quote, pricing, violations, warnings, analysis: { riskLevel: analysis.safety.riskLevel, warnings: analysis.safety.warnings, criticalIssues: analysis.safety.criticalIssues }, source: p.mock ? ("MOCK" as const) : ("LIVE" as const) };
+  const walletInfo = wallet ? { address: wallet.address, balanceUsd: state.walletBalanceUsd ?? null, spendableUsd: state.walletUsd ?? null, reserveUsd: state.reserveUsd ?? null } : null;
+  return { quote, pricing, wallet: walletInfo, violations, warnings, analysis: { riskLevel: analysis.safety.riskLevel, warnings: analysis.safety.warnings, criticalIssues: analysis.safety.criticalIssues }, source: p.mock ? ("MOCK" as const) : ("LIVE" as const) };
 }
 
 /** The bot won't buy more than this far above the price it saw; the rest of the move is not ours to chase. */
@@ -233,8 +235,10 @@ export async function prepareTrade(userId: string, input: PrepareTradeInput, kin
   const account = await getOrCreateAccount(userId, input.environment);
 
   let unsigned: string | null = null;
+  let walletAddress: string | null = null;
   if (input.environment === "LIVE") {
-    const wallet = await liveWallet(userId, input.chain);
+    const wallet = await liveWallet(userId, input.chain, input.wallet);
+    walletAddress = wallet.address;
     const maxSlippageBps = (await getSettings(userId)).maxSlippageBps;
     unsigned = await buildChecked({
       quote,
@@ -265,7 +269,7 @@ export async function prepareTrade(userId: string, input: PrepareTradeInput, kin
     feesUsd: quote.platformFeeUsd,
     networkFeeUsd: quote.networkFeeUsd + quote.priorityFeeUsd,
     realizedPnlUsd: null,
-    quote: { ...(quoteJson(quote) as object), signalId: input.signalId ?? null } as Json,
+    quote: { ...(quoteJson(quote) as object), signalId: input.signalId ?? null, wallet: walletAddress } as Json,
     failureReason: null,
     expiresAt: new Date(Date.now() + (kind === "AUTO_ENTRY" ? APPROVAL_TTL_MS : PREPARED_TTL_MS)),
     createdAt: new Date(),
@@ -309,7 +313,7 @@ export async function executeTrade(userId: string, tradeId: string, opts: { sign
  * (hard safety limits only: the user is approving this one by hand), so a token that has since turned bad is
  * refused instead of signed blind. Never signs or sends anything.
  */
-export async function refreshPreparedTrade(userId: string, tradeId: string) {
+export async function refreshPreparedTrade(userId: string, tradeId: string, connectedWallet?: string | null) {
   assertEnvironment("LIVE");
   const trades = await collections.trades();
   const trade = await trades.findOne({ _id: tradeId, userId });
@@ -319,12 +323,13 @@ export async function refreshPreparedTrade(userId: string, tradeId: string) {
 
   const token = await getToken(trade.tokenId);
   const chain = token.chain as ChainId;
-  const wallet = await liveWallet(userId, token.chain);
+  const stored = (trade.quote as { wallet?: string | null } | null)?.wallet ?? undefined;
+  const wallet = await liveWallet(userId, token.chain, connectedWallet ?? stored);
   const p = providers();
 
   let quote: SwapQuote;
   if (trade.side === "BUY") {
-    const q = await quoteTrade(userId, { chain, tokenAddress: token.address, amountUsd: trade.inputUsd, slippageBps: trade.slippageBps, environment: "LIVE" }, false);
+    const q = await quoteTrade(userId, { chain, tokenAddress: token.address, amountUsd: trade.inputUsd, slippageBps: trade.slippageBps, environment: "LIVE", wallet: wallet.address }, false);
     if (q.violations.length) throw new TradeError("Trade no longer passes validation", 422, q.violations);
     // A queued buy was priced when it was queued; if the market has run away since, entering now is chasing, not the trade that was approved.
     const movedPct = trade.priceUsd > 0 ? (q.quote.effectivePriceUsd / trade.priceUsd - 1) * 100 : 0;
@@ -357,7 +362,7 @@ export async function refreshPreparedTrade(userId: string, tradeId: string) {
         priceImpactPct: quote.priceImpactPct,
         feesUsd: quote.platformFeeUsd,
         networkFeeUsd: quote.networkFeeUsd + quote.priorityFeeUsd,
-        quote: { ...(quoteJson(quote) as object), signalId: prev.signalId ?? null, ...(prev.reason ? { reason: prev.reason } : {}), ...(prev.targetLevel !== undefined ? { targetLevel: prev.targetLevel } : {}) } as Json,
+        quote: { ...(quoteJson(quote) as object), signalId: prev.signalId ?? null, wallet: wallet.address, ...(prev.reason ? { reason: prev.reason } : {}), ...(prev.targetLevel !== undefined ? { targetLevel: prev.targetLevel } : {}) } as Json,
         "transaction.unsignedTx": unsigned,
       },
     },
@@ -436,8 +441,10 @@ export async function reconcileLiveTrade(tradeId: string) {
 
   // CONFIRMED: verify the signer and use real on-chain amounts where the adapter can inspect the transaction
   const dex = providers().dex;
-  const wallets = await collections.wallets();
-  const wallet = await wallets.findOne({ userId: trade.userId, chain: walletFamily(token.chain) }, { sort: { createdAt: -1 } });
+  // the wallet this trade was prepared for (falling back to the most recently verified one for older trades)
+  const preparedFor = (trade.quote as { wallet?: string | null } | null)?.wallet ?? null;
+  const linked = await linkedWallets(trade.userId, walletFamilyOf(token.chain));
+  const wallet = preparedFor ? { address: preparedFor } : linked[0] ? { address: linked[0].address } : null;
   const insp = dex.inspectTransaction && wallet ? await dex.inspectTransaction(tChain, trade.transaction.signature, wallet.address, token.address).catch(() => null) : null;
   const sameAddr = (a: string, b: string) => normalizeAddress(tChain, a) === normalizeAddress(tChain, b);
   // The signature must come from the linked wallet AND actually move the expected token in the expected direction
@@ -445,7 +452,7 @@ export async function reconcileLiveTrade(tradeId: string) {
   const mismatch = !insp || !wallet
     ? null
     : !sameAddr(insp.signer, wallet.address)
-      ? "Transaction was not signed by your linked wallet"
+      ? "Transaction was not signed by the wallet it was prepared for"
       : trade.side === "BUY" && insp.tokenDelta <= 0
         ? "Transaction did not deliver the expected token"
         : trade.side === "SELL" && insp.tokenDelta >= 0
@@ -491,7 +498,7 @@ export async function reconcileLiveTrade(tradeId: string) {
           origin: trade.kind === "AUTO_ENTRY" ? "AUTO" : "MANUAL",
           sourceSignalId: signalId,
           entryPriceUsd: swapUsd / tokenAmountActual, entryMarketPriceUsd: openPriceUsd, currentPriceUsd: openPriceUsd, priceAt: now, initialAmount: tokenAmountActual, amount: tokenAmountActual,
-          investedUsd: buyCostUsd, costBasisUsd: buyCostUsd, realizedPnlUsd: 0, targetsHit: 0,
+          investedUsd: buyCostUsd, costBasisUsd: buyCostUsd, realizedPnlUsd: 0, targetsHit: 0, walletAddress: wallet?.address ?? null,
           targetsSnapshot: settings.targets, emergencyEnabled: settings.emergencyEnabled, emergencyAutoExit: settings.emergencyAutoExit,
           openedAt: now, updatedAt: now, closedAt: null, lastAnalysisAt: null,
         },
@@ -553,7 +560,8 @@ export async function prepareLiveSell(userId: string, positionId: string, sellAm
   const dup = await trades.findOne({ positionId, side: "SELL", kind, status: "PREPARED", expiresAt: { $gt: new Date() } });
   if (dup) return { trade: withId(dup), created: false as const };
   const token = await getToken(pos.tokenId);
-  const wallet = await liveWallet(userId, token.chain);
+  // sell from the wallet that holds the tokens (the one that bought), if it is still linked
+  const wallet = await liveWallet(userId, token.chain, pos.walletAddress ?? undefined).catch(() => liveWallet(userId, token.chain));
   const settings = await getSettings(userId);
   const amount = Math.min(sellAmount, pos.amount);
   const p = providers();

@@ -12,7 +12,9 @@ import { logEvent, safeMessage } from "@/lib/events";
 import type { AutoSellOrderDoc, PositionDoc, TokenDoc } from "@/lib/models";
 import { autoSellProblem, autoSellSuggested } from "./notificationMessages";
 import { notifyUser } from "./notifications";
-import { recordExternalSell, TradeError } from "./trading";
+import { TradeError } from "./errors";
+import { recordExternalSell } from "./trading";
+import { resolveWallet, walletFamilyOf } from "./walletResolve";
 
 /**
  * Auto-sell. After a buy confirms, the app prepares one limit sell per profit target. The user signs them once (an
@@ -37,10 +39,10 @@ async function decimalsOf(chain: string, address: string): Promise<number> {
   return CHAINS[chain as ChainId].family === "evm" ? tokenDecimals(chain as ChainId, address) : mintDecimals(address);
 }
 
-async function ownerWallet(userId: string, chain: string) {
-  const family = CHAINS[chain as ChainId].family === "evm" ? "evm" : "solana";
-  const w = await (await collections.wallets()).findOne({ userId, chain: family }, { sort: { createdAt: -1 } });
-  if (!w) throw new TradeError(`Connect and verify a ${family === "evm" ? "EVM" : "Solana"} wallet first`, 400);
+/** The wallet that owns (or will own) the orders: the connected one if verified, else the order's recorded maker, else the latest verified. */
+async function ownerWallet(userId: string, chain: string, requested?: string | null) {
+  const w = await resolveWallet(userId, chain, requested);
+  if (!w) throw new TradeError(`Connect and verify a ${walletFamilyOf(chain) === "evm" ? "EVM" : "Solana"} wallet first`, 400);
   return w;
 }
 
@@ -73,7 +75,7 @@ export async function buildPlan(pos: PositionDoc, token: TokenDoc): Promise<{ ve
   return { venue, orders: merged, note };
 }
 
-async function toDocs(userId: string, pos: PositionDoc, token: TokenDoc, venue: Venue, orders: PlannedOrder[]): Promise<AutoSellOrderDoc[]> {
+async function toDocs(userId: string, pos: PositionDoc, token: TokenDoc, venue: Venue, orders: PlannedOrder[], maker: string | null): Promise<AutoSellOrderDoc[]> {
   const dec = await decimalsOf(token.chain, token.address);
   const nat = await providers().chains[token.chain as ChainId].nativeUsdPrice();
   const now = new Date();
@@ -82,21 +84,21 @@ async function toDocs(userId: string, pos: PositionDoc, token: TokenDoc, venue: 
     // a position's amount is a float built from on-chain deltas; shave 1e-9 so rounding can never ask to sell more than the wallet holds
     sellAmount: o.tokenAmount, sellAmountRaw: ((toRaw(o.tokenAmount, dec) * BigInt(999_999_999)) / BigInt(1_000_000_000)).toString(),
     minBuyRaw: minProceedsRaw(o.tokenAmount, o.targetPriceUsd, nat, nativeDecimals(venue), venue === "jupiter" ? JUP_FEE_FRACTION : 0).toString(),
-    status: "SUGGESTED", orderRef: null, validTo: venue !== "jupiter" ? new Date(now.getTime() + ORDER_LIFETIME_MS) : null, bookedSellRaw: "0", bookedBuyRaw: "0", txHashes: [], error: null,
+    status: "SUGGESTED", maker, orderRef: null, validTo: venue !== "jupiter" ? new Date(now.getTime() + ORDER_LIFETIME_MS) : null, bookedSellRaw: "0", bookedBuyRaw: "0", txHashes: [], error: null,
     createdAt: now, activatedAt: null, updatedAt: now, lastSyncAt: null,
   }));
   return docs.filter((d) => BigInt(d.sellAmountRaw) > BigInt(0) && BigInt(d.minBuyRaw) > BigInt(0));
 }
 
 /** Replace any not-yet-placed suggestions with a fresh plan for the position's current size. */
-async function replan(userId: string, pos: PositionDoc, token: TokenDoc) {
+async function replan(userId: string, pos: PositionDoc, token: TokenDoc, maker: string | null = null) {
   const col = await collections.autoSellOrders();
   const placed = await col.countDocuments({ positionId: pos._id, status: "ACTIVE" });
   if (placed) throw new TradeError("Auto-sell is already armed for this position. Cancel it first to change it.", 409);
   const plan = await buildPlan(pos, token);
   if (!plan) throw new TradeError(`Auto-sell isn't available on ${CHAINS[token.chain as ChainId].name} yet; target sells will be queued for you to sign instead.`, 422);
   await col.deleteMany({ positionId: pos._id, status: "SUGGESTED" });
-  const docs = await toDocs(userId, pos, token, plan.venue, plan.orders);
+  const docs = await toDocs(userId, pos, token, plan.venue, plan.orders, maker);
   if (!docs.length) throw new TradeError(plan.note ?? "Nothing to sell: the position is too small for auto-sell orders", 422);
   await col.insertMany(docs);
   return { plan, docs };
@@ -131,12 +133,12 @@ function friendlyOrderError(msg: string): string {
 }
 
 /** Everything the wallet needs to arm an EVM position: an exact-amount approval (if short) and one typed order per target. */
-export async function prepareArmEvm(userId: string, positionId: string) {
+export async function prepareArmEvm(userId: string, positionId: string, connected?: string | null) {
   const { pos, token } = await loadOpenPosition(userId, positionId);
   const chain = token.chain as ChainId;
   if (CHAINS[chain].family !== "evm") throw new TradeError("Not an EVM position", 400);
-  const wallet = await ownerWallet(userId, token.chain);
-  const { plan, docs } = await replan(userId, pos, token);
+  const wallet = await ownerWallet(userId, token.chain, connected);
+  const { plan, docs } = await replan(userId, pos, token, wallet.address);
   const chainId = CHAINS[chain].evmChainId!;
   const total = docs.reduce((s, d) => s + BigInt(d.sellAmountRaw), BigInt(0));
   const col = await collections.autoSellOrders();
@@ -184,9 +186,9 @@ function kyberRequest(d: AutoSellOrderDoc, token: TokenDoc, maker: string): Kybe
 /** Post the signed orders. The order content is rebuilt here from what was stored, never taken from the browser. */
 export async function activateEvm(userId: string, positionId: string, signatures: Record<string, string>) {
   const { pos, token } = await loadOpenPosition(userId, positionId);
-  const wallet = await ownerWallet(userId, token.chain);
   const col = await collections.autoSellOrders();
   const docs = await col.find({ positionId: pos._id, userId, status: "SUGGESTED" }).toArray();
+  const wallet = await ownerWallet(userId, token.chain, docs[0]?.maker);
   const activated: string[] = [];
   const failed: { id: string; error: string }[] = [];
   for (const d of docs) {
@@ -218,11 +220,11 @@ export async function activateEvm(userId: string, positionId: string, signatures
 }
 
 /** Solana: the plan first (so the UI can list the orders), then one fresh transaction per order as the user signs them. */
-export async function prepareArmSolanaPlan(userId: string, positionId: string) {
+export async function prepareArmSolanaPlan(userId: string, positionId: string, connected?: string | null) {
   const { pos, token } = await loadOpenPosition(userId, positionId);
   if (CHAINS[token.chain as ChainId].family !== "svm") throw new TradeError("Not a Solana position", 400);
-  await ownerWallet(userId, token.chain);
-  const { plan, docs } = await replan(userId, pos, token);
+  const wallet = await ownerWallet(userId, token.chain, connected);
+  const { plan, docs } = await replan(userId, pos, token, wallet.address);
   return { venue: "jupiter" as const, chain: token.chain, note: plan.note, orders: docs.map((d) => ({ id: d._id, levels: d.levels, gainPct: d.gainPct, targetPriceUsd: d.targetPriceUsd, sellAmount: d.sellAmount })) };
 }
 
@@ -232,7 +234,7 @@ export async function prepareSolanaOrder(userId: string, orderId: string) {
   if (!d) throw new TradeError("Order not found or already placed", 404);
   const token = await (await collections.tokens()).findOne({ _id: d.tokenId });
   if (!token) throw new TradeError("Token not found", 404);
-  const wallet = await ownerWallet(userId, d.chain);
+  const wallet = await ownerWallet(userId, d.chain, d.maker);
   const o = await createJupiterOrder({ maker: wallet.address, inputMint: token.address, makingRaw: BigInt(d.sellAmountRaw), takingRaw: BigInt(d.minBuyRaw) });
   await col.updateOne({ _id: d._id }, { $set: { orderRef: o.order, updatedAt: new Date(), error: null } });
   return { orderId: d._id, unsignedTxBase64: o.transaction };
@@ -275,7 +277,7 @@ export async function prepareCancelEvm(userId: string, positionId: string) {
   const chain = docs[0].chain as ChainId;
   const chainId = CHAINS[chain].evmChainId!;
   if (docs[0].venue === "kyber") {
-    const wallet = await ownerWallet(userId, chain);
+    const wallet = await ownerWallet(userId, chain, docs[0].maker);
     return { chain, chainId, typedData: await kyberCancelSign(chain, wallet.address, await kyberIds(docs, chain, wallet.address)) };
   }
   return { chain, chainId, typedData: cowCancelTypedData(chainId, docs.map((d) => d.orderRef!)) };
@@ -288,7 +290,7 @@ export async function confirmCancelEvm(userId: string, positionId: string, signa
   if (!docs.length) return { cancelled: 0 };
   const chain = docs[0].chain as ChainId;
   if (docs[0].venue === "kyber") {
-    const wallet = await ownerWallet(userId, chain);
+    const wallet = await ownerWallet(userId, chain, docs[0].maker);
     await cancelKyberOrders(chain, wallet.address, await kyberIds(docs, chain, wallet.address), signature);
   } else {
     await cancelCowOrders(chain, docs.map((d) => d.orderRef!), signature);
@@ -300,7 +302,7 @@ export async function confirmCancelEvm(userId: string, positionId: string, signa
 export async function prepareCancelSolana(userId: string, orderId: string) {
   const d = await (await collections.autoSellOrders()).findOne({ _id: orderId, userId, status: "ACTIVE", venue: "jupiter" });
   if (!d?.orderRef) throw new TradeError("Active order not found", 404);
-  const wallet = await ownerWallet(userId, d.chain);
+  const wallet = await ownerWallet(userId, d.chain, d.maker);
   return { orderId: d._id, unsignedTxBase64: await cancelJupiterOrder(wallet.address, d.orderRef) };
 }
 
@@ -329,7 +331,7 @@ export interface VenueState {
 async function venueState(d: AutoSellOrderDoc): Promise<VenueState> {
   if (d.venue === "kyber") {
     const chain = d.chain as ChainId;
-    const wallet = await ownerWallet(d.userId, d.chain);
+    const wallet = await ownerWallet(d.userId, d.chain, d.maker);
     const token = await (await collections.tokens()).findOne({ _id: d.tokenId });
     const ref = d.orderRef!;
     const o: KyberOrder | null = ref.startsWith("pending:")
@@ -350,7 +352,7 @@ async function venueState(d: AutoSellOrderDoc): Promise<VenueState> {
     const state = o.status === "fulfilled" ? "filled" : o.status === "cancelled" ? "cancelled" : o.status === "expired" ? "expired" : "open";
     return { state, sellRaw, buyRaw, txHash: hashes[hashes.length - 1] ?? null };
   }
-  const wallet = await ownerWallet(d.userId, d.chain);
+  const wallet = await ownerWallet(d.userId, d.chain, d.maker);
   const o = await getJupiterOrder(wallet.address, d.orderRef!);
   if (!o) return { state: "missing", sellRaw: BigInt(0), buyRaw: BigInt(0), txHash: null };
   const f = jupiterFills(o);

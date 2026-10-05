@@ -7,7 +7,8 @@ import * as autoSell from "@/services/autoSell";
  * Auto-sell endpoints. Everything here only PREPARES what the user's wallet signs, or submits what it signed; no route
  * signs anything. Orders are rebuilt server-side from stored data: the browser sends ids and signatures, never amounts.
  */
-const position = z.object({ positionId: z.string().min(1) });
+const wallet = z.string().min(20).max(64).optional();
+const position = z.object({ positionId: z.string().min(1), wallet });
 const order = z.object({ orderId: z.string().min(1) });
 const evmSignatures = position.extend({ signatures: z.record(z.string(), z.string()) });
 const solSignature = order.extend({ signature: z.string().min(1) });
@@ -24,8 +25,8 @@ export const POST = protectedRoute<{ action: string }>(
   async ({ req, user, params }) => {
     switch (params.action) {
       case "prepare": {
-        const { positionId } = await parseBody(req, position);
-        return serialize((await chainOf(positionId, user.id)) === "solana" ? await autoSell.prepareArmSolanaPlan(user.id, positionId) : await autoSell.prepareArmEvm(user.id, positionId));
+        const { positionId, wallet } = await parseBody(req, position);
+        return serialize((await chainOf(positionId, user.id)) === "solana" ? await autoSell.prepareArmSolanaPlan(user.id, positionId, wallet) : await autoSell.prepareArmEvm(user.id, positionId, wallet));
       }
       case "prepare-order": // Solana: a fresh transaction per order, so none goes stale while the user signs the others
         return serialize(await autoSell.prepareSolanaOrder(user.id, (await parseBody(req, order)).orderId));

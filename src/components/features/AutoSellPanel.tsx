@@ -64,12 +64,12 @@ export function AutoSellPanel({ positionId, chain, orders }: { positionId: strin
   const arm = () =>
     run(async () => {
       if (venue !== "jupiter") {
-        const p = await post<{ chainId: number; approval: { to: string; data: string; value?: string } | null; orders: { id: string; typedData: unknown }[] }>("prepare", { positionId });
+        const p = await post<{ chainId: number; approval: { to: string; data: string; value?: string } | null; orders: { id: string; typedData: unknown }[] }>("prepare", { positionId, wallet: signer.addressFor(chain as ChainId) ?? undefined });
         const sigs = await signer.signEvmOrders(p.chainId, p.approval, p.orders.map((o) => o.typedData));
         const res = await post<{ activated: string[]; failed: { id: string; error: string }[] }>("activate", { positionId, signatures: Object.fromEntries(p.orders.map((o, i) => [o.id, sigs[i]])) });
         if (res.failed.length) throw new Error(`${res.activated.length} order(s) placed, ${res.failed.length} failed: ${res.failed[0].error}`);
       } else {
-        const p = await post<{ orders: { id: string }[] }>("prepare", { positionId });
+        const p = await post<{ orders: { id: string }[] }>("prepare", { positionId, wallet: signer.addressFor(chain as ChainId) ?? undefined });
         for (const o of p.orders) {
           const tx = await post<{ unsignedTxBase64: string }>("prepare-order", { orderId: o.id });
           const signature = await signer.signAndSend("solana", tx.unsignedTxBase64);

@@ -290,6 +290,8 @@ export interface PositionDoc {
   entryPriceUsd: number;
   /** the market price when the buy confirmed, to compare with what was actually paid (price impact and spread) */
   entryMarketPriceUsd?: number;
+  /** the wallet address that bought this position and so holds its tokens (sells are built for it) */
+  walletAddress?: string | null;
   currentPriceUsd: number;
   initialAmount: number;
   amount: number;
@@ -388,6 +390,8 @@ export interface AutoSellOrderDoc {
   tokenId: string;
   chain: string;
   venue: "cow" | "kyber" | "jupiter";
+  /** the wallet address the orders were made by (and that will receive the proceeds) */
+  maker?: string | null;
   /** Kyber: what was signed (its salt, the wrapped-native taker asset, the contract, the expiry) so the order can be posted and found again */
   venueData?: { salt: string; takerAsset: string; contract: string; expiredAt: number };
   /** target levels this order covers */

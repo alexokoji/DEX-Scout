@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -9,7 +10,7 @@ import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { Dialog, DialogContent, Input, Label } from "@/components/ui/form";
 import { CHAINS } from "@/core/chains";
 import type { ChainId } from "@/core/types";
-import { price, usd } from "@/lib/format";
+import { price, usd, usdBalance } from "@/lib/format";
 import { explainWalletError } from "@/lib/txErrors";
 import { useMarketPrice } from "./LivePrice";
 import { useSigner } from "./useSigner";
@@ -28,6 +29,8 @@ interface Quote {
 }
 interface QuoteResp {
   quote: Quote;
+  /** the wallet the server checked, with what it holds on this chain */
+  wallet?: { address: string; balanceUsd: number | null; spendableUsd: number | null; reserveUsd: number | null } | null;
   violations: string[];
   warnings?: string[];
   analysis: { riskLevel: string; warnings: string[]; criticalIssues: string[] };
@@ -47,13 +50,15 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [needsVerify, setNeedsVerify] = useState(false);
+  const wallet = signer.addressFor(chain);
 
   const body = useMemo(() => {
     const amountUsd = Number(amount);
     const slippageBps = Math.round(Number(slippagePct) * 100);
     if (!(amountUsd > 0) || !(slippageBps > 0)) return null;
-    return { chain, tokenAddress: address, amountUsd, slippageBps, priorityFeeNative: Number(priority) || 0, environment: "LIVE" as const, signalId };
-  }, [amount, slippagePct, priority, address, signalId, chain]);
+    return { chain, tokenAddress: address, amountUsd, slippageBps, priorityFeeNative: Number(priority) || 0, environment: "LIVE" as const, signalId, wallet: wallet ?? undefined };
+  }, [amount, slippagePct, priority, address, signalId, chain, wallet]);
 
   useEffect(() => {
     if (!body) return;
@@ -66,10 +71,12 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
         if (cancelled) return;
         if (!r.ok) {
           setErr(j.error ?? "Quote failed");
+          setNeedsVerify(!!j.hint?.verify);
           setQ(null);
         } else {
           setQ(j);
           setErr(null);
+          setNeedsVerify(false);
         }
       } catch {
         if (!cancelled) setErr("Network error while fetching quote");
@@ -140,11 +147,19 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
 
         <div className="rounded-md border border-border bg-surface2 p-3 text-xs">
           {err ? (
-            <div className="text-down">{err}</div>
+            <div className="space-y-1.5">
+              <div className="text-down">{err}</div>
+              {needsVerify && <Link href="/wallet" className="inline-block rounded border border-border px-2 py-1 text-accent hover:bg-surface">Open Wallet → Verify &amp; link</Link>}
+            </div>
           ) : !q ? (
             <div className="text-muted">{loading ? "Fetching quote…" : "Enter an amount to see a quote"}</div>
           ) : (
             <dl className="space-y-1">
+              {q.wallet ? (
+                <Row k="Trading wallet" v={`${q.wallet.address.slice(0, 6)}…${q.wallet.address.slice(-4)} · ${q.wallet.balanceUsd !== null ? `${usdBalance(q.wallet.balanceUsd)} ${meta.nativeSymbol}` : "balance unavailable"}`} warn={q.wallet.balanceUsd !== null && q.wallet.balanceUsd < 0.01} />
+              ) : (
+                <Row k="Trading wallet" v="none linked yet" warn />
+              )}
               <Row k="Route" v={q.quote.route.join(" → ")} />
               <Row k="Est. output" v={`${q.quote.outputAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${symbol}`} />
               <Row k="Min received" v={`${q.quote.minReceived.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${symbol}`} />
