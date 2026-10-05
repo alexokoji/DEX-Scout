@@ -31,6 +31,8 @@ interface QuoteResp {
   quote: Quote;
   /** the wallet the server checked, with what it holds on this chain */
   wallet?: { address: string; balanceUsd: number | null; spendableUsd: number | null; reserveUsd: number | null } | null;
+  /** what suits how fast the token is moving right now, never above the user's own maximum */
+  slippage?: { bps: number; wantedBps: number; cappedByMax: boolean; movePct: number };
   violations: string[];
   warnings?: string[];
   analysis: { riskLevel: string; warnings: string[]; criticalIssues: string[] };
@@ -141,6 +143,15 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
             <Input type="number" min="0" step="0.1" value={slippagePct} onChange={(e) => setSlippagePct(e.target.value)} />
           </div>
         </div>
+        {q?.slippage && (q.slippage.bps > Math.round(Number(slippagePct) * 100) || q.slippage.cappedByMax) && (
+          <p className="rounded-md border border-warn/30 bg-warn/10 p-2 text-xs text-warn">
+            This token has moved about {q.slippage.movePct.toFixed(0)}% recently, so the price can shift before your swap lands and the chain cancels it (you would lose only the network fee).{" "}
+            {q.slippage.bps > Math.round(Number(slippagePct) * 100) && (
+              <button type="button" className="font-medium underline" onClick={() => setSlippagePct(String(q.slippage!.bps / 100))}>Use {q.slippage.bps / 100}% slippage</button>
+            )}
+            {q.slippage.cappedByMax && <span> Your maximum slippage in Settings ({q.slippage.bps / 100}%) is lower than the {q.slippage.wantedBps / 100}% this token calls for.</span>}
+          </p>
+        )}
         <div>
           <Label hint={`${meta.nativeSymbol} · blank = automatic, from the network`}>{meta.family === "evm" ? "Priority fee (gas tip)" : "Max priority fee"}</Label>
           <Input type="number" min="0" step="0.00001" placeholder="automatic" value={priority} onChange={(e) => setPriority(e.target.value)} />

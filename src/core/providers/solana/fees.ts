@@ -16,8 +16,19 @@ export interface FeeConnection {
 
 /** An SPL token account's data size in bytes (the account the swap opens to hold the bought token). */
 export const TOKEN_ACCOUNT_BYTES = 165;
-/** A swap's compute budget used to turn "micro-lamports per compute unit" into a fee. Jupiter sizes the real limit by simulation (typically 120-250k). */
-export const SWAP_COMPUTE_UNITS = 300_000;
+/**
+ * A swap's compute budget, used to turn "micro-lamports per compute unit" into a fee. Jupiter sizes the real limit by
+ * simulation; measured on live swaps it was 145,000-170,000, so 200,000 leaves headroom without paying for double.
+ */
+export const SWAP_COMPUTE_UNITS = 200_000;
+/**
+ * How high in the fee market a swap bids. The fee market is per ACCOUNT (the pools being traded), not network-wide: measured
+ * live, the network-wide figure was 0 while the pools of active tokens showed p75 = 50,000-75,000 and p90 = 500,000-800,000
+ * micro-lamports/CU. A swap that bids 0 there lands behind everyone else, and on a fast-moving token those extra seconds are
+ * what pushes the price past the slippage limit (error 6001). The 90th percentile is Jupiter's "high" tier, and still costs
+ * only a fraction of a cent to a couple of cents.
+ */
+export const LANDING_QUANTILE = 0.9;
 /** Never let an automatic priority fee exceed this (0.002 SOL) however busy the network, unless the user sets a higher cap. */
 export const MAX_AUTO_PRIORITY_LAMPORTS = 2_000_000;
 
@@ -27,9 +38,12 @@ export function percentile(values: number[], q: number): number {
   return s[Math.min(s.length - 1, Math.max(0, Math.floor(s.length * q)))];
 }
 
-/** Priority fee in lamports for a swap: the 75th percentile of recent per-slot fees, capped. 0 when the network isn't charging any. */
-export function priorityLamports(recentMicroLamportsPerCu: number[], capLamports = MAX_AUTO_PRIORITY_LAMPORTS): number {
-  const microPerCu = percentile(recentMicroLamportsPerCu, 0.75);
+/**
+ * Priority fee in lamports for a swap: a high percentile (LANDING_QUANTILE) of recent per-slot fees, capped. Feed it the
+ * fees of the accounts the swap actually writes to (the pools), not the network-wide list. 0 when nobody is paying any.
+ */
+export function priorityLamports(recentMicroLamportsPerCu: number[], capLamports = MAX_AUTO_PRIORITY_LAMPORTS, quantile = LANDING_QUANTILE): number {
+  const microPerCu = percentile(recentMicroLamportsPerCu, quantile);
   const lamports = Math.ceil((microPerCu * SWAP_COMPUTE_UNITS) / 1_000_000);
   return Math.max(0, Math.min(lamports, capLamports));
 }

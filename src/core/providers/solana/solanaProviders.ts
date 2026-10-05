@@ -53,6 +53,24 @@ function feeConnection(c: Connection): FeeConnection {
   };
 }
 
+const poolFeeCache = new Map<string, { at: number; fees: number[] }>();
+/**
+ * The priority fee a swap through these pools should bid, from the chain's fee market for THOSE accounts (not the network-wide
+ * list: that one read 0 while the pools of active tokens were paying 50,000-800,000 micro-lamports/CU). Cached for a few seconds.
+ */
+export async function poolPriorityLamports(pools: string[], capLamports?: number): Promise<number> {
+  const key = [...new Set(pools)].sort().join(",");
+  const hit = poolFeeCache.get(key);
+  let fees = hit && Date.now() - hit.at < 10_000 ? hit.fees : null;
+  if (!fees) {
+    const raw = await solanaTry((c) => c.getRecentPrioritizationFees({ lockedWritableAccounts: pools.map((p) => new PublicKey(p)) }), 6_000);
+    fees = raw.map((f) => f.prioritizationFee);
+    if (poolFeeCache.size > 200) poolFeeCache.clear();
+    poolFeeCache.set(key, { at: Date.now(), fees });
+  }
+  return priorityLamports(fees, capLamports);
+}
+
 /**
  * What the chain says a swap costs right now. The rent and base fee barely change (cached for a while); the priority fee
  * moves with congestion (cached for seconds). A user-set priority cap (lamports) limits the automatic one.
@@ -251,7 +269,7 @@ export async function solanaOnChain(_chain: ChainId, address: string, snapshot: 
 interface JupQuote {
   outAmount: string;
   priceImpactPct: string;
-  routePlan?: { swapInfo?: { label?: string } }[];
+  routePlan?: { swapInfo?: { label?: string; ammKey?: string } }[];
   [k: string]: unknown;
 }
 
@@ -285,9 +303,13 @@ export class JupiterDexAdapter implements DexAdapter {
     const outputAmount = req.side === "BUY" ? out / 10 ** decimals : (out / 1e9) * sol;
     // Fees as the chain currently charges them. The priority fee the user may type is a CAP on the automatic one, not a
     // fixed price (a fixed 0.0001 SOL was twenty times the base fee when the network wasn't charging any priority at all).
-    const costs = await solanaCosts(req.priorityFeeNative && req.priorityFeeNative > 0 ? Math.floor(req.priorityFeeNative * 1e9) : undefined).catch(() => null);
+    const cap = req.priorityFeeNative && req.priorityFeeNative > 0 ? Math.floor(req.priorityFeeNative * 1e9) : undefined;
+    const costs = await solanaCosts(cap).catch(() => null);
+    // bid against the fee market of the pools this route actually trades through; the network-wide figure is the fallback
+    const pools = (q.routePlan ?? []).map((r) => r.swapInfo?.ammKey).filter((k): k is string => !!k);
+    const poolPriority = pools.length ? await poolPriorityLamports(pools, cap).catch(() => null) : null;
     const networkFeeUsd = ((costs?.baseFeeLamports ?? 5000) / 1e9) * sol;
-    const priorityFeeUsd = ((costs?.priorityFeeLamports ?? 0) / 1e9) * sol;
+    const priorityFeeUsd = ((poolPriority ?? costs?.priorityFeeLamports ?? 0) / 1e9) * sol;
     return {
       chain: "solana",
       inputMint,

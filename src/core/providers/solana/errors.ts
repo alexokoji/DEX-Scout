@@ -35,6 +35,23 @@ export function explainSolanaSimulation(err: unknown, logs: readonly string[] = 
   if (/insufficient funds/i.test(text) && /Token(keg|zQd)/i.test(text)) {
     return { kind: "insufficient_token", message: "The wallet does not hold enough of this token to sell that amount." };
   }
-  const code = text.match(/"Custom":\s*(\d+)/)?.[1];
-  return { kind: "other", message: `The swap would fail on-chain${code ? ` (program error ${code})` : ""}${errText && errText !== '""' ? `: ${errText.slice(0, 160)}` : ""}.` };
+  const code = text.match(/"Custom":\s*(\d+)/)?.[1];  return { kind: "other", message: `The swap would fail on-chain${code ? ` (program error ${code})` : ""}${errText && errText !== '""' ? `: ${errText.slice(0, 160)}` : ""}.` };
+}
+
+/**
+ * The same errors, but for a swap that already ran and failed on the chain (the wallet signed and sent it), so the wording is
+ * past tense and says what it cost. A failed Solana transaction still pays its network fee; nothing else leaves the wallet.
+ */
+export function explainSolanaOnChainFailure(err: unknown): SimFailure {
+  const f = explainSolanaSimulation(err);
+  switch (f.kind) {
+    case "slippage":
+      return { kind: "slippage", message: "The price moved past your slippage limit before the swap was confirmed, so the chain cancelled it. Only the network fee was spent. Try again, with a higher slippage if this token is moving fast" };
+    case "insufficient_sol":
+      return { kind: f.kind, message: "The wallet ran short of SOL when the swap executed, so the chain cancelled it. Only the network fee was spent. Buy a smaller amount or add a little SOL" };
+    case "blockhash":
+      return { kind: f.kind, message: "The swap expired before the network processed it. Nothing was swapped. Try again" };
+    default:
+      return { kind: f.kind, message: f.message.replace(/^The swap would fail on-chain/, "The swap failed on-chain").replace(/\.$/, "") };
+  }
 }

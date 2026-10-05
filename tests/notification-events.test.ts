@@ -217,13 +217,14 @@ describe("category switches are validated", () => {
     const { reconcileLiveTrade } = await import("@/services/trading");
     const { providers } = await import("@/core/providers/registry");
     await clear();
-    vi.spyOn(providers().dex, "getTransactionStatus").mockResolvedValue({ status: "FAILED", error: "slippage tolerance exceeded" });
+    vi.spyOn(providers().dex, "getTransactionStatus").mockResolvedValue({ status: "FAILED", error: '{"InstructionError":[6,{"Custom":6001}]}' });
     const id = await trade({ status: "PENDING", expiresAt: null, transaction: { chain: token.chain, signature: SIG("g"), status: "PENDING", unsignedTx: "x", error: null, slot: null, submittedAt: new Date(), confirmedAt: null, createdAt: new Date() } });
     await reconcileLiveTrade(id);
     await reconcileLiveTrade(id); // already FAILED: nothing more to say
     const n = await mine("TRADE_FAILED");
     expect(n).toHaveLength(1);
-    expect(n[0].body).toContain("slippage tolerance exceeded");
+    expect(n[0].body).toContain("price moved past your slippage limit"); // plain words, not the raw {"InstructionError":...} JSON
+    expect(n[0].body).not.toContain("InstructionError");
     expect(n[0].url).toBe("/trades");
   });
 

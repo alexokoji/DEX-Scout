@@ -8,7 +8,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 vi.mock("next/headers", () => ({ cookies: async () => ({ get: () => undefined, set: () => {}, delete: () => {} }) }));
 vi.mock("@/lib/env", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/lib/env")>()), liveTradingAllowed: () => true }));
 
-import { MAX_AUTO_PRIORITY_LAMPORTS, percentile, priorityLamports, readSolanaCosts, SWAP_COMPUTE_UNITS, swapReserveLamports, TOKEN_ACCOUNT_BYTES, type FeeConnection } from "@/core/providers/solana/fees";
+import { explainSolanaOnChainFailure } from "@/core/providers/solana/errors";
+import { suggestSlippage } from "@/core/trading/slippage";
+import { LANDING_QUANTILE, MAX_AUTO_PRIORITY_LAMPORTS, percentile, priorityLamports, readSolanaCosts, SWAP_COMPUTE_UNITS, swapReserveLamports, TOKEN_ACCOUNT_BYTES, type FeeConnection } from "@/core/providers/solana/fees";
 import { closeDb, collections, newId } from "@/lib/db";
 
 // what the chain reported when this was written
@@ -31,14 +33,21 @@ describe("priority fee comes from what the network is charging", () => {
     expect(priorityLamports(Array(150).fill(0))).toBe(0);
     expect(priorityLamports([])).toBe(0);
   });
-  it("follows the 75th percentile of recent per-slot fees, converted to lamports for a swap's compute budget", () => {
+  it("follows the 90th percentile of recent per-slot fees, converted to lamports for a swap's compute budget", () => {
     const fees = [...Array(100).fill(0), ...Array(50).fill(20_000)]; // a third of slots paid 20,000 micro-lamports/CU
-    expect(percentile(fees, 0.75)).toBe(20_000);
-    expect(priorityLamports(fees)).toBe(Math.ceil((20_000 * SWAP_COMPUTE_UNITS) / 1_000_000)); // 6,000 lamports
-    expect(priorityLamports(fees)).toBe(6_000);
+    expect(percentile(fees, LANDING_QUANTILE)).toBe(20_000);
+    expect(priorityLamports(fees)).toBe(Math.ceil((20_000 * SWAP_COMPUTE_UNITS) / 1_000_000)); // 4,000 lamports
+    expect(priorityLamports(fees)).toBe(4_000);
+  });
+  it("bids high enough to land on a busy pool: with the figures measured live on an active token's pools (p90 = 500,000 micro-lamports/CU) it is ~100,000 lamports, about $0.01", () => {
+    const pool = [...Array(60).fill(1_000), ...Array(60).fill(75_000), ...Array(30).fill(500_000)];
+    expect(percentile(pool, 0.75)).toBe(75_000);
+    expect(priorityLamports(pool)).toBe(100_000);
+    // the network-wide list the old code used read all zeros: that bid would have landed behind everyone else
+    expect(priorityLamports(Array(150).fill(0))).toBe(0);
   });
   it("a user-set cap limits it; an extreme spike is limited too", () => {
-    const busy = Array(150).fill(50_000_000); // 50,000,000 micro-lamports/CU x 300k CU = 0.015 SOL for one swap: a spike worth limiting
+    const busy = Array(150).fill(50_000_000); // 50,000,000 micro-lamports/CU x 200k CU = 0.01 SOL for one swap: a spike worth limiting
     expect(priorityLamports(busy)).toBe(MAX_AUTO_PRIORITY_LAMPORTS);
     expect(priorityLamports(busy, 10_000)).toBe(10_000);
     expect(priorityLamports(Array(150).fill(20_000), 100)).toBe(100);
@@ -71,10 +80,49 @@ describe("what a buy needs beyond its amount", () => {
 describe("readSolanaCosts", () => {
   it("reads rent, base fee and priority fee from the chain", async () => {
     expect(await readSolanaCosts(conn())).toEqual({ baseFeeLamports: 5_000, priorityFeeLamports: 0, rentLamports: 1_488_440 });
-    expect(await readSolanaCosts(conn({ rent: 2_039_280, base: 7_500, fees: Array(150).fill(10_000) }))).toEqual({ baseFeeLamports: 7_500, priorityFeeLamports: 3_000, rentLamports: 2_039_280 });
+    expect(await readSolanaCosts(conn({ rent: 2_039_280, base: 7_500, fees: Array(150).fill(10_000) }))).toEqual({ baseFeeLamports: 7_500, priorityFeeLamports: 2_000, rentLamports: 2_039_280 });
   });
   it("honours a user cap on the priority fee", async () => {
     expect((await readSolanaCosts(conn({ fees: Array(150).fill(10_000) }), 1_000)).priorityFeeLamports).toBe(1_000);
+  });
+});
+
+describe("a swap that failed on-chain is explained, not shown as raw JSON", () => {
+  it('slippage exceeded (the user-reported {"InstructionError":[6,{"Custom":6001}]}) says what happened and what it cost', async () => {
+    const raw = '{"InstructionError":[6,{"Custom":6001}]}';
+    const f = explainSolanaOnChainFailure(JSON.parse(raw));
+    expect(f.kind).toBe("slippage");
+    expect(f.message).toMatch(/slippage limit/);
+    expect(f.message).toMatch(/Only the network fee was spent/);
+    expect(f.message).not.toContain("InstructionError");
+    const { humanOnChainFailure } = await import("@/services/trading");
+    expect(humanOnChainFailure("solana", raw)).toBe(f.message); // the stored JSON string is parsed first
+    expect(humanOnChainFailure("solana", "not json at all")).toMatch(/failed on-chain/);
+    expect(humanOnChainFailure("bsc", "execution reverted: Too little received")).toMatch(/slippage/);
+  });
+  it("the notification doesn't end up with a doubled full stop", async () => {
+    const { tradeFailed } = await import("@/services/notificationMessages");
+    const m = tradeFailed("BUY", "WIF", "The swap was cancelled.", "t1");
+    expect(m.body).toContain("The swap was cancelled. Nothing was bought");
+    expect(m.body).not.toContain("..");
+  });
+});
+
+describe("suggested slippage follows how fast the token is moving", () => {
+  it("calm tokens get 3%, faster ones more, always within the user's own maximum", () => {
+    expect(suggestSlippage(0.5, 2, 5000).bps).toBe(300);
+    expect(suggestSlippage(5, 10, 5000).bps).toBe(500);
+    expect(suggestSlippage(-12, 40, 5000).bps).toBe(1000); // down moves are as fast as up moves
+    expect(suggestSlippage(35, 80, 5000).bps).toBe(2000);
+    expect(suggestSlippage(1, 60, 5000).bps).toBe(1000); // a token that ran 60% in the hour counts as fast even if the last 5 minutes were quiet
+  });
+  it("is held to the user's maximum, and says so", () => {
+    const s = suggestSlippage(35, 80, 500);
+    expect(s).toMatchObject({ bps: 500, wantedBps: 2000, cappedByMax: true });
+    expect(suggestSlippage(1, 1, 500).cappedByMax).toBe(false);
+  });
+  it("copes with missing numbers", () => {
+    expect(suggestSlippage(NaN, NaN, 5000).bps).toBe(300);
   });
 });
 

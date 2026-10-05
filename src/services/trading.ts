@@ -2,8 +2,10 @@ import { z } from "zod";
 import { CHAIN_IDS, CHAINS, normalizeAddress } from "@/core/chains";
 import { FEES } from "@/core/config";
 import { providers } from "@/core/providers/registry";
+import { explainSolanaOnChainFailure } from "@/core/providers/solana/errors";
 import { checkManualAmount, type CapitalState } from "@/core/trading/capital";
 import { applySell, deriveStatus } from "@/core/trading/positions";
+import { suggestSlippage } from "@/core/trading/slippage";
 import { entryWarnings, validateEntry, validateSlippage, type TradeCandidate } from "@/core/trading/validation";
 import type { Analysis, ChainId, ProfitTargetConfig, SwapQuote } from "@/core/types";
 import { collections, newId, withId, withUserLock, type ClientSession } from "@/lib/db";
@@ -189,7 +191,8 @@ export async function quoteTrade(userId: string, input: PrepareTradeInput, autom
         ...(sellUnverified ? ["Couldn't double-check that this token can be sold back right now (the price service was busy). The swap itself is checked again before your wallet opens."] : []),
       ];
   const walletInfo = wallet ? { address: wallet.address, balanceUsd: state.walletBalanceUsd ?? null, spendableUsd: state.walletUsd ?? null, reserveUsd: state.reserveUsd ?? null } : null;
-  return { quote, pricing, wallet: walletInfo, violations, warnings, analysis: { riskLevel: analysis.safety.riskLevel, warnings: analysis.safety.warnings, criticalIssues: analysis.safety.criticalIssues }, source: p.mock ? ("MOCK" as const) : ("LIVE" as const) };
+  const slippage = suggestSlippage(analysis.snapshot.change5m, analysis.snapshot.change1h, settings.maxSlippageBps);
+  return { quote, pricing, wallet: walletInfo, slippage, violations, warnings, analysis: { riskLevel: analysis.safety.riskLevel, warnings: analysis.safety.warnings, criticalIssues: analysis.safety.criticalIssues }, source: p.mock ? ("MOCK" as const) : ("LIVE" as const) };
 }
 
 /** The bot won't buy more than this far above the price it saw; the rest of the move is not ours to chase. */
@@ -424,6 +427,21 @@ async function recordLiveSignature(userId: string, trade: TradeDoc, signature?: 
   return reconcileLiveTrade(trade._id);
 }
 
+/** A failed on-chain transaction's raw error (a JSON string on Solana) as a sentence a person can act on. */
+export function humanOnChainFailure(chain: ChainId, raw: string | undefined | null): string {
+  if (!raw) return "The transaction failed on-chain";
+  if (chain === "solana") {
+    let parsed: unknown = raw;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      /* not JSON: explain it as text */
+    }
+    return explainSolanaOnChainFailure(parsed).message;
+  }
+  return /revert|slippage|too little received|insufficient output/i.test(raw) ? "The swap reverted on-chain, most likely because the price moved past your slippage limit. Only the gas was spent. Try again with a higher slippage if this token is moving fast" : raw.slice(0, 200);
+}
+
 /** Poll the chain for a PENDING live trade; create/adjust the Position when confirmed. Safe to call repeatedly. */
 export async function reconcileLiveTrade(tradeId: string) {
   const trades = await collections.trades();
@@ -443,9 +461,10 @@ export async function reconcileLiveTrade(tradeId: string) {
     return { ok: false as const, status: "PENDING" as const };
   }
   if (st.status === "FAILED") {
-    await trades.updateOne({ _id: tradeId }, { $set: { status: "FAILED", failureReason: (st.error ?? "Transaction failed on-chain").slice(0, 300), "transaction.status": "FAILED", "transaction.error": st.error ?? "failed", "transaction.slot": st.slot ?? null } });
+    const reason = humanOnChainFailure(tChain, st.error);
+    await trades.updateOne({ _id: tradeId }, { $set: { status: "FAILED", failureReason: reason.slice(0, 300), "transaction.status": "FAILED", "transaction.error": st.error ?? "failed", "transaction.slot": st.slot ?? null } });
     await logEvent({ type: "TRADE_FAILED", source: "live", userId: trade.userId, level: "WARN", message: `LIVE trade for ${token.symbol} failed on-chain`, data: { tradeId, error: st.error } });
-    await notifyUser(trade.userId, tradeFailed(trade.side, token.symbol, st.error ?? "Transaction failed on-chain", tradeId));
+    await notifyUser(trade.userId, tradeFailed(trade.side, token.symbol, reason, tradeId));
     return { ok: false as const, status: "FAILED" as const };
   }
 

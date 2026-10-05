@@ -142,7 +142,7 @@ export function tradeFailed(side: "BUY" | "SELL", symbol: string, reason: string
   return {
     type: "TRADE_FAILED",
     title: `${side === "BUY" ? "Buy" : "Sell"} failed: ${symbol}`,
-    body: `${reason.slice(0, 200)}. Nothing was ${side === "BUY" ? "bought" : "sold"} in the app's books. Check your wallet's activity before retrying.`,
+    body: `${reason.replace(/[.\s]+$/, "").slice(0, 300)}. Nothing was ${side === "BUY" ? "bought" : "sold"} in the app's books. Check your wallet's activity before retrying.`,
     url: "/trades",
     tradeId,
     dedupeKey: `failed:${tradeId}`,
