@@ -18,9 +18,50 @@ import { applyLiveSnapshot } from "./tokenPrice";
 import { spendableUsd } from "./walletBalance";
 
 export class TradeError extends Error {
-  constructor(message: string, public status = 400, public violations: string[] = []) {
+  constructor(message: string, public status = 400, public violations: string[] = [], /** machine-readable suggestion for the UI, e.g. { slippageBps } */ public hint?: Record<string, number | string>) {
     super(message);
   }
+}
+
+/**
+ * Build the unsigned swap and dry-run it as the wallet would, so a swap that would fail is explained here — with what to
+ * change — instead of as a wallet "transaction simulation failed" popup. A slippage failure is retried at the next
+ * slippage levels the user's own maximum allows, to say which one works (we never raise it silently). Venues without a
+ * dry-run (EVM, mock) just build.
+ */
+async function buildChecked(a: { quote: SwapQuote; wallet: string; maxSlippageBps: number; again: (slippageBps: number) => Promise<SwapQuote> }): Promise<string> {
+  const dex = providers().dex;
+  const build = async (q: SwapQuote) => {
+    try {
+      return (await dex.buildSwapTransaction(q, a.wallet)).unsignedTxBase64;
+    } catch (err) {
+      throw new TradeError(`Could not build transaction: ${safeMessage(err)}`, 502);
+    }
+  };
+  const unsigned = await build(a.quote);
+  const pf = dex.preflight ? await dex.preflight(a.quote.chain, unsigned, a.wallet) : ({ ok: true } as const);
+  if (pf.ok) return unsigned;
+  if (pf.kind !== "slippage") throw new TradeError(pf.error, 422, [pf.error]);
+
+  const tried = a.quote.slippageBps;
+  let works: number | null = null;
+  for (const bps of [200, 300, 500, 1000, 2000].filter((b) => b > tried && b <= a.maxSlippageBps)) {
+    try {
+      const q = await a.again(bps);
+      const r = dex.preflight ? await dex.preflight(q.chain, await build(q), a.wallet) : ({ ok: true } as const);
+      if (r.ok) {
+        works = bps;
+        break;
+      }
+    } catch {
+      /* try the next level */
+    }
+  }
+  const msg =
+    works !== null
+      ? `${pf.error} It fails at ${(tried / 100).toFixed(1)}% slippage but passes at ${(works / 100).toFixed(1)}%: set slippage to ${(works / 100).toFixed(1)}% and try again.`
+      : `${pf.error} It still fails at your maximum slippage (${(a.maxSlippageBps / 100).toFixed(1)}%): the token is moving too fast right now. Try again in a moment, or raise your maximum slippage in Settings.`;
+  throw new TradeError(msg, 422, [msg], works !== null ? { slippageBps: works } : undefined);
 }
 
 /** Client-supplied trade intent. Only these fields are accepted; prices/limits are re-derived server-side. */
@@ -194,11 +235,13 @@ export async function prepareTrade(userId: string, input: PrepareTradeInput, kin
   let unsigned: string | null = null;
   if (input.environment === "LIVE") {
     const wallet = await liveWallet(userId, input.chain);
-    try {
-      unsigned = (await providers().dex.buildSwapTransaction(quote, wallet.address)).unsignedTxBase64;
-    } catch (err) {
-      throw new TradeError(`Could not build transaction: ${safeMessage(err)}`, 502);
-    }
+    const maxSlippageBps = (await getSettings(userId)).maxSlippageBps;
+    unsigned = await buildChecked({
+      quote,
+      wallet: wallet.address,
+      maxSlippageBps,
+      again: (slippageBps) => providers().dex.getQuote({ chain: input.chain, side: "BUY", tokenAddress: token.address, amountUsd: input.amountUsd, slippageBps, priorityFeeNative: input.priorityFeeNative }),
+    });
   }
 
   const tradeId = newId();
@@ -294,12 +337,12 @@ export async function refreshPreparedTrade(userId: string, tradeId: string) {
       throw new TradeError(`Quote failed: ${safeMessage(err)}`, 502);
     }
   }
-  let unsigned: string;
-  try {
-    unsigned = (await p.dex.buildSwapTransaction(quote, wallet.address)).unsignedTxBase64;
-  } catch (err) {
-    throw new TradeError(`Could not build transaction: ${safeMessage(err)}`, 502);
-  }
+  const unsigned = await buildChecked({
+    quote,
+    wallet: wallet.address,
+    maxSlippageBps: (await getSettings(userId)).maxSlippageBps,
+    again: (slippageBps) => p.dex.getQuote({ chain, side: trade.side, tokenAddress: token.address, amountUsd: trade.inputUsd, tokenAmount: trade.side === "SELL" ? trade.tokenAmount : undefined, slippageBps }),
+  });
 
   const prev = (trade.quote ?? {}) as { signalId?: string | null; reason?: string; targetLevel?: number | null };
   const expiresAt = new Date(Date.now() + REFRESHED_TTL_MS);

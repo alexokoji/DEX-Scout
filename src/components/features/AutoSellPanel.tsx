@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { autoSellVenue, CHAINS } from "@/core/chains";
 import type { ChainId } from "@/core/types";
 import { price } from "@/lib/format";
+import { explainWalletError } from "@/lib/txErrors";
 import { useSigner } from "./useSigner";
 
 export interface AutoSellView {
@@ -52,7 +53,8 @@ export function AutoSellPanel({ positionId, chain, orders }: { positionId: strin
       await fn();
       toast.success(ok);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Cancelled in wallet");
+      console.error("[autosell] wallet error", e);
+      toast.error(explainWalletError(e), { duration: 15_000 });
     } finally {
       setBusy(false);
       router.refresh();

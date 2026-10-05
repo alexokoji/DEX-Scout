@@ -40,7 +40,7 @@ export function protectedRoute<C = Record<string, string>>(
 
 export function errorResponse(err: unknown) {
   if (err instanceof ApiError) return NextResponse.json({ error: err.message, details: err.details }, { status: err.status });
-  if (err instanceof TradeError) return NextResponse.json({ error: err.message, violations: err.violations }, { status: err.status });
+  if (err instanceof TradeError) return NextResponse.json({ error: err.message, violations: err.violations, hint: err.hint }, { status: err.status });
   if (err instanceof ZodError) {
     return NextResponse.json({ error: "Invalid input", issues: err.issues.map((i) => ({ path: i.path.join("."), message: i.message })) }, { status: 400 });
   }

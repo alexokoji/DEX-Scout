@@ -5,7 +5,7 @@ import type { ChainId, SwapQuote } from "../types";
 import { DexScreenerDataProvider } from "./dexscreener";
 import { MultiEvmDexAdapter } from "./evm/freeAggregators";
 import { EvmChainAdapter, evmOnChain } from "./evm/evmProviders";
-import type { ChainAdapter, DexAdapter, ProviderBundle, QuoteRequest } from "./interfaces";
+import type { ChainAdapter, DexAdapter, PreflightResult, ProviderBundle, QuoteRequest } from "./interfaces";
 import { MockChainAdapter, MockDexAdapter, MockTokenDataProvider } from "./mock/mockMarket";
 import { RulesAiProvider } from "./mock/mockProviders";
 import { JupiterDexAdapter, SolanaChainAdapter, solanaOnChain } from "./solana/solanaProviders";
@@ -23,6 +23,10 @@ class RoutingDexAdapter implements DexAdapter {
   }
   buildSwapTransaction(quote: SwapQuote, userAddress: string) {
     return this.pick(quote.chain).buildSwapTransaction(quote, userAddress);
+  }
+  preflight(chain: ChainId, unsignedTx: string, userAddress: string): Promise<PreflightResult> {
+    const a = this.pick(chain);
+    return a.preflight ? a.preflight(chain, unsignedTx, userAddress) : Promise.resolve({ ok: true });
   }
   estimatePriceImpact(req: QuoteRequest) {
     return this.pick(req.chain).estimatePriceImpact(req);

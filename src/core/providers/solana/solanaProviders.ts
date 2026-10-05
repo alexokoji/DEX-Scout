@@ -10,7 +10,8 @@ import type { ChainId, OnChainRaw, SwapQuote, TokenSnapshot } from "../../types"
 import { env } from "../../../lib/env";
 import { DexScreenerDataProvider } from "../dexscreener";
 import { getJson, withTimeout } from "../http";
-import type { ChainAdapter, DexAdapter, QuoteRequest, SwapSimulation, TransactionStatus } from "../interfaces";
+import type { ChainAdapter, DexAdapter, PreflightResult, QuoteRequest, SwapSimulation, TransactionStatus } from "../interfaces";
+import { explainSolanaSimulation } from "./errors";
 
 const SOL_MINT = CHAINS.solana.wrappedNative;
 const dexData = () => new DexScreenerDataProvider({ svm: solanaOnChain, evm: async () => { throw new Error("not an EVM adapter"); } });
@@ -249,6 +250,19 @@ export class JupiterDexAdapter implements DexAdapter {
       }),
     });
     return { unsignedTxBase64: j.swapTransaction };
+  }
+
+  /** Simulate the built swap exactly as the wallet will (signatures not checked, fresh blockhash), and explain a failure. */
+  async preflight(_chain: ChainId, unsignedTx: string): Promise<PreflightResult> {
+    try {
+      const tx = VersionedTransaction.deserialize(Buffer.from(unsignedTx, "base64"));
+      const res = await solanaTry((c) => c.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true, commitment: "processed" }), 8_000);
+      if (!res.value.err) return { ok: true };
+      const f = explainSolanaSimulation(res.value.err, res.value.logs ?? []);
+      return { ok: false, kind: f.kind, error: f.message };
+    } catch {
+      return { ok: true }; // the check itself couldn't run: let the wallet decide
+    }
   }
 
   async estimatePriceImpact(req: QuoteRequest): Promise<number> {

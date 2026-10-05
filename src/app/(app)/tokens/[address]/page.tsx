@@ -93,7 +93,7 @@ export default async function TokenPage({ params, searchParams }: { params: Prom
             symbol={token.symbol}
             signalId={signal?.id}
             liveEnabled={liveTradingAllowed()}
-            defaults={{ amountUsd: Math.max(settings.minPositionUsd, Math.min(settings.maxPositionUsd, 10)), slippageBps: Math.min(settings.maxSlippageBps, 100), maxPositionUsd: settings.maxPositionUsd }}
+            defaults={{ amountUsd: Math.max(settings.minPositionUsd, Math.min(settings.maxPositionUsd, 10)), slippageBps: Math.min(settings.maxSlippageBps, 300), maxPositionUsd: settings.maxPositionUsd }}
           />
         </div>
       </div>

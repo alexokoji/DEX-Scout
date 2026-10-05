@@ -5,6 +5,8 @@ import type { ChainId } from "@/core/types";
 import { collections, withIds } from "@/lib/db";
 
 const TTL_MS = 20_000;
+/** SOL kept back on Solana: token-account rent (~0.00204) + fees + priority fee, with margin. */
+export const SOLANA_RESERVE_SOL = 0.012;
 const cache = new Map<string, { at: number; amount: number | null; px: number }>();
 
 /** Native balance + USD price for one address on one chain; null amount = the RPC did not answer. Cached briefly so a page of stats isn't 20 RPC calls each time. */
@@ -53,5 +55,9 @@ export async function spendableUsd(userId: string, chain: ChainId): Promise<numb
   const w = await wallets.findOne({ userId, chain: family }, { sort: { createdAt: -1 } });
   if (!w) return null;
   const { amount, px } = await nativeOn(chain, w.address);
-  return amount === null || !(px > 0) ? null : amount * px;
+  if (amount === null || !(px > 0)) return null;
+  // A swap needs more than its own amount: network fees, priority fee and (Solana) the ~0.002 SOL deposit for a new token
+  // account. Spending the whole balance fails in the wallet's simulation, so keep a little back.
+  const reserveUsd = chain === "solana" ? SOLANA_RESERVE_SOL * px : CHAINS[chain].typicalFeeUsd * 3;
+  return Math.max(0, amount * px - reserveUsd);
 }

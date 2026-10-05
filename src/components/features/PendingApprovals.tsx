@@ -9,6 +9,7 @@ import { Card, CardHeader } from "@/components/ui/card";
 import { CHAINS } from "@/core/chains";
 import type { ChainId } from "@/core/types";
 import { usd } from "@/lib/format";
+import { explainWalletError } from "@/lib/txErrors";
 import { useSigner } from "./useSigner";
 
 interface Pending {
@@ -59,7 +60,7 @@ export function PendingApprovals() {
       const fr = await fetch("/api/trades/refresh", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tradeId: t.id }) });
       const fj = await fr.json();
       if (!fr.ok) {
-        toast.error(fj.violations?.[0] ?? fj.error ?? "This trade can no longer be approved");
+        toast.error(fj.violations?.[0] ?? fj.error ?? "This trade can no longer be approved", { duration: 15_000 });
         router.refresh();
         return;
       }
@@ -70,7 +71,8 @@ export function PendingApprovals() {
       else toast.success("Submitted — awaiting confirmation");
       router.refresh();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Wallet rejected the transaction");
+      console.error("[approval] wallet error", e);
+      toast.error(explainWalletError(e), { duration: 15_000 });
     } finally {
       setBusy(null);
     }

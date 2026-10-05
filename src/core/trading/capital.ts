@@ -82,7 +82,7 @@ export function checkManualAmount(s: CapitalSettings, st: CapitalState, amountUs
   if (amountUsd < s.minPositionUsd) return `Amount is below minimum position size ($${s.minPositionUsd})`;
   if (snap.availableUsd !== null && amountUsd > snap.availableUsd) {
     return st.walletUsd != null && amountUsd > st.walletUsd
-      ? `Amount exceeds your wallet balance on this chain ($${st.walletUsd.toFixed(2)})`
+      ? `Amount exceeds your wallet balance on this chain ($${st.walletUsd.toFixed(2)} after keeping a little back for network fees)`
       : `Amount exceeds available capital ($${snap.availableUsd.toFixed(2)})`;
   }
   return null;

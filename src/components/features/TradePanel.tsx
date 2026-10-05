@@ -10,6 +10,7 @@ import { Dialog, DialogContent, Input, Label } from "@/components/ui/form";
 import { CHAINS } from "@/core/chains";
 import type { ChainId } from "@/core/types";
 import { price, usd } from "@/lib/format";
+import { explainWalletError } from "@/lib/txErrors";
 import { useSigner } from "./useSigner";
 
 interface Quote {
@@ -88,7 +89,9 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
       const prep = await fetch("/api/trades/prepare", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       const pj = await prep.json();
       if (!prep.ok) {
-        toast.error(pj.violations?.[0] ?? pj.error ?? "Trade rejected");
+        // the server dry-runs the swap before the wallet opens; if only a looser slippage would work it says which, so apply it
+        if (pj.hint?.slippageBps) setSlippagePct(String(pj.hint.slippageBps / 100));
+        toast.error(pj.violations?.[0] ?? pj.error ?? "Trade rejected", { duration: 15_000 });
         return;
       }
       // The wallet shows the transaction and asks the user to approve. We never see keys.
@@ -105,7 +108,8 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
         router.refresh();
       }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Trade failed");
+      console.error("[trade] wallet error", e);
+      toast.error(explainWalletError(e), { duration: 15_000 });
     } finally {
       setBusy(false);
     }

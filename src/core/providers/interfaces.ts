@@ -76,6 +76,8 @@ export interface TransactionStatus {
 }
 
 /** Aggregator / DEX access. */
+export type PreflightResult = { ok: true } | { ok: false; kind: string; error: string };
+
 export interface DexAdapter {
   readonly name: string;
   readonly kind: DataSourceKind;
@@ -85,6 +87,12 @@ export interface DexAdapter {
    * Solana: base64 VersionedTransaction. EVM: JSON `{ chainId, approval?: {to,data}, tx: {to,data,value} }`.
    */
   buildSwapTransaction(quote: SwapQuote, userAddress: string): Promise<{ unsignedTxBase64: string }>;
+  /**
+   * Optional: dry-run an UNSIGNED transaction as the user's wallet would see it, before the wallet is ever opened, so a swap
+   * that would fail (slippage, not enough SOL, ...) is explained here instead of as a wallet "simulation failed" popup.
+   * An unreachable node must answer ok: not being able to check is not a reason to block.
+   */
+  preflight?(chain: ChainId, unsignedTx: string, userAddress: string): Promise<PreflightResult>;
   estimatePriceImpact(req: QuoteRequest): Promise<number>;
   getLiquidity(chain: ChainId, tokenAddress: string): Promise<number>;
   /**
