@@ -94,7 +94,7 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
     if (!body) return;
     setBusy(true);
     try {
-      if (!signer.ensureConnected(chain)) return;
+      if (!(await signer.ensureConnected(chain))) return;
       const prep = await fetch("/api/trades/prepare", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       const pj = await prep.json();
       if (!prep.ok) {

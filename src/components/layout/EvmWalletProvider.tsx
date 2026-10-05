@@ -49,6 +49,13 @@ interface EvmWalletApi {
 const Ctx = createContext<EvmWalletApi | null>(null);
 const LAST_KEY = "dexscout:evm-wallet";
 const LEGACY_ID = "window.ethereum";
+const readLast = (): string | null => {
+  try {
+    return localStorage.getItem(LAST_KEY);
+  } catch {
+    return null; // storage blocked
+  }
+};
 const legacyEthereum = (): Eip1193 | null => (typeof window === "undefined" ? null : ((window as unknown as { ethereum?: Eip1193 }).ethereum ?? null));
 
 /**
@@ -61,11 +68,32 @@ export function EvmWalletProvider({ children }: { children: React.ReactNode }) {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [address, setAddress] = useState<string | null>(null);
 
-  const add = useCallback((id: string, info: EvmWalletInfo, provider: Eip1193) => {
-    if (providers.current.has(id)) return;
-    providers.current.set(id, { info, provider });
-    setWallets([...providers.current.values()].map((p) => p.info));
+  /** Silently re-attach to a wallet we were connected to (eth_accounts never prompts; a locked wallet just returns nothing). */
+  const restore = useCallback((id: string) => {
+    const p = providers.current.get(id)?.provider;
+    if (!p) return;
+    p.request({ method: "eth_accounts" })
+      .then((a) => {
+        const first = (a as string[])[0];
+        if (first) {
+          setActiveId(id);
+          setAddress((cur) => cur ?? first);
+        }
+      })
+      .catch(() => {});
   }, []);
+
+  const add = useCallback(
+    (id: string, info: EvmWalletInfo, provider: Eip1193) => {
+      if (providers.current.has(id)) return;
+      providers.current.set(id, { info, provider });
+      setWallets([...providers.current.values()].map((p) => p.info));
+      // Wallets announce at their own pace (MetaMask can be later than a fixed timer). Restore the moment the one we
+      // were using shows up, instead of only if it happened to be there within the first 400ms.
+      if (readLast() === id) restore(id);
+    },
+    [restore],
+  );
 
   const providerFor = useCallback((id: string | null): Eip1193 | null => {
     if (id && providers.current.has(id)) return providers.current.get(id)!.provider;
@@ -84,28 +112,14 @@ export function EvmWalletProvider({ children }: { children: React.ReactNode }) {
     const legacyTimer = setTimeout(() => {
       const eth = legacyEthereum();
       if (eth && providers.current.size === 0) add(LEGACY_ID, { id: LEGACY_ID, name: "Browser wallet", icon: null }, eth);
-      // silently restore the last connection (eth_accounts never prompts)
-      let last: string | null = null;
-      try { last = localStorage.getItem(LAST_KEY); } catch { /* storage blocked */ }
-      const id = last && providers.current.has(last) ? last : null;
-      const p = id ? providers.current.get(id)!.provider : null;
-      if (id && p) {
-        p.request({ method: "eth_accounts" })
-          .then((a) => {
-            const first = (a as string[])[0];
-            if (first) {
-              setActiveId(id);
-              setAddress(first);
-            }
-          })
-          .catch(() => {});
-      }
+      const last = readLast();
+      if (last && providers.current.has(last)) restore(last);
     }, 400);
     return () => {
       clearTimeout(legacyTimer);
       window.removeEventListener("eip6963:announceProvider", onAnnounce);
     };
-  }, [add]);
+  }, [add, restore]);
 
   // follow account switches made inside the wallet itself
   useEffect(() => {
@@ -118,7 +132,9 @@ export function EvmWalletProvider({ children }: { children: React.ReactNode }) {
 
   const connect = useCallback(
     async (walletId?: string) => {
-      const id = walletId ?? activeId ?? wallets[0]?.id ?? null;
+      // an explicit choice, else the wallet already in use, else the one used last time, else the first one found
+      const last = readLast();
+      const id = walletId ?? activeId ?? (last && providers.current.has(last) ? last : null) ?? wallets[0]?.id ?? null;
       const p = providerFor(id);
       if (!p) throw new Error("No EVM-compatible wallet found in this browser. Install a wallet such as MetaMask, Rabby, Phantom or Coinbase Wallet.");
       const accounts = (await p.request({ method: "eth_requestAccounts" })) as string[];

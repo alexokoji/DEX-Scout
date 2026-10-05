@@ -47,7 +47,7 @@ export function AutoSellPanel({ positionId, chain, orders }: { positionId: strin
   }
 
   async function run(fn: () => Promise<void>, ok: string) {
-    if (!signer.ensureConnected(chain as ChainId)) return;
+    if (!(await signer.ensureConnected(chain as ChainId))) return;
     setBusy(true);
     try {
       await fn();

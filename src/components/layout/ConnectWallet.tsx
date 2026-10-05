@@ -1,12 +1,13 @@
 "use client";
 
 import { useWallet } from "@solana/wallet-adapter-react";
-import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badges";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/form";
 import { shortAddr } from "@/lib/format";
+import { connectSolanaWallet as connectSolana, type SolLike } from "@/lib/solanaConnect";
 import { useEvmWallet } from "./EvmWalletProvider";
 
 /**
@@ -28,6 +29,12 @@ const norm = (n: string) => n.toLowerCase().replace(/\s*wallet\s*$/, "").trim();
 
 interface ConnectUi {
   open(): void;
+  /**
+   * Connect what an action needs, without a dead-end "please connect": EVM re-uses the wallet already in use (or the last one),
+   * Solana goes through the SAME wallet when it supports Solana (MetaMask, Phantom, Coinbase...), else the dialog opens.
+   * Resolves true once that family is connected.
+   */
+  connectFamily(family: "evm" | "solana"): Promise<boolean>;
 }
 const Ctx = createContext<ConnectUi | null>(null);
 
@@ -47,6 +54,14 @@ export function ConnectWalletProvider({ children }: { children: React.ReactNode 
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const sol = useWallet();
   const evm = useEvmWallet();
+  // the wallet-adapter state changes across renders; async connect code needs the CURRENT one, not the one it started with
+  const solRef = useRef(sol);
+  useEffect(() => {
+    solRef.current = sol;
+  });
+
+  /** See lib/solanaConnect.ts: waits for the provider to bind the wallet before connecting, so the app's Solana state follows. */
+  const connectSolanaWallet = useCallback((name: string) => connectSolana(() => solRef.current as unknown as SolLike, name), []);
 
   const entries = useMemo<Entry[]>(() => {
     const map = new Map<string, Entry>();
@@ -82,10 +97,7 @@ export function ConnectWalletProvider({ children }: { children: React.ReactNode 
       }
       if (e.solName) {
         try {
-          const w = sol.wallets.find((x) => x.adapter.name === e.solName);
-          if (!w) throw new Error("Solana wallet not available");
-          sol.select(w.adapter.name);
-          await w.adapter.connect();
+          await connectSolanaWallet(e.solName);
           connected.push("Solana");
         } catch (err) {
           failed.push(`Solana: ${friendly(err)}`);
@@ -97,17 +109,53 @@ export function ConnectWalletProvider({ children }: { children: React.ReactNode 
       else if (failed.length) toast.message(`Some chains were skipped — ${failed.join("; ")}`);
       if (connected.length) setOpen(false);
     },
-    [evm, sol],
+    [evm, connectSolanaWallet],
   );
 
-  const ui = useMemo<ConnectUi>(() => ({ open: () => setOpen(true) }), []);
+  const evmRef = useRef(evm);
+  useEffect(() => {
+    evmRef.current = evm;
+  });
+  const entriesRef = useRef(entries);
+  useEffect(() => {
+    entriesRef.current = entries;
+  });
+
+  const connectFamily = useCallback(
+    async (family: "evm" | "solana"): Promise<boolean> => {
+      try {
+        if (family === "evm") {
+          if (evmRef.current.address) return true;
+          await evmRef.current.connect();
+          return true;
+        }
+        if (solRef.current.connected) return true;
+        // prefer the wallet already connected for EVM if it also supports Solana, then the one selected for Solana
+        const active = evmRef.current.activeWallet ? norm(evmRef.current.activeWallet.name) : null;
+        const via = entriesRef.current.find((e) => e.key === active && e.solName)?.solName ?? solRef.current.wallet?.adapter.name ?? null;
+        if (!via) {
+          setOpen(true);
+          return false;
+        }
+        await connectSolanaWallet(via);
+        return true;
+      } catch (err) {
+        toast.error(friendly(err));
+        setOpen(true);
+        return false;
+      }
+    },
+    [connectSolanaWallet],
+  );
+
+  const ui = useMemo<ConnectUi>(() => ({ open: () => setOpen(true), connectFamily }), [connectFamily]);
   const anyConnected = !!evm.address || sol.connected;
 
   return (
     <Ctx.Provider value={ui}>
       {children}
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent title={anyConnected ? "Your wallet" : "Connect wallet"} description="One connection covers every chain the wallet supports — Solana, Ethereum, Base, BNB Chain, Arbitrum and Polygon.">
+        <DialogContent title={anyConnected ? "Your wallet" : "Connect wallet"} description="One connection covers every chain the wallet supports — Solana and all the EVM chains.">
           <div className="space-y-4">
             {anyConnected && (
               <div className="space-y-2 rounded-md border border-border bg-surface2 p-3 text-xs">

@@ -33,12 +33,13 @@ export function useSigner() {
       return "wallet";
     },
     /** True when the wallet needed for `chain` is connected; otherwise opens the single connect dialog and says why. */
-    ensureConnected(chain: ChainId): boolean {
-      const ok = CHAINS[chain].family === "evm" ? !!evm.address : sol.connected;
-      if (!ok) {
-        toast.error(`Connect a wallet that supports ${CHAINS[chain].name} first`);
-        connectUi.open();
-      }
+    async ensureConnected(chain: ChainId): Promise<boolean> {
+      const family = CHAINS[chain].family === "evm" ? "evm" : "solana";
+      if (family === "evm" ? evm.address : sol.connected) return true;
+      // not connected (yet, or the wallet locked / was restored late): connect it now through the wallet already in use
+      // (one prompt in MetaMask), rather than telling the user to go and do it; the dialog opens only if that isn't possible
+      const ok = await connectUi.connectFamily(family);
+      if (!ok) toast.error(`Connect a wallet that supports ${CHAINS[chain].name} to continue`);
       return ok;
     },
     /** Auto-sell on EVM: switch to the chain, send the one-time token approval if needed, then sign each order (gasless). */

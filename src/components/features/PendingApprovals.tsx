@@ -52,7 +52,7 @@ export function PendingApprovals() {
 
   async function approve(t: Pending) {
     const chain = t.token.chain as ChainId;
-    if (!signer.ensureConnected(chain)) return;
+    if (!(await signer.ensureConnected(chain))) return;
     setBusy(t.id);
     try {
       // A queued trade's quote and (on Solana) blockhash go stale while it waits, and wallets refuse or fail to
