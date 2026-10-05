@@ -12,6 +12,8 @@ import { DexScreenerDataProvider } from "../dexscreener";
 import { getJson, withTimeout } from "../http";
 import type { ChainAdapter, DexAdapter, PreflightResult, QuoteRequest, SwapSimulation, TransactionStatus } from "../interfaces";
 import { explainSolanaSimulation } from "./errors";
+import { looksLikeHoneypotFlow } from "../../analysis/honeypot";
+import { sellCheckInconclusive } from "../simFailure";
 
 const SOL_MINT = CHAINS.solana.wrappedNative;
 const dexData = () => new DexScreenerDataProvider({ svm: solanaOnChain, evm: async () => { throw new Error("not an EVM adapter"); } });
@@ -166,7 +168,7 @@ export async function solanaOnChain(_chain: ChainId, address: string, snapshot: 
     verified: false,
     topHolderPct,
     top10HolderPct: top10,
-    sellSimulationOk: snapshot.sells1h > 0 || snapshot.buys1h < 20,
+    sellSimulationOk: !looksLikeHoneypotFlow(snapshot),
     metadataAnomalies: anomalies,
     largeBuys1h: 0,
     largeSells1h: 0,
@@ -224,7 +226,8 @@ export class JupiterDexAdapter implements DexAdapter {
       outputMint,
       inputAmountUsd: req.amountUsd,
       outputAmount,
-      effectivePriceUsd: req.side === "BUY" ? req.amountUsd / outputAmount : outputAmount / (req.tokenAmount ?? 1),
+      // per-token price; a sell with no explicit token amount sold inAmount raw units (the pre-buy dry run)
+      effectivePriceUsd: req.side === "BUY" ? req.amountUsd / outputAmount : outputAmount / (req.tokenAmount ?? inAmount / 10 ** decimals),
       priceImpactPct: Math.abs(Number(q.priceImpactPct)) * 100,
       slippageBps: req.slippageBps,
       minReceived: outputAmount * (1 - req.slippageBps / 10_000),
@@ -285,7 +288,8 @@ export class JupiterDexAdapter implements DexAdapter {
       const q = await this.getQuote(req);
       return q.outputAmount > 0 ? { ok: true } : { ok: false, error: "No route / zero output" };
     } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : "Quote failed" };
+      const error = e instanceof Error ? e.message : "Quote failed";
+      return { ok: false, error, unknown: sellCheckInconclusive(error) };
     }
   }
 

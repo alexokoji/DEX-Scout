@@ -9,6 +9,7 @@ import { encodeFunctionData, erc20Abi, getAddress } from "viem";
 import { CHAINS, NATIVE_EVM } from "../../chains";
 import type { ChainId, SwapQuote } from "../../types";
 import { DexScreenerDataProvider } from "../dexscreener";
+import { sellCheckInconclusive } from "../simFailure";
 import { getJson } from "../http";
 import type { DexAdapter, QuoteRequest, SwapSimulation, TransactionStatus } from "../interfaces";
 import { evmOnChain, nativeUsd, tokenDecimals, ZeroXDexAdapter } from "./evmProviders";
@@ -167,7 +168,11 @@ export class MultiEvmDexAdapter implements DexAdapter {
         const out = await agg.route(input);
         if (out.buyAmount <= BigInt(0)) throw new Error("zero output");
         const outputAmount = buying ? Number(out.buyAmount) / 10 ** dec : (Number(out.buyAmount) / 1e18) * nat;
-        const effective = buying ? req.amountUsd / outputAmount : outputAmount / (req.tokenAmount ?? 1);
+        // price per token. A sell with no explicit token amount (the pre-buy "can it be sold?" dry run) sold sellAmount tokens;
+        // dividing by 1 instead made every such quote look absurdly far from the market, which the sanity check below then
+        // refused: every EVM token failed "sell simulation".
+        const tokensSold = req.tokenAmount ?? Number(sellAmount) / 10 ** dec;
+        const effective = buying ? req.amountUsd / outputAmount : outputAmount / tokensSold;
         const signedImpact = buying ? (effective / snap.priceUsd - 1) * 100 : (1 - effective / snap.priceUsd) * 100;
         // A fill far BETTER than the market is not a bargain, it's a sign something upstream is wrong (a bad native price sizes the
         // order wrongly, a wrong pool, a unit mix-up). Refuse it rather than sign it.
@@ -237,7 +242,8 @@ export class MultiEvmDexAdapter implements DexAdapter {
       const q = await this.getQuote(req);
       return q.outputAmount > 0 ? { ok: true } : { ok: false, error: "No route / zero output" };
     } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : "Quote failed" };
+      const error = e instanceof Error ? e.message : "Quote failed";
+      return { ok: false, error, unknown: sellCheckInconclusive(error) };
     }
   }
 

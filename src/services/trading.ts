@@ -169,15 +169,25 @@ export async function quoteTrade(userId: string, input: PrepareTradeInput, autom
   const sim = await p.dex.simulateSwap({ chain: input.chain, side: "SELL", tokenAddress: token.address, amountUsd: input.amountUsd, slippageBps: input.slippageBps });
   const wallet = await resolveWallet(userId, input.chain, input.wallet); // throws a clear 409 if the connected wallet isn't verified
   const state = await capitalState(userId, input.environment, undefined, input.chain, wallet?.address);
-  const candidate = toCandidate(analysis, quote, sim.ok);
+  // A sell check that FAILED to run (a rate-limited or slow provider) is not the same as "this token can't be sold": only the
+  // latter blocks. The former is flagged, and the swap itself is dry-run again before the wallet is ever opened.
+  const sellUnverified = !sim.ok && !!sim.unknown;
+  const candidate = toCandidate(analysis, quote, sim.ok || sellUnverified);
   const violations = evaluateEntryRules(settings, state, input, candidate, automatic);
+  if (sellUnverified && automatic) violations.push("Couldn't verify the token can be sold right now (the price service didn't answer); the bot will retry rather than guess");
   // How far is what we'd actually pay from the price the app has been showing (and, for the bot, the price it signalled on)?
   const pricing = priceDrift(token.priceUsd, quote.effectivePriceUsd, token.lastScannedAt);
   // the live snapshot we just analysed is newer than what's stored: bring the displayed price up to date
   if (Date.now() - analysis.computedAt.getTime() < 2 * 60_000 && analysis.snapshot.priceUsd > 0) await applyLiveSnapshot(token._id, analysis.snapshot).catch(() => {});
   if (automatic && pricing.driftPct > AUTO_MAX_CHASE_PCT) violations.push(`Price already moved ${pricing.driftPct.toFixed(0)}% above the listed price (${fmtPrice(token.priceUsd)} → ${fmtPrice(quote.effectivePriceUsd)}); not chasing it`);
   // manual buys get the user's own preference thresholds as warnings; only the bot is blocked by them
-  const warnings = automatic ? [] : [...entryWarnings(candidate, settings), ...(pricing.warning ? [pricing.warning] : [])];
+  const warnings = automatic
+    ? []
+    : [
+        ...entryWarnings(candidate, settings),
+        ...(pricing.warning ? [pricing.warning] : []),
+        ...(sellUnverified ? ["Couldn't double-check that this token can be sold back right now (the price service was busy). The swap itself is checked again before your wallet opens."] : []),
+      ];
   const walletInfo = wallet ? { address: wallet.address, balanceUsd: state.walletBalanceUsd ?? null, spendableUsd: state.walletUsd ?? null, reserveUsd: state.reserveUsd ?? null } : null;
   return { quote, pricing, wallet: walletInfo, violations, warnings, analysis: { riskLevel: analysis.safety.riskLevel, warnings: analysis.safety.warnings, criticalIssues: analysis.safety.criticalIssues }, source: p.mock ? ("MOCK" as const) : ("LIVE" as const) };
 }

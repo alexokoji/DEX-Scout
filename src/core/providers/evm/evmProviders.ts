@@ -44,6 +44,8 @@ export async function evmRpc<T>(chain: ChainId, method: string, params: unknown[
   throw last;
 }
 
+import { looksLikeHoneypotFlow } from "../../analysis/honeypot";
+import { sellCheckInconclusive } from "../simFailure";
 import { nativeUsdFromPairs, type DsNativePair } from "./nativePrice";
 
 const priceCache = new Map<ChainId, { at: number; usd: number }>();
@@ -130,7 +132,7 @@ export async function evmOnChain(chain: ChainId, address: string, snapshot: Toke
     verified: false,
     topHolderPct: 0,
     top10HolderPct: 0,
-    sellSimulationOk: snapshot.sells1h > 0 || snapshot.buys1h < 20,
+    sellSimulationOk: !looksLikeHoneypotFlow(snapshot),
     metadataAnomalies: anomalies,
     largeBuys1h: 0,
     largeSells1h: 0,
@@ -259,7 +261,8 @@ export class ZeroXDexAdapter implements DexAdapter {
       const q = await this.getQuote(req);
       return q.outputAmount > 0 ? { ok: true } : { ok: false, error: "No route / zero output" };
     } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : "Quote failed" };
+      const error = e instanceof Error ? e.message : "Quote failed";
+      return { ok: false, error, unknown: sellCheckInconclusive(error) };
     }
   }
 

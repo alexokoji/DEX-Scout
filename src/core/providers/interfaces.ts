@@ -66,6 +66,8 @@ export interface QuoteRequest {
 export interface SwapSimulation {
   ok: boolean;
   error?: string;
+  /** true when the check could not be run or was inconclusive (a busy provider, a data hiccup): NOT evidence the token can't be sold */
+  unknown?: boolean;
   unitsConsumed?: number;
 }
 
