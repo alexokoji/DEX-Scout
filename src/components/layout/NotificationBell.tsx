@@ -94,18 +94,19 @@ export function NotificationBell() {
   }
 
   return (
-    <div className="relative" ref={box}>
+    // On a phone the panel anchors to the (sticky) header and spans the screen with side margins; from `sm` up it hangs under the bell.
+    <div className="sm:relative" ref={box}>
       <button onClick={toggle} className="relative rounded-md p-2 text-muted hover:text-foreground" aria-label={`Notifications${unread ? `, ${unread} unread` : ""}`}>
         <Bell className="h-4 w-4" />
         {unread > 0 && <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-warn px-1 text-[10px] font-semibold text-black">{unread > 9 ? "9+" : unread}</span>}
       </button>
       {open && (
-        <div className="absolute right-0 z-40 mt-2 w-80 max-w-[90vw] overflow-hidden rounded-lg border border-border bg-surface shadow-lg">
+        <div className="absolute inset-x-3 top-full z-40 mt-2 overflow-hidden rounded-lg border border-border bg-surface shadow-lg sm:inset-x-auto sm:right-0 sm:w-80">
           <div className="flex items-center justify-between border-b border-border px-3 py-2 text-xs">
             <span className="font-medium">Notifications</span>
             <Link href="/settings/notifications" onClick={() => setOpen(false)} className="text-accent">Phone alerts</Link>
           </div>
-          <div className="max-h-96 divide-y divide-border overflow-y-auto">
+          <div className="max-h-[min(24rem,60vh)] divide-y divide-border overflow-y-auto">
             {items.length === 0 && <div className="px-3 py-6 text-center text-xs text-muted">Nothing yet. You&apos;ll be told here when a buy or sell needs your signature, a trade confirms or fails, or a position is in trouble.</div>}
             {items.map((i) => (
               <Link key={i.id} href={i.url} onClick={() => setOpen(false)} className={cn("block px-3 py-2 text-xs hover:bg-surface2", !i.readAt && "bg-surface2/60")}>
