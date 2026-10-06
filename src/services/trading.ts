@@ -527,6 +527,9 @@ export async function reconcileLiveTrade(tradeId: string) {
   // one-cent fee turned a +12% sale into +2%). Falls back to the quote, less the swap's own fee, when the chain can't be read.
   const sellProceedsUsd = insp && nativeUsdNow > 0 ? Math.max(0, insp.nativeDelta + (insp.feeNative ?? 0)) * nativeUsdNow : trade.inputUsd - trade.feesUsd;
 
+  // what the transaction did to the wallet's own balance: shown beside the price-based profit, so the two can be reconciled with the wallet
+  const walletChange = insp && insp.nativeDelta !== 0 && nativeUsdNow > 0 ? { nativeDelta: insp.nativeDelta, feeNative: insp.feeNative ?? 0, depositNative: insp.depositNative ?? 0, nativeUsd: nativeUsdNow } : null;
+
   const positions = await collections.positions();
   const positionEvents = await collections.positionEvents();
   const tradingAccounts = await collections.tradingAccounts();
@@ -546,7 +549,7 @@ export async function reconcileLiveTrade(tradeId: string) {
     booked = true;
     const settings = await getSettings(trade.userId);
     const now = new Date();
-    await trades.updateOne({ _id: tradeId }, { $set: { "transaction.status": "CONFIRMED", "transaction.confirmedAt": now, "transaction.slot": st.slot ?? null } }, { session });
+    await trades.updateOne({ _id: tradeId }, { $set: { "transaction.status": "CONFIRMED", "transaction.confirmedAt": now, "transaction.slot": st.slot ?? null, ...(walletChange ? { walletChange } : {}) } }, { session });
     if (trade.side === "BUY") {
       const positionId = newId();
       const signalId = (trade.quote as { signalId?: string | null } | null)?.signalId ?? null;

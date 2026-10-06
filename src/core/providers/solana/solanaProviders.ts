@@ -13,6 +13,7 @@ import { DexScreenerDataProvider } from "../dexscreener";
 import { getJson, withTimeout } from "../http";
 import type { ChainAdapter, DexAdapter, PreflightResult, QuoteRequest, SwapSimulation, TransactionStatus } from "../interfaces";
 import { explainSolanaSimulation } from "./errors";
+import { ACCOUNT_SIZE, associatedTokenAddress, depositChange, TOKEN_PROGRAM } from "./tokenAccounts";
 import { looksLikeHoneypotFlow } from "../../analysis/honeypot";
 import { fetchTrustFacts } from "../trust";
 import { sellCheckInconclusive } from "../simFailure";
@@ -296,12 +297,19 @@ export class JupiterDexAdapter implements DexAdapter {
     const micro = poolMicro ?? costs?.microLamportsPerCu ?? null;
     // the fee is that price x the compute units this swap will use, which Jupiter sizes by simulating this exact route for this wallet:
     // so it needs the wallet. Without one (a pre-buy "can it be sold" check) the fee is simply not worked out.
-    const units = req.wallet ? await this.computeUnitLimit(q, req.wallet).catch(() => null) : null;
+    const sizing = req.wallet ? await this.swapSizing(q, req.wallet).catch(() => null) : null;
+    const units = sizing?.units ?? null;
     const appliedMicro = micro !== null && units !== null ? capMicroLamportsPerCu(micro, units, cap) : undefined;
     const priorityKnown = appliedMicro !== undefined && units !== null;
     // the base fee as the chain reports it (getFeeForMessage); if it can't be read the fee is unknown, not a remembered figure
     const networkFeeUsd = costs ? (costs.baseFeeLamports / 1e9) * sol : 0;
     const priorityFeeUsd = priorityKnown ? (priorityLamports(appliedMicro, units) / 1e9) * sol : 0;
+    // A first buy of a token opens its token account and locks a deposit in it (returned when the empty account is closed). Read from the chain.
+    let tokenAccountDepositUsd: number | null | undefined;
+    if (req.side === "BUY") {
+      const lamports = req.wallet ? await this.depositLamports(req.wallet, req.tokenAddress, sizing?.tx ?? null).catch(() => null) : null;
+      tokenAccountDepositUsd = lamports === null ? null : (lamports / 1e9) * sol;
+    }
     return {
       chain: "solana",
       inputMint,
@@ -318,6 +326,7 @@ export class JupiterDexAdapter implements DexAdapter {
       priorityFeeUsd,
       priorityMicroLamportsPerCu: appliedMicro,
       platformFeeUsd: 0,
+      tokenAccountDepositUsd,
       route: (q.routePlan ?? []).map((r) => r.swapInfo?.label ?? "?"),
       expiresAt: new Date(Date.now() + 20_000),
       raw: q,
@@ -333,17 +342,51 @@ export class JupiterDexAdapter implements DexAdapter {
     });
   }
 
-  private unitsCache = new Map<string, { at: number; units: number }>();
-  /** The compute units Jupiter sizes for this exact route and wallet (it simulates the transaction to get them). */
-  private async computeUnitLimit(q: JupQuote, wallet: string): Promise<number | null> {
+  private sizingCache = new Map<string, { at: number; units: number; tx: string }>();
+  /** The compute units Jupiter sizes for this exact route and wallet (it simulates the transaction to get them), and the transaction it built. */
+  private async swapSizing(q: JupQuote, wallet: string): Promise<{ units: number; tx: string } | null> {
     const key = `${q.inputMint}:${q.outputMint}:${wallet}`;
-    const hit = this.unitsCache.get(key);
-    if (hit && Date.now() - hit.at < 30_000) return hit.units;
+    const hit = this.sizingCache.get(key);
+    if (hit && Date.now() - hit.at < 30_000) return hit;
     const j = await this.swapCall(q, wallet);
     if (!(typeof j.computeUnitLimit === "number" && j.computeUnitLimit > 0)) return null;
-    if (this.unitsCache.size > 200) this.unitsCache.clear();
-    this.unitsCache.set(key, { at: Date.now(), units: j.computeUnitLimit });
-    return j.computeUnitLimit;
+    if (this.sizingCache.size > 200) this.sizingCache.clear();
+    const entry = { at: Date.now(), units: j.computeUnitLimit, tx: j.swapTransaction };
+    this.sizingCache.set(key, entry);
+    return entry;
+  }
+
+  private depositCache = new Map<string, { at: number; lamports: number }>();
+  /**
+   * What a buy of this token would lock in a new token account for this wallet, in lamports: 0 when the wallet already has one.
+   * Read off the chain by running the built swap and looking at what the new account ends up holding; if that can't be run, the
+   * chain's own rent-exempt minimum for an ordinary token account; if neither can be read, unknown (null), never a remembered figure.
+   */
+  private async depositLamports(wallet: string, mint: string, swapTx: string | null): Promise<number | null> {
+    const key = `${wallet}:${mint}`;
+    const hit = this.depositCache.get(key);
+    if (hit && Date.now() - hit.at < 30_000) return hit.lamports;
+    const remember = (lamports: number) => {
+      if (this.depositCache.size > 200) this.depositCache.clear();
+      this.depositCache.set(key, { at: Date.now(), lamports });
+      return lamports;
+    };
+    const mintInfo = await solanaTry((c) => c.getAccountInfo(new PublicKey(mint)));
+    if (!mintInfo) return null;
+    const ata = associatedTokenAddress(new PublicKey(wallet), new PublicKey(mint), mintInfo.owner);
+    if (await solanaTry((c) => c.getAccountInfo(ata))) return remember(0);
+    if (swapTx) {
+      try {
+        const tx = VersionedTransaction.deserialize(Buffer.from(swapTx, "base64"));
+        const res = await solanaTry((c) => c.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true, commitment: "processed", accounts: { encoding: "base64", addresses: [ata.toBase58()] } }), 8_000);
+        const held = res.value.accounts?.[0]?.lamports;
+        if (typeof held === "number" && held > 0) return remember(held);
+      } catch {
+        /* fall through to the chain's minimum */
+      }
+    }
+    if (mintInfo.owner.equals(TOKEN_PROGRAM)) return remember(await solanaTry((c) => c.getMinimumBalanceForRentExemption(ACCOUNT_SIZE)));
+    return null;
   }
 
   async buildSwapTransaction(quote: SwapQuote, userAddress: string) {
@@ -404,7 +447,8 @@ export class JupiterDexAdapter implements DexAdapter {
       (arr ?? []).filter((b) => b.owner === owner && b.mint === mint).reduce((s, b) => s + (b.uiTokenAmount.uiAmount ?? 0), 0);
     const idx = keys.findIndex((k) => k.pubkey.toBase58() === owner);
     const nativeDelta = idx >= 0 ? (tx.meta.postBalances[idx] - tx.meta.preBalances[idx]) / 1e9 : 0;
-    return { signer, tokenDelta: bal(tx.meta.postTokenBalances) - bal(tx.meta.preTokenBalances), nativeDelta, feeNative: (tx.meta.fee ?? 0) / 1e9 };
+    const dep = depositChange(tx.meta, owner);
+    return { signer, tokenDelta: bal(tx.meta.postTokenBalances) - bal(tx.meta.preTokenBalances), nativeDelta, feeNative: (tx.meta.fee ?? 0) / 1e9, depositNative: (dep.locked - dep.returned) / 1e9 };
   }
 
   async getTransactionStatus(_chain: ChainId, signature: string): Promise<TransactionStatus> {

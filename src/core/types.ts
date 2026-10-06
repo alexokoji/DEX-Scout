@@ -323,6 +323,11 @@ export interface SwapQuote {
   /** Solana: the fee-market price per compute unit (micro-lamports) this quote was priced at, already held to the user's own cap; the build prices the units it gets with it */
   priorityMicroLamportsPerCu?: number;
   platformFeeUsd: number;
+  /**
+   * Solana buy: the deposit a new token account will lock (0 when the wallet already holds the token). It is not a cost: the chain
+   * returns it when the empty account is closed. null = couldn't be read; undefined = not applicable (a sell, another chain).
+   */
+  tokenAccountDepositUsd?: number | null;
   route: string[];
   expiresAt: Date;
   /** provider-specific payload needed to build a transaction (opaque) */

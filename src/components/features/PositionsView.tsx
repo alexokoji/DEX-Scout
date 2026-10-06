@@ -30,6 +30,8 @@ interface PV {
   signal: { id: string; type: string; score: number } | null;
   targets: { level: number; gainPct: number; sellPct: number }[];
   autoSells?: AutoSellView[];
+  /** what the wallet itself did over this position's transactions (see core/trading/walletResult.ts); null when not all of them were read from the chain */
+  wallet?: { changeUsd: number; feesUsd: number; depositHeldUsd: number; swapNetUsd: number } | null;
   metrics: { currentValueUsd: number; pricePnlUsd: number; pricePnlPct: number; unrealizedPnlUsd: number; pnlPct: number; nextTargetLevel: number | null; nextTargetGainPct: number | null; targetProgress: number };
 }
 
@@ -84,6 +86,8 @@ export function PositionsView({ positions, actions = true }: { positions: PV[]; 
               </div>
             </div>
 
+            {p.environment === "LIVE" && p.wallet && (closed || p.wallet.depositHeldUsd > 0) && <WalletLine closed={closed} w={p.wallet} />}
+
             {!closed && actions && p.environment === "LIVE" && <AutoSellPanel positionId={p.id} chain={p.token.chain} orders={p.autoSells ?? []} />}
 
             {!closed && (notes.positives?.length || notes.negatives?.length || notes.emergencyReasons?.length) ? (
@@ -96,6 +100,24 @@ export function PositionsView({ positions, actions = true }: { positions: PV[]; 
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/** The wallet's own result next to the price-based profit, so the two can be reconciled with what the wallet shows. */
+function WalletLine({ closed, w }: { closed: boolean; w: NonNullable<PV["wallet"]> }) {
+  return (
+    <div className="mt-3 rounded-md border border-border bg-surface2 px-3 py-2 text-[11px] leading-relaxed text-muted">
+      {closed ? (
+        <>
+          <span className="font-medium text-foreground">Your wallet: {usdPnl(w.changeUsd)}</span> in total. That is the swaps {usdPnl(w.swapNetUsd)}, network fees {usdPnl(-w.feesUsd)}
+          {w.depositHeldUsd > 0 ? `, and ${usd(w.depositHeldUsd, 4)} still held as a token-account deposit (not lost: it comes back when the empty account is closed)` : ""}. The profit above is the price change only, so it leaves out the fees and the deposit.
+        </>
+      ) : (
+        <>
+          <span className="font-medium text-foreground">Token-account deposit held: {usd(w.depositHeldUsd, 4)}.</span> Not a cost: the chain locked it when this token&apos;s account was opened, and returns it when the empty account is closed after you sell. Your wallet is that much lower until then.
+        </>
+      )}
     </div>
   );
 }

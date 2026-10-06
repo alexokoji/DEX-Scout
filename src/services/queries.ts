@@ -4,6 +4,7 @@ import { capitalSnapshot } from "@/core/trading/capital";
 import { PRICE_MAX_AGE_MS } from "@/core/config";
 import { TRUST_RANK, TRUST_TIERS, type TrustTier } from "@/core/types";
 import { computeMetrics } from "@/core/trading/positions";
+import { walletResult } from "@/core/trading/walletResult";
 import { collections, withId, withIds } from "@/lib/db";
 import type { Environment, RiskLevel, SignalDoc, TokenDoc } from "@/lib/models";
 import { getSettings } from "./settings";
@@ -175,6 +176,16 @@ export async function positionViews(userId: string, environment?: Environment, i
   const signalById = new Map(signals.map((s) => [s._id, { id: s._id, type: s.type, score: s.score, createdAt: s.createdAt }]));
 
   const autoSells = await autoSellsFor(withToken.map((p) => p.id));
+  const ids = withToken.map((p) => p.id);
+  const tradeRows = ids.length ? await (await collections.trades()).find({ positionId: { $in: ids }, status: "CONFIRMED" }, { projection: { positionId: 1, walletChange: 1 } }).toArray() : [];
+  const reclaims = ids.length ? await (await collections.positionEvents()).find({ positionId: { $in: ids }, type: "DEPOSIT_RECLAIMED" }, { projection: { positionId: 1, data: 1 } }).toArray() : [];
+  const tradesBy = new Map<string, typeof tradeRows>();
+  for (const t of tradeRows) tradesBy.set(t.positionId!, [...(tradesBy.get(t.positionId!) ?? []), t]);
+  const reclaimedUsd = new Map<string, number>();
+  for (const e of reclaims) {
+    const d = (e.data ?? {}) as { refundNative?: number; nativeUsd?: number };
+    reclaimedUsd.set(e.positionId, (reclaimedUsd.get(e.positionId) ?? 0) + (d.refundNative ?? 0) * (d.nativeUsd ?? 0));
+  }
   return withToken.map((p) => {
     const targets = p.targetsSnapshot ?? [];
     const m = computeMetrics(
@@ -182,7 +193,7 @@ export async function positionViews(userId: string, environment?: Environment, i
       p.currentPriceUsd,
       targets,
     );
-    return { ...p, autoSells: (autoSells.get(p.id) ?? []).map(({ _id, ...o }) => ({ id: _id, ...o })), targets, signal: p.sourceSignalId ? (signalById.get(p.sourceSignalId) ?? null) : null, metrics: m };
+    return { ...p, autoSells: (autoSells.get(p.id) ?? []).map(({ _id, ...o }) => ({ id: _id, ...o })), targets, signal: p.sourceSignalId ? (signalById.get(p.sourceSignalId) ?? null) : null, metrics: m, wallet: walletResult(tradesBy.get(p.id) ?? [], reclaimedUsd.get(p.id) ?? 0) };
   });
 }
 

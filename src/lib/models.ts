@@ -23,6 +23,7 @@ import type {
   TrustTier,
 } from "@/core/types";
 import type { Projection } from "@/core/analysis/projection";
+import type { WalletChange } from "@/core/trading/walletResult";
 import type { AiAnalysis } from "@/core/ai/schema";
 
 export type Json = Record<string, unknown> | unknown[] | string | number | boolean | null;
@@ -362,6 +363,8 @@ export interface TradeDoc {
   feesUsd: number;
   networkFeeUsd: number;
   realizedPnlUsd: number | null;
+  /** what this trade did to the wallet's own balance, read from the confirmed transaction (fee and any token-account deposit included); absent on older trades and on sales a venue filled */
+  walletChange?: WalletChange | null;
   quote: Json;
   failureReason: string | null;
   expiresAt: Date | null;

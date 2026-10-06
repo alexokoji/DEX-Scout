@@ -2,6 +2,7 @@ import { LiveRefresh } from "@/components/features/LiveRefresh";
 import { NoStopLossNotice } from "@/components/features/NoStopLossNotice";
 import { PageHeader } from "@/components/features/PageHeader";
 import { PositionsView } from "@/components/features/PositionsView";
+import { ReclaimCard } from "@/components/features/ReclaimCard";
 import { Card, CardHeader } from "@/components/ui/card";
 import { requireUser } from "@/lib/auth";
 import { collections, withIds } from "@/lib/db";
@@ -32,6 +33,7 @@ export default async function PositionsPage() {
     <div className="space-y-4">
       <PageHeader title="Positions" subtitle="Every open position is re-analysed continuously by the position monitor worker." right={<LiveRefresh seconds={10} />} />
       <NoStopLossNotice />
+      <ReclaimCard />
       <Card>
         <CardHeader title={`Open (${open.length})`} />
         <PositionsView positions={open as never} />

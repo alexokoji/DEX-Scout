@@ -127,6 +127,8 @@ export interface TransactionInspection {
   nativeDelta: number;
   /** the network fee the transaction paid, in the native coin (already inside nativeDelta); undefined when unknown */
   feeNative?: number;
+  /** Solana: native coin this transaction locked into token accounts it opened (positive) or got back from accounts it closed (negative); already inside nativeDelta */
+  depositNative?: number;
 }
 
 export interface AiProvider {

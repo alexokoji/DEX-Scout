@@ -1,5 +1,6 @@
 import { PageHeader } from "@/components/features/PageHeader";
 import { PendingApprovals } from "@/components/features/PendingApprovals";
+import { ReclaimCard } from "@/components/features/ReclaimCard";
 import { WalletPanel } from "@/components/features/WalletPanel";
 import { Badge } from "@/components/ui/badges";
 import { Card, CardBody, CardHeader, Stat } from "@/components/ui/card";
@@ -27,6 +28,7 @@ export default async function WalletPage() {
         <Stat label="Available to trade" value={pf.capital.availableUsd !== null ? usd(pf.capital.availableUsd) : "—"} sub="wallet balance, within your limits" />
       </div>
       <PendingApprovals />
+      <ReclaimCard />
       <WalletPanel linked={wallets.map((w) => ({ address: w.address, family: w.chain }))} />
       <Card>
         <CardHeader title="Linked wallets" />

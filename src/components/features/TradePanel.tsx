@@ -27,6 +27,8 @@ interface Quote {
   networkFeeKnown?: boolean;
   priorityFeeUsd: number;
   platformFeeUsd: number;
+  /** Solana buy: the deposit a new token account will lock (refunded when it is closed); 0 = already held; null = couldn't be read; absent = n/a */
+  tokenAccountDepositUsd?: number | null;
   route: string[];
   slippageBps: number;
   source: string;
@@ -194,6 +196,7 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
               <Row k="Price impact" v={`${q.quote.priceImpactPct.toFixed(2)}%`} warn={q.quote.priceImpactPct > 2} />
               <Row k="Network + priority fee" v={q.quote.networkFeeKnown === false ? "couldn't be read: your wallet shows the exact fee" : usd(q.quote.networkFeeUsd + q.quote.priorityFeeUsd, 4)} />
               <Row k="Swap fee" v={usd(q.quote.platformFeeUsd, 3)} />
+              <DepositRows quote={q.quote} amountUsd={Number(amount)} symbol={symbol} />
             </dl>
           )}
         </div>
@@ -247,6 +250,7 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
                 <Row k="Price impact" v={`${q.quote.priceImpactPct.toFixed(2)}%`} />
                 <Row k="Slippage tolerance" v={`${(q.quote.slippageBps / 100).toFixed(2)}%`} />
                 <Row k="Fees" v={q.quote.networkFeeKnown === false ? `${usd(q.quote.priorityFeeUsd + q.quote.platformFeeUsd, 4)} + network fee (unknown: your wallet shows it)` : usd(q.quote.networkFeeUsd + q.quote.priorityFeeUsd + q.quote.platformFeeUsd, 4)} />
+                <DepositRows quote={q.quote} amountUsd={Number(amount)} symbol={symbol} compact />
                 <Row k="Environment" v="LIVE" />
               </dl>
               {q.analysis.warnings.length > 0 && <p className="text-xs text-warn">Warnings: {q.analysis.warnings.slice(0, 3).join("; ")}</p>}
@@ -260,6 +264,30 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
         </DialogContent>
       </Dialog>
     </Card>
+  );
+}
+
+/**
+ * Solana: the first buy of a token opens a token account for it and locks a deposit in it. It is not a fee (the chain returns it when the
+ * empty account is closed), but it does leave the wallet now, so it is shown, and the total that leaves is added up.
+ */
+function DepositRows({ quote, amountUsd, symbol, compact }: { quote: Quote; amountUsd: number; symbol: string; compact?: boolean }) {
+  const dep = quote.tokenAccountDepositUsd;
+  if (dep === undefined) return null;
+  if (dep === null) return <Row k="Token account deposit" v="couldn't be read: your wallet shows what leaves it" />;
+  if (dep === 0) return <Row k="Token account deposit" v={`none: you already hold ${symbol}`} />;
+  const fees = quote.networkFeeUsd + quote.priorityFeeUsd + quote.platformFeeUsd;
+  const bigger = dep > amountUsd;
+  return (
+    <>
+      <Row k="Token account deposit (refundable)" v={usd(dep, 4)} warn={bigger} />
+      <Row k="Leaves your wallet now" v={usd(amountUsd + fees + dep, 4)} />
+      {!compact && (
+        <p className={`pt-1 text-[11px] leading-relaxed ${bigger ? "text-warn" : "text-muted"}`}>
+          The first buy of {symbol} opens a token account for it and the chain locks {usd(dep, 4)} in it. That is not a fee: you get it back when the empty account is closed (Positions offers to do that after you sell).{bigger && " It is more than this whole trade, so a round trip leaves your wallet lower until it is closed."}
+        </p>
+      )}
+    </>
   );
 }
 
