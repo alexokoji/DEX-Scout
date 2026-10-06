@@ -29,6 +29,7 @@ export const tradingSettingsInput = z
     maxAllowedRisk: z.enum(["LOWER", "MODERATE", "HIGH"]),
     minTrust: z.enum(["UNPROVEN", "TRUSTED", "VERIFIED"]),
     targetsMode: z.enum(["SINGLE", "MULTI"]),
+    targetsSource: z.enum(["FIXED", "PROJECTED"]),
     maxPositionAgeHours: z.number().int().min(1).nullable(),
     emergencyEnabled: z.boolean(),
     emergencyAutoExit: z.boolean(),
@@ -68,6 +69,8 @@ export interface UserSettings {
   /** the least-earned trust the bot will buy */
   minTrust: TrustTier;
   targetsMode: TargetsMode;
+  /** where a new position's targets come from when none were set for it: this ladder, or the token's own history */
+  targetsSource: "FIXED" | "PROJECTED";
   maxPositionAgeHours: number | null;
   emergencyEnabled: boolean;
   emergencyAutoExit: boolean;
@@ -85,6 +88,7 @@ function hydrate(row: TradingSettingsDoc): UserSettings {
     id,
     ...rest,
     minTrust: row.minTrust ?? DEFAULT_MIN_TRUST,
+    targetsSource: row.targetsSource ?? "FIXED",
     filters: scannerFiltersSchema.parse(row.filters ?? {}),
     weights: scoreWeightsSchema.parse(row.weights ?? {}),
     targets: targets.length ? targets : row.targetsMode === "SINGLE" ? DEFAULT_TARGETS_SINGLE : DEFAULT_TARGETS_MULTI,
@@ -94,7 +98,7 @@ function hydrate(row: TradingSettingsDoc): UserSettings {
 /** The bot buys nothing below this: no red flags AND depth, history and checks that cleared (see core/analysis/trust.ts). */
 export const DEFAULT_MIN_TRUST: TrustTier = "TRUSTED";
 
-export const SETTINGS_VERSION = 5;
+export const SETTINGS_VERSION = 6;
 
 /** True when `chains` holds exactly the six chains this app originally scanned (any order). */
 export function isOriginalChainSet(chains: readonly string[] | undefined): boolean {
@@ -122,6 +126,7 @@ export function defaultSettingsDoc(userId: string, now = new Date()): TradingSet
     maxAllowedRisk: "MODERATE",
     minTrust: DEFAULT_MIN_TRUST,
     targetsMode: "MULTI",
+    targetsSource: "FIXED",
     maxPositionAgeHours: null,
     emergencyEnabled: true,
     emergencyAutoExit: false,
@@ -173,6 +178,8 @@ async function migrateSettings(row: TradingSettingsDoc): Promise<TradingSettings
     if (row.filters?.minVolume24hUsd === V4_VOLUME) set["filters.minVolume24hUsd"] = fresh.filters.minVolume24hUsd;
     if (!row.minTrust) set.minTrust = DEFAULT_MIN_TRUST;
   }
+  // v6: each position can have its own targets. Existing accounts keep their one ladder as the default for new positions.
+  if (version < 6 && !row.targetsSource) set.targetsSource = "FIXED";
   const legacy = row as TradingSettingsDoc & { capitalUsd?: number };
   const unset: Record<string, ""> = {};
   if (version < 4) {

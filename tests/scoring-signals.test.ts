@@ -75,8 +75,14 @@ describe("signal generation", () => {
       if (s.type === "BUY") buys++;
       if (s.type === "WATCH") watches++;
       expect(s.entryMin).toBeLessThanOrEqual(s.entryMax);
-      expect(s.target1).toBeLessThan(s.target2);
-      expect(s.target2).toBeLessThan(s.target3);
+      // targets come from this token's own history: when there is enough of it they rise; when there isn't there are none (never invented ones)
+      if (s.target1 !== null) {
+        expect(s.target1).toBeGreaterThan(a.snapshot.priceUsd);
+        expect(s.target1!).toBeLessThan(s.target2!);
+        expect(s.target2!).toBeLessThan(s.target3!);
+      } else {
+        expect([s.target2, s.target3]).toEqual([null, null]);
+      }
       expect(s.expiresAt.getTime()).toBeGreaterThan(now.getTime());
       expect(s.reasons.length).toBeGreaterThan(0);
     }

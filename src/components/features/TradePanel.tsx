@@ -12,7 +12,9 @@ import { CHAINS } from "@/core/chains";
 import type { ChainId } from "@/core/types";
 import { price, usd, usdBalance } from "@/lib/format";
 import { explainWalletError } from "@/lib/txErrors";
+import { useProjection } from "@/lib/useProjection";
 import { useMarketPrice } from "./LivePrice";
+import { TargetsEditor } from "./TargetsEditor";
 import { useSigner } from "./useSigner";
 
 interface Quote {
@@ -43,7 +45,7 @@ interface QuoteResp {
   source: string;
 }
 
-export function TradePanel({ chain, address, symbol, signalId, defaults, liveEnabled }: { chain: ChainId; address: string; symbol: string; signalId?: string; defaults: { amountUsd: number; slippageBps: number; maxPositionUsd: number }; liveEnabled: boolean }) {
+export function TradePanel({ chain, address, symbol, signalId, defaults, liveEnabled }: { chain: ChainId; address: string; symbol: string; signalId?: string; defaults: { amountUsd: number; slippageBps: number; maxPositionUsd: number; targets: { gainPct: number; sellPct: number }[] }; liveEnabled: boolean }) {
   const router = useRouter();
   const signer = useSigner();
   const meta = CHAINS[chain];
@@ -59,6 +61,9 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
   const [busy, setBusy] = useState(false);
   const [needsVerify, setNeedsVerify] = useState(false);
   const [trustAck, setTrustAck] = useState(false);
+  // this position's own profit targets: they start as the default ladder and are set against what this token has done
+  const [targets, setTargets] = useState(defaults.targets);
+  const projection = useProjection(chain, address);
   const wallet = signer.addressFor(chain);
 
   const body = useMemo(() => {
@@ -103,7 +108,7 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
     setBusy(true);
     try {
       if (!(await signer.ensureConnected(chain))) return;
-      const prep = await fetch("/api/trades/prepare", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, acknowledgeTrust: trustAck }) });
+      const prep = await fetch("/api/trades/prepare", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, acknowledgeTrust: trustAck, targets }) });
       const pj = await prep.json();
       if (!prep.ok) {
         // the server dry-runs the swap before the wallet opens; if only a looser slippage would work it says which, so apply it
@@ -162,6 +167,8 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
           <Label hint={`${meta.nativeSymbol} · blank = automatic, from the network`}>{meta.family === "evm" ? "Priority fee (gas tip)" : "Max priority fee"}</Label>
           <Input type="number" min="0" step="0.00001" placeholder="automatic" value={priority} onChange={(e) => setPriority(e.target.value)} />
         </div>
+
+        <TargetsEditor value={targets} onChange={setTargets} projection={projection} defaultLadder={defaults.targets} />
 
         <div className="rounded-md border border-border bg-surface2 p-3 text-xs">
           {err ? (

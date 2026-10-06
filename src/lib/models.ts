@@ -22,6 +22,7 @@ import type {
   TrustReport,
   TrustTier,
 } from "@/core/types";
+import type { Projection } from "@/core/analysis/projection";
 import type { AiAnalysis } from "@/core/ai/schema";
 
 export type Json = Record<string, unknown> | unknown[] | string | number | boolean | null;
@@ -87,6 +88,8 @@ export interface TradingSettingsDoc {
   /** the least-earned trust the bot will buy (manual buys are warned, never blocked, below it); see core/analysis/trust.ts */
   minTrust?: TrustTier;
   targetsMode: TargetsMode;
+  /** where a NEW position's targets come from when none were typed for it: the user's ladder (FIXED), or the token's own history (PROJECTED) */
+  targetsSource?: "FIXED" | "PROJECTED";
   maxPositionAgeHours: number | null;
   emergencyEnabled: boolean;
   emergencyAutoExit: boolean;
@@ -129,6 +132,8 @@ export interface TokenAnalysisEmbed {
   /** full TokenSnapshot + OnChainRaw used to rebuild the Analysis object for the signal engine */
   snapshot: TokenSnapshot;
   raw: OnChainRaw;
+  /** the token's projected rises as of this analysis (null: not enough history) */
+  projection?: Projection | null;
   computedAt: Date;
   updatedAt: Date;
 }
@@ -249,9 +254,9 @@ export interface SignalDoc {
   priceUsd: number;
   entryMin: number;
   entryMax: number;
-  target1: number;
-  target2: number;
-  target3: number;
+  target1: number | null;
+  target2: number | null;
+  target3: number | null;
   reasons: string[];
   warnings: string[];
   createdAt: Date;

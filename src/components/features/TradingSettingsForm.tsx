@@ -141,8 +141,8 @@ export function TradingSettingsForm({ initial, liveEnabled }: { initial: S; live
 
       <Card>
         <CardHeader
-          title="Profit targets"
-          sub="Each target sells a share of the INITIAL position; the last target sells whatever remains."
+          title="Default profit targets"
+          sub="What a new position starts with. Each position can then be given its own targets (Positions → Edit targets, or in the trade panel when you buy). Each target sells a share of the position; the last sells whatever remains."
           right={
             <div className="flex gap-2">
               <Select className="w-32" value={s.targetsMode} onChange={(e) => { const m = e.target.value as S["targetsMode"]; set("targetsMode", m); setTargets(m === "SINGLE" ? DEFAULT_TARGETS_SINGLE : DEFAULT_TARGETS_MULTI); }}>
@@ -153,6 +153,13 @@ export function TradingSettingsForm({ initial, liveEnabled }: { initial: S; live
           }
         />
         <CardBody className="space-y-2">
+          <div className="mb-1">
+            <Label hint="for buys the bot makes, and for yours if you don't set targets">New positions get</Label>
+            <Select value={s.targetsSource} onChange={(e) => set("targetsSource", e.target.value as S["targetsSource"])}>
+              <option value="FIXED">The ladder below, the same for every position</option>
+              <option value="PROJECTED">Targets drawn from each token&apos;s own price history (different for each position), falling back to the ladder below when there isn&apos;t enough history</option>
+            </Select>
+          </div>
           {s.targets.map((t, i) => (
             <div key={i} className="grid grid-cols-[auto_1fr_1fr_auto] items-end gap-3">
               <div className="pb-2 text-xs text-muted">T{t.level}</div>

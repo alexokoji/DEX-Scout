@@ -1,3 +1,4 @@
+import type { Projection } from "./analysis/projection";
 /** Chain-agnostic domain types shared by every engine. No framework or DB imports here. */
 
 export type ChainId =
@@ -275,6 +276,8 @@ export interface Analysis {
   opportunity: OpportunityScore;
   /** how far this token has earned trust (derived from the snapshot and the raw facts) */
   trust: TrustReport;
+  /** what this token's recent price history says to expect (see analysis/projection.ts); null when there wasn't enough of it */
+  projection?: Projection | null;
   computedAt: Date;
 }
 
@@ -286,9 +289,10 @@ export interface SignalDraft {
   priceUsd: number;
   entryMin: number;
   entryMax: number;
-  target1: number;
-  target2: number;
-  target3: number;
+  /** price targets drawn from the token's own history (typical, good and rare rises); null when there isn't enough history to say */
+  target1: number | null;
+  target2: number | null;
+  target3: number | null;
   reasons: string[];
   warnings: string[];
   expiresAt: Date;

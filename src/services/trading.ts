@@ -18,6 +18,8 @@ import { notifyUser } from "./notifications";
 import { buyQueued, profitTaken, sellQueued, tradeConfirmed, tradeExpired, tradeFailed, type Message } from "./notificationMessages";
 import { applyLiveSnapshot } from "./tokenPrice";
 import { TradeError } from "./errors";
+import { projectedTargets } from "./projection";
+import { targetsInput, toLadder } from "./positionTargets";
 import { spendableDetail } from "./walletBalance";
 import { linkedWallets, resolveWallet, walletFamilyOf } from "./walletResolve";
 
@@ -77,6 +79,8 @@ export const prepareTradeInput = z.object({
   wallet: z.string().min(20).max(64).optional(),
   /** a hand-made buy of a token that hasn't earned trust needs the user to say they understand (see prepareTrade) */
   acknowledgeTrust: z.boolean().optional(),
+  /** this position's own profit targets (a gain to reach and the share to sell there); without them the default ladder applies (see prepareTrade) */
+  targets: targetsInput.optional(),
 });
 export type PrepareTradeInput = z.infer<typeof prepareTradeInput>;
 
@@ -270,6 +274,13 @@ export async function prepareTrade(userId: string, input: PrepareTradeInput, kin
     });
   }
 
+  // This position's own targets: the ones typed for it; else, for the bot, drawn from the token's own history if the user chose that;
+  // else none, which means the user's default ladder is used when the position opens.
+  let ladder: ProfitTargetConfig[] | null = input.targets ? toLadder(input.targets) : null;
+  if (!ladder && kind === "AUTO_ENTRY") {
+    const settings = await getSettings(userId);
+    if (settings.targetsSource === "PROJECTED") ladder = await projectedTargets(input.chain, token.address, settings.targets).catch(() => null);
+  }
   const tradeId = newId();
   const trades = await collections.trades();
   const doc: TradeDoc = {
@@ -291,7 +302,7 @@ export async function prepareTrade(userId: string, input: PrepareTradeInput, kin
     feesUsd: quote.platformFeeUsd,
     networkFeeUsd: quote.networkFeeUsd + quote.priorityFeeUsd,
     realizedPnlUsd: null,
-    quote: { ...(quoteJson(quote) as object), signalId: input.signalId ?? null, wallet: walletAddress } as Json,
+    quote: { ...(quoteJson(quote) as object), signalId: input.signalId ?? null, wallet: walletAddress, targets: ladder } as Json,
     failureReason: null,
     expiresAt: new Date(Date.now() + (kind === "AUTO_ENTRY" ? APPROVAL_TTL_MS : PREPARED_TTL_MS)),
     createdAt: new Date(),
@@ -371,7 +382,7 @@ export async function refreshPreparedTrade(userId: string, tradeId: string, conn
     again: (slippageBps) => p.dex.getQuote({ chain, side: trade.side, tokenAddress: token.address, amountUsd: trade.inputUsd, tokenAmount: trade.side === "SELL" ? trade.tokenAmount : undefined, slippageBps, wallet: wallet.address }),
   });
 
-  const prev = (trade.quote ?? {}) as { signalId?: string | null; reason?: string; targetLevel?: number | null };
+  const prev = (trade.quote ?? {}) as { signalId?: string | null; reason?: string; targetLevel?: number | null; targets?: ProfitTargetConfig[] | null };
   const expiresAt = new Date(Date.now() + REFRESHED_TTL_MS);
   await trades.updateOne(
     { _id: trade._id },
@@ -384,7 +395,7 @@ export async function refreshPreparedTrade(userId: string, tradeId: string, conn
         priceImpactPct: quote.priceImpactPct,
         feesUsd: quote.platformFeeUsd,
         networkFeeUsd: quote.networkFeeUsd + quote.priorityFeeUsd,
-        quote: { ...(quoteJson(quote) as object), signalId: prev.signalId ?? null, wallet: wallet.address, ...(prev.reason ? { reason: prev.reason } : {}), ...(prev.targetLevel !== undefined ? { targetLevel: prev.targetLevel } : {}) } as Json,
+        quote: { ...(quoteJson(quote) as object), signalId: prev.signalId ?? null, wallet: wallet.address, targets: prev.targets ?? null, ...(prev.reason ? { reason: prev.reason } : {}), ...(prev.targetLevel !== undefined ? { targetLevel: prev.targetLevel } : {}) } as Json,
         "transaction.unsignedTx": unsigned,
       },
     },
@@ -539,6 +550,7 @@ export async function reconcileLiveTrade(tradeId: string) {
     if (trade.side === "BUY") {
       const positionId = newId();
       const signalId = (trade.quote as { signalId?: string | null } | null)?.signalId ?? null;
+      const plannedTargets = (trade.quote as { targets?: ProfitTargetConfig[] | null } | null)?.targets ?? null; // the ladder chosen for THIS position
       await positions.insertOne(
         {
           _id: positionId, userId: trade.userId, accountId: trade.accountId, tokenId: trade.tokenId, environment: "LIVE", status: "OPEN", health: "HOLD",
@@ -547,7 +559,7 @@ export async function reconcileLiveTrade(tradeId: string) {
           sourceSignalId: signalId,
           entryPriceUsd: swapUsd / tokenAmountActual, entryMarketPriceUsd: openPriceUsd, currentPriceUsd: openPriceUsd, priceAt: now, initialAmount: tokenAmountActual, amount: tokenAmountActual,
           investedUsd: buyCostUsd, costBasisUsd: buyCostUsd, realizedPnlUsd: 0, targetsHit: 0, walletAddress: wallet?.address ?? null,
-          targetsSnapshot: settings.targets, emergencyEnabled: settings.emergencyEnabled, emergencyAutoExit: settings.emergencyAutoExit,
+          targetsSnapshot: plannedTargets && plannedTargets.length ? plannedTargets : settings.targets, emergencyEnabled: settings.emergencyEnabled, emergencyAutoExit: settings.emergencyAutoExit,
           openedAt: now, updatedAt: now, closedAt: null, lastAnalysisAt: null,
         },
         { session },

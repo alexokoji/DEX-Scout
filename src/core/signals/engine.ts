@@ -1,6 +1,7 @@
 import { SIGNAL_MIN_TRUST, SIGNAL_THRESHOLDS, SIGNAL_TTL_MINUTES } from "../config";
 import type { Analysis, SignalDraft } from "../types";
 import { TRUST_RANK } from "../types";
+import { defaultHorizon, suggestLadder } from "../analysis/projection";
 
 export interface SignalThresholds {
   buy: number;
@@ -38,6 +39,13 @@ export function generateSignal(
   const entryMin = Math.max(price * 0.94, Math.max(supportFloor, price * (1 - pullbackDepth)));
   const entryMax = price * 1.01;
 
+  // Price targets from what THIS token has done (its typical, good and rare rise within a window its history supports), not the same three percentages for
+  // every token. Without enough history for that there are no targets to show.
+  const basis = a.projection ? defaultHorizon(a.projection) : null; // the longest window the history really supports
+  const ladder = basis ? suggestLadder(basis, [1, 1, 1], "typical") : null;
+  const at = (i: number) => (ladder ? price * (1 + ladder[i].gainPct / 100) : null);
+  const targets = { target1: at(0), target2: at(1), target3: at(2) };
+
   const reasons: string[] = [];
   const byKey = new Map(opportunity.components.map((c) => [c.key, c.value]));
   if ((byKey.get("liquidity") ?? 0) >= 0.7) reasons.push(`Healthy liquidity ($${Math.round(s.liquidityUsd / 1000)}K)`);
@@ -65,9 +73,7 @@ export function generateSignal(
     priceUsd: price,
     entryMin,
     entryMax,
-    target1: price * 1.08,
-    target2: price * 1.15,
-    target3: price * 1.25,
+    ...targets,
     reasons,
     warnings,
     expiresAt: new Date(now.getTime() + SIGNAL_TTL_MINUTES * 60_000),

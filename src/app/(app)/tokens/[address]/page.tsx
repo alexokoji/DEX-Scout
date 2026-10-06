@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { PageHeader } from "@/components/features/PageHeader";
 import { TokenChart } from "@/components/features/TokenChart";
 import { TradePanel } from "@/components/features/TradePanel";
+import { ProjectionCard } from "@/components/features/ProjectionCard";
 import { TrustCard } from "@/components/features/TrustCard";
 import { Badge, Change, EnvBadge, RiskBadge, SignalBadge, TrustBadge } from "@/components/ui/badges";
 import { Card, CardBody, CardHeader, Stat } from "@/components/ui/card";
@@ -71,25 +72,31 @@ export default async function TokenPage({ params, searchParams }: { params: Prom
                   <div className="text-[11px] uppercase tracking-wider text-muted">Suggested entry zone</div>
                   <div className="num">{price(signal.entryMin)} – {price(signal.entryMax)}</div>
                 </div>
-                <div className="grid grid-cols-3 gap-2">
-                  {[signal.target1, signal.target2, signal.target3].map((t, i) => (
-                    <div key={i}>
-                      <div className="text-[11px] uppercase tracking-wider text-muted">Target {i + 1}</div>
-                      <div className="num">{price(t)}</div>
-                      <div className="num text-xs text-up">+{((t / signal.priceUsd - 1) * 100).toFixed(0)}%</div>
-                    </div>
-                  ))}
-                </div>
+                {signal.target1 !== null && signal.target2 !== null && signal.target3 !== null ? (
+                  <div className="grid grid-cols-3 gap-2">
+                    {[signal.target1, signal.target2, signal.target3].map((t, i) => (
+                      <div key={i}>
+                        <div className="text-[11px] uppercase tracking-wider text-muted">{["Typical", "Good", "Rare"][i]} rise</div>
+                        <div className="num">{price(t)}</div>
+                        <div className="num text-xs text-up">+{((t / signal.priceUsd - 1) * 100).toFixed(1)}%</div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-xs text-muted">No price targets: there isn&apos;t enough price history for this token to say what to expect from it.</div>
+                )}
                 <ul className="space-y-0.5 text-xs">
                   {(signal.reasons as string[]).map((r) => <li key={r} className="text-up">+ {r}</li>)}
                   {(signal.warnings as string[]).slice(0, 5).map((w) => <li key={w} className="text-warn">! {w}</li>)}
                 </ul>
-                <p className="text-[11px] text-muted">Targets are suggestions. Your configured profit ladder ({settings.targets.map((t) => `+${t.gainPct}%`).join(", ")}) is what the bot uses.</p>
+                <p className="text-[11px] text-muted">These come from what this token has done over the last few hours (the rise it reached, within the longest window that history supports, in half, a quarter and a tenth of the cases): see Projected rise below. Each position has its own targets, set in the trade panel when you buy and editable on the position; new ones start from your default ladder ({settings.targets.map((t) => `+${t.gainPct}%`).join(", ")}) unless you chose to draw them from each token&apos;s history.</p>
               </CardBody>
             </Card>
           )}
 
           <TrustCard trust={token.trust} />
+
+          <ProjectionCard chain={token.chain} address={token.address} />
 
           <TradePanel
             chain={token.chain as ChainId}
@@ -97,7 +104,7 @@ export default async function TokenPage({ params, searchParams }: { params: Prom
             symbol={token.symbol}
             signalId={signal?.id}
             liveEnabled={liveTradingAllowed()}
-            defaults={{ amountUsd: Math.max(settings.minPositionUsd, Math.min(settings.maxPositionUsd, 10)), slippageBps: Math.min(settings.maxSlippageBps, 300), maxPositionUsd: settings.maxPositionUsd }}
+            defaults={{ amountUsd: Math.max(settings.minPositionUsd, Math.min(settings.maxPositionUsd, 10)), slippageBps: Math.min(settings.maxSlippageBps, 300), maxPositionUsd: settings.maxPositionUsd, targets: settings.targets.map((t) => ({ gainPct: t.gainPct, sellPct: t.sellPct })) }}
           />
         </div>
       </div>

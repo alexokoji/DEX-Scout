@@ -5,6 +5,7 @@ import { age, price, tokens, usd, usdPnl } from "@/lib/format";
 import { ClosePositionButton } from "./ClosePositionButton";
 import { AutoSellPanel, type AutoSellView } from "./AutoSellPanel";
 import { LivePositionPnL, LivePositionPrice } from "./LivePrice";
+import { PositionTargets } from "./PositionTargets";
 import { PriceAge } from "./PriceAge";
 
 interface PV {
@@ -77,6 +78,9 @@ export function PositionsView({ positions, actions = true }: { positions: PV[]; 
               <div>
                 <div className="text-muted">{p.metrics.nextTargetLevel ? `Target ${p.metrics.nextTargetLevel} (+${p.metrics.nextTargetGainPct}%)` : "All targets hit"}</div>
                 <div className="mt-1.5 h-1.5 rounded bg-surface2"><div className="h-1.5 rounded bg-up" style={{ width: `${p.metrics.targetProgress * 100}%` }} /></div>
+                {!closed && actions && p.environment === "LIVE" && p.targets.length > 0 && (
+                  <div className="mt-1"><PositionTargets positionId={p.id} chain={p.token.chain} address={p.token.address} symbol={p.token.symbol} targets={p.targets} armed={(p.autoSells ?? []).some((o) => o.status === "ACTIVE")} /></div>
+                )}
               </div>
             </div>
 

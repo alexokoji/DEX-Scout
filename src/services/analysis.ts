@@ -73,6 +73,7 @@ export async function persistAnalysis(tokenId: string, a: Analysis): Promise<voi
           onchain: a.onchain,
           snapshot: a.snapshot,
           raw: a.onchainRaw,
+          projection: a.projection ?? null,
           computedAt: now,
           updatedAt: now,
         },
@@ -102,6 +103,7 @@ export async function loadAnalysis(tokenId: string): Promise<Analysis | null> {
     onchain: t.analysis.onchain,
     opportunity: { score: t.analysis.opportunityScore, components: t.analysis.components },
     trust: assessTrust(snapshot, t.analysis.raw, t.analysis.computedAt),
+    projection: t.analysis.projection ?? null,
     computedAt: t.analysis.computedAt,
   };
 }
