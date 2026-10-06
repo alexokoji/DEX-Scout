@@ -126,29 +126,62 @@ describe("suggested slippage follows how fast the token is moving", () => {
   });
 });
 
-describe("EVM gas from the chain's current gas price", () => {
-  afterEach(() => vi.unstubAllGlobals());
-  const rpc = (gasPriceHex: string | null) =>
-    vi.stubGlobal("fetch", async (_u: string, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body ?? "{}"));
-      if (body.method === "eth_gasPrice" && gasPriceHex) return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: gasPriceHex }), { status: 200 });
+describe("what to keep back for gas on an EVM chain comes from the aggregators' own measurement of a real route", () => {
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    (await import("@/core/providers/evm/swapGas")).resetSwapGasCache();
+  });
+  const WETH = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
+  const owner = "0x" + "1".repeat(40);
+  let n = 0;
+  const freshToken = () => "0x" + (++n).toString(16).padStart(40, "a");
+  /** kyber / paraswap say what they say (null = not available); everything else the reserve needs is answered */
+  const stub = (kyberUsd: string | null, paraswapUsd: string | null) =>
+    vi.stubGlobal("fetch", async (u: string, init?: RequestInit) => {
+      const url = String(u);
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body));
+        if (body.method === "eth_call") return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: "0x" + "6".padStart(64, "0") }), { status: 200 }); // 6 decimals
+        return new Response("down", { status: 500 });
+      }
+      if (url.includes("aggregator-api.kyberswap.com")) return kyberUsd ? new Response(JSON.stringify({ data: { routeSummary: { gasUsd: kyberUsd } } }), { status: 200 }) : new Response("no route", { status: 400 });
+      if (url.includes("api.paraswap.io")) return paraswapUsd ? new Response(JSON.stringify({ priceRoute: { gasCostUSD: paraswapUsd } }), { status: 200 }) : new Response("no route", { status: 400 });
+      if (url.includes(WETH)) return new Response(JSON.stringify({ pairs: [{ chainId: "ethereum", baseToken: { address: WETH }, quoteToken: { address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" }, priceUsd: "3000", priceNative: "1", liquidity: { usd: 5e8 } }] }), { status: 200 });
       return new Response("down", { status: 500 });
     });
 
-  it("is the current gas price x a swap's gas units (with a margin for it moving), in the native coin", async () => {
-    const { evmSwapFeeNative, SWAP_GAS_UNITS } = await import("@/core/providers/evm/evmProviders");
-    rpc("0x3b9aca00"); // 1 gwei
-    const fee = await evmSwapFeeNative("arbitrum");
-    expect(fee).toBeCloseTo((1e9 * SWAP_GAS_UNITS * 1.25) / 1e18, 12);
+  it("is what the aggregator says a swap into this token costs (units x the chain's gas price, as they measured it), converted to the native coin, plus headroom", async () => {
+    const { EvmChainAdapter } = await import("@/core/providers/evm/evmProviders");
+    stub("0.0116", null); // Kyber on Base measured $0.0116 for a real route; ETH is $3,000
+    const r = await new EvmChainAdapter("base").estimateSwapReserve(owner, freshToken());
+    expect(r!.feesNative).toBeCloseTo(0.0116 / 3000, 12);
+    expect(r!.peakNative).toBeCloseTo((0.0116 / 3000) * 1.25, 12);
+    expect(r!.depositNative).toBe(0);
   });
-  it("is unknown (null), never a made-up number, when the gas price can't be read", async () => {
-    const { evmSwapFeeNative, evmGasPriceWei } = await import("@/core/providers/evm/evmProviders");
-    rpc(null);
-    expect(await evmGasPriceWei("optimism")).toBeNull();
-    expect(await evmSwapFeeNative("optimism")).toBeNull();
+  it("follows the aggregator the swap would go through (ParaSwap first, then Kyber), since the two disagree a lot on the same swap ($0.0033 and $0.0116 on Base)", async () => {
+    const { EvmChainAdapter } = await import("@/core/providers/evm/evmProviders");
+    stub("0.0116", "0.0033");
+    expect((await new EvmChainAdapter("base").estimateSwapReserve(owner, freshToken()))!.feesNative).toBeCloseTo(0.0033 / 3000, 12); // ParaSwap, as the quote will be
+    stub("0.0116", null); // ParaSwap has no route: Kyber, as the quote will be
+    expect((await new EvmChainAdapter("base").estimateSwapReserve(owner, freshToken()))!.feesNative).toBeCloseTo(0.0116 / 3000, 12);
+  });
+  it("is unknown (null), never a made-up number, when no aggregator can say, or no token is named", async () => {
+    const { EvmChainAdapter } = await import("@/core/providers/evm/evmProviders");
+    stub(null, null);
+    expect(await new EvmChainAdapter("base").estimateSwapReserve(owner, freshToken())).toBeNull();
+    stub("0.01", null);
+    expect(await new EvmChainAdapter("base").estimateSwapReserve(owner)).toBeNull();
+  });
+  it("no fee figure is kept in the code for any chain's live path: the per-chain 'typical' fee exists only for the mock market", async () => {
+    const { CHAINS, CHAIN_IDS } = await import("@/core/chains");
+    expect(CHAIN_IDS.every((id) => "mockFeeUsd" in CHAINS[id] && !("typicalFeeUsd" in CHAINS[id]))).toBe(true);
+    const fs = await import("node:fs");
+    for (const file of ["src/core/providers/evm/evmProviders.ts", "src/core/providers/evm/freeAggregators.ts", "src/core/providers/solana/solanaProviders.ts"]) {
+      const code = fs.readFileSync(file, "utf8");
+      expect(code, file).not.toMatch(/mockFeeUsd|typicalFeeUsd|SWAP_GAS_UNITS|\?\? 5000/);
+    }
   });
 });
-
 describe("what the one approval costs when arming auto-sell on an EVM chain", () => {
   afterEach(() => vi.unstubAllGlobals());
   const WETH = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";

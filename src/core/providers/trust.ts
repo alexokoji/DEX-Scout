@@ -32,11 +32,14 @@ const emptyFacts = (): TrustFacts => ({
   holders: null,
   creatorPct: null,
   rugged: null,
+  covered: null,
   dangers: [],
   cautions: [],
 });
 
 const num = (v: unknown): number | null => {
+  // an empty string is how GoPlus says "I could not work this out": it is unknown, not zero
+  if (typeof v === "string" && v.trim() === "") return null;
   const n = typeof v === "string" ? Number(v) : typeof v === "number" ? v : NaN;
   return Number.isFinite(n) ? n : null;
 };
@@ -148,6 +151,7 @@ interface GoPlusRow {
   holder_count?: string;
   creator_percent?: string;
   trust_list?: string;
+  is_in_dex?: string;
   lp_holders?: { address?: string; percent?: string; is_locked?: number | string }[] | null;
 }
 
@@ -184,6 +188,9 @@ export function parseGoPlus(json: unknown, address: string): Partial<TrustFacts>
   return {
     // a token whose holders can't sell their whole balance is a honeypot by another name
     honeypot: flag(row.is_honeypot) === true || flag(row.cannot_sell_all) === true ? true : flag(row.is_honeypot),
+    // GoPlus runs its own buy-and-sell test on tokens that trade in a pool; it has done so when the token is in a pool and it
+    // came back with a real sell tax. That is a sell test on every chain GoPlus covers, not only the three honeypot.is simulates.
+    sellSimulated: flag(row.is_in_dex) === true && flag(row.is_honeypot) !== null && taxFraction(row.sell_tax) !== null ? true : null,
     buyTaxPct: taxFraction(row.buy_tax),
     sellTaxPct: taxFraction(row.sell_tax),
     openSource: flag(row.is_open_source),
@@ -240,6 +247,8 @@ export function mergeTrustFacts(parts: { source: string; facts: Partial<TrustFac
         (out as unknown as Record<string, unknown>)[k] = out[k] === true || v === true ? true : v;
       } else if (k === "listed") {
         out.listed = out.listed === true || v === true;
+      } else if (k === "covered") {
+        out.covered = out.covered === true || v === true ? true : (v as boolean);
       } else if (k === "lpLockedPct" || k === "buyTaxPct" || k === "sellTaxPct" || k === "creatorPct") {
         // the more worrying figure wins: least locked, highest tax, biggest creator holding
         const cur = out[k];
@@ -273,23 +282,47 @@ async function ask(source: string, url: string, parse: (j: unknown) => Partial<T
   }
 }
 
+/**
+ * The chains GoPlus covers, read from GoPlus itself (not a list kept here, which would go stale as chains are added). Cached for
+ * hours. null = couldn't be read, in which case nothing is assumed either way.
+ */
+let supportedCache: { at: number; ids: Set<string> } | null = null;
+async function goplusChains(): Promise<Set<string> | null> {
+  if (supportedCache && Date.now() - supportedCache.at < 6 * 3_600_000) return supportedCache.ids;
+  try {
+    const j = await getJson<{ result?: { id: string | number }[] }>("https://api.gopluslabs.io/api/v1/supported_chains", undefined, 5_000);
+    const ids = new Set((j.result ?? []).map((c) => String(c.id)));
+    if (ids.size) supportedCache = { at: Date.now(), ids };
+    return ids.size ? ids : (supportedCache?.ids ?? null);
+  } catch {
+    return supportedCache?.ids ?? null;
+  }
+}
+
 async function fetchFresh(chain: ChainId, address: string): Promise<TrustFacts> {
   const meta = CHAINS[chain];
   if (meta.family === "evm") {
     const id = meta.evmChainId;
     if (!id) return emptyFacts();
+    const goplusCovers = (await goplusChains())?.has(String(id)) ?? null;
     const [goplus, honeypotIs] = await Promise.all([
-      ask("goplus", `https://api.gopluslabs.io/api/v1/token_security/${id}?contract_addresses=${address}`, (j) => parseGoPlus(j, address), 5_000),
+      // a chain GoPlus doesn't list isn't asked: it would only answer "unsupported"
+      goplusCovers === false ? Promise.resolve({ source: "goplus", facts: null }) : ask("goplus", `https://api.gopluslabs.io/api/v1/token_security/${id}?contract_addresses=${address}`, (j) => parseGoPlus(j, address), 5_000),
       ask("honeypot.is", `https://api.honeypot.is/v2/IsHoneypot?address=${address}&chainID=${id}`, parseHoneypotIs, 6_000),
     ]);
-    return mergeTrustFacts([goplus, honeypotIs]);
+    const facts = mergeTrustFacts([goplus, honeypotIs]);
+    // Nobody to ask on this chain is different from a service that is down: the first is permanent and says so.
+    facts.covered = facts.sources.length ? true : goplusCovers === false ? false : null;
+    return facts;
   }
   const [jupiter, rugcheck] = await Promise.all([
     ask("jupiter", `https://lite-api.jup.ag/tokens/v2/search?query=${address}`, (j) => parseJupiter(j, address), 5_000),
     // RugCheck computes a new token's report on demand, which can take several seconds the first time and is instant after
     ask("rugcheck", `https://api.rugcheck.xyz/v1/tokens/${address}/report`, parseRugCheck, 9_000),
   ]);
-  return mergeTrustFacts([jupiter, rugcheck]);
+  const facts = mergeTrustFacts([jupiter, rugcheck]);
+  facts.covered = facts.sources.length ? true : null;
+  return facts;
 }
 
 /** Never throws: when nothing can be reached the result simply has no sources, and the token stays unproven. */
@@ -305,7 +338,7 @@ export async function fetchTrustFacts(chain: ChainId, address: string): Promise<
       // once the main service for this chain family has answered the result is kept a good while; otherwise it is asked again soon
       const main = CHAINS[chain].family === "evm" ? "goplus" : "rugcheck";
       if (cache.size > 2000) cache.clear();
-      cache.set(key, { at: Date.now(), ttl: facts.sources.includes(main) ? OK_TTL_MS : MISS_TTL_MS, facts });
+      cache.set(key, { at: Date.now(), ttl: facts.sources.includes(main) || facts.covered === false ? OK_TTL_MS : MISS_TTL_MS, facts });
       return facts;
     })
     .finally(() => inflight.delete(key));
@@ -315,6 +348,7 @@ export async function fetchTrustFacts(chain: ChainId, address: string): Promise<
 
 /** For tests. */
 export function resetTrustCache() {
+  supportedCache = null;
   cache.clear();
   inflight.clear();
   for (const k of Object.keys(backoffUntil)) delete backoffUntil[k];

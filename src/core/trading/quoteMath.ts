@@ -42,7 +42,7 @@ export function quoteFromImpact(p: {
     priceImpactPct: p.impactPct,
     slippageBps: p.slippageBps,
     minReceived,
-    networkFeeUsd: meta.typicalFeeUsd,
+    networkFeeUsd: meta.mockFeeUsd,
     priorityFeeUsd: p.priorityFeeNative * meta.mockNativeUsd,
     platformFeeUsd: feeUsd,
     route: p.route,

@@ -46,6 +46,7 @@ export async function evmRpc<T>(chain: ChainId, method: string, params: unknown[
 
 import { looksLikeHoneypotFlow } from "../../analysis/honeypot";
 import { fetchTrustFacts } from "../trust";
+import { referenceSwapGasUsd } from "./swapGas";
 import { sellCheckInconclusive } from "../simFailure";
 import { nativeUsdFromPairs, type DsNativePair } from "./nativePrice";
 
@@ -73,9 +74,7 @@ export async function nativeUsd(chain: ChainId): Promise<number> {
   return known.usd;
 }
 
-/** Gas units a typical aggregator swap uses (a property of the swap contracts, not a price). Real units are known only once a route exists. */
-export const SWAP_GAS_UNITS = 350_000;
-/** Headroom over the gas price read now, since it can move between reading it and the transaction being mined. */
+/** Headroom kept over the gas cost read now, since the gas price can move between reading it and the transaction being mined. */
 const GAS_PRICE_MARGIN = 1.25;
 
 const gasCache = new Map<ChainId, { at: number; wei: bigint }>();
@@ -105,22 +104,27 @@ export async function evmTxFeeUsd(chain: ChainId, tx: { from?: string; to: strin
   return usd > 0 ? (Number(wei * gas) / 1e18) * usd : null;
 }
 
-/** What one swap costs in gas right now, in the native coin (current gas price x a typical swap's gas, with a margin). null = unknown. */
-export async function evmSwapFeeNative(chain: ChainId): Promise<number | null> {
-  const wei = await evmGasPriceWei(chain);
-  return wei === null ? null : (Number(wei) * SWAP_GAS_UNITS * GAS_PRICE_MARGIN) / 1e18;
-}
-
 export class EvmChainAdapter implements ChainAdapter {
   readonly nativeSymbol: string;
   constructor(readonly chain: ChainId) {
     this.nativeSymbol = CHAINS[chain].nativeSymbol;
   }
   nativeUsdPrice = () => nativeUsd(this.chain);
-  /** Gas for a swap at the chain's current gas price; null if the gas price can't be read (the wallet then shows the exact fee). */
-  async estimateSwapReserve(): Promise<SwapReserve | null> {
-    const fee = await evmSwapFeeNative(this.chain);
-    return fee === null ? null : { peakNative: fee, feesNative: fee, depositNative: 0 };
+  /**
+   * What a swap into this token costs in gas right now, as the swap aggregators measure it for a real route on this chain at its
+   * current gas price (no gas figure is kept here: see swapGas.ts). null when nothing could say, or no token was named, which
+   * callers treat as unknown (nothing held back; the wallet shows the exact fee).
+   */
+  async estimateSwapReserve(_owner?: string, tokenAddress?: string): Promise<SwapReserve | null> {
+    if (!tokenAddress) return null;
+    try {
+      const [usd, nat] = await Promise.all([referenceSwapGasUsd(this.chain, tokenAddress, await tokenDecimals(this.chain, tokenAddress).catch(() => 18)), nativeUsd(this.chain)]);
+      if (usd === null || !(nat > 0)) return null;
+      const fee = usd / nat;
+      return { peakNative: fee * GAS_PRICE_MARGIN, feesNative: fee, depositNative: 0 };
+    } catch {
+      return null;
+    }
   }
 
   isValidAddress(address: string) {
@@ -265,7 +269,9 @@ export class ZeroXDexAdapter implements DexAdapter {
     const outputAmount = req.side === "BUY" ? out / 10 ** dec : (out / 1e18) * nat;
     const effective = req.side === "BUY" ? req.amountUsd / outputAmount : outputAmount / (req.tokenAmount ?? 1);
     const impact = Math.max(0, req.side === "BUY" ? (effective / snap.priceUsd - 1) * 100 : (1 - effective / snap.priceUsd) * 100);
-    const networkFeeUsd = (Number(q.totalNetworkFee ?? 0) / 1e18) * nat || CHAINS[req.chain].typicalFeeUsd;
+    // 0x's own figure for this route, or unknown: never a number we made up
+    const feeKnown = Number(q.totalNetworkFee ?? 0) > 0;
+    const networkFeeUsd = feeKnown ? (Number(q.totalNetworkFee) / 1e18) * nat : 0;
     return {
       chain: req.chain,
       inputMint: sellToken,
@@ -277,6 +283,7 @@ export class ZeroXDexAdapter implements DexAdapter {
       slippageBps: req.slippageBps,
       minReceived: outputAmount * (1 - req.slippageBps / 10_000),
       networkFeeUsd,
+      networkFeeKnown: feeKnown,
       priorityFeeUsd: (req.priorityFeeNative ?? 0) * nat,
       platformFeeUsd: 0,
       route: [...new Set((q.route?.fills ?? []).map((f) => f.source ?? "?"))],

@@ -21,6 +21,8 @@ interface Quote {
   minReceived: number;
   priceImpactPct: number;
   networkFeeUsd: number;
+  /** false when the chain's fee couldn't be worked out: shown as unknown, never as a made-up figure */
+  networkFeeKnown?: boolean;
   priorityFeeUsd: number;
   platformFeeUsd: number;
   route: string[];
@@ -183,7 +185,7 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
               <Row k="Effective price (what you pay per token)" v={price(q.quote.effectivePriceUsd)} />
               {market && market.priceUsd > 0 && <Row k="You pay vs market" v={`${((q.quote.effectivePriceUsd / market.priceUsd - 1) * 100).toFixed(2)}% (price impact + fees + spread)`} warn={q.quote.effectivePriceUsd / market.priceUsd - 1 > 0.03} />}
               <Row k="Price impact" v={`${q.quote.priceImpactPct.toFixed(2)}%`} warn={q.quote.priceImpactPct > 2} />
-              <Row k="Network + priority fee" v={usd(q.quote.networkFeeUsd + q.quote.priorityFeeUsd, 4)} />
+              <Row k="Network + priority fee" v={q.quote.networkFeeKnown === false ? "couldn't be read: your wallet shows the exact fee" : usd(q.quote.networkFeeUsd + q.quote.priorityFeeUsd, 4)} />
               <Row k="Swap fee" v={usd(q.quote.platformFeeUsd, 3)} />
             </dl>
           )}
@@ -237,7 +239,7 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
                 <Row k="Minimum received" v={`${q.quote.minReceived.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${symbol}`} />
                 <Row k="Price impact" v={`${q.quote.priceImpactPct.toFixed(2)}%`} />
                 <Row k="Slippage tolerance" v={`${(q.quote.slippageBps / 100).toFixed(2)}%`} />
-                <Row k="Fees" v={usd(q.quote.networkFeeUsd + q.quote.priorityFeeUsd + q.quote.platformFeeUsd, 4)} />
+                <Row k="Fees" v={q.quote.networkFeeKnown === false ? `${usd(q.quote.priorityFeeUsd + q.quote.platformFeeUsd, 4)} + network fee (unknown: your wallet shows it)` : usd(q.quote.networkFeeUsd + q.quote.priorityFeeUsd + q.quote.platformFeeUsd, 4)} />
                 <Row k="Environment" v="LIVE" />
               </dl>
               {q.analysis.warnings.length > 0 && <p className="text-xs text-warn">Warnings: {q.analysis.warnings.slice(0, 3).join("; ")}</p>}

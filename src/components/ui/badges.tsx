@@ -32,8 +32,9 @@ const TRUST: Record<string, [keyof typeof TONES, string, string]> = {
   DANGEROUS: ["red", "Dangerous", "Honeypot, rug, or a tax that takes the proceeds"],
 };
 /** How far a token has earned trust. A token that hasn't been checked yet shows as such, never as fine. */
-export function TrustBadge({ tier, className }: { tier?: string | null; className?: string }) {
+export function TrustBadge({ tier, className, unverifiable }: { tier?: string | null; className?: string; unverifiable?: boolean }) {
   if (!tier || !TRUST[tier]) return <Badge tone="gray" className={className}>Not checked</Badge>;
+  if (unverifiable) return <span title="No checking service covers this chain, so this token can't be verified here. Look at the contract yourself."><Badge tone="amber" className={className}>Can&apos;t be verified</Badge></span>;
   const [tone, label, hint] = TRUST[tier];
   return <span title={hint}><Badge tone={tone} className={className}>{label}</Badge></span>;
 }

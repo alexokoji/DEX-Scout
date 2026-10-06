@@ -27,6 +27,7 @@ export interface TokenRow {
   opportunityScore: number;
   riskLevel: string;
   trustTier?: string | null;
+  trust?: { unverifiable?: boolean } | null;
   stage: string;
   passedFilters: boolean;
   signals: { id: string; type: string; score: number }[];
@@ -79,7 +80,7 @@ export function TokenTable({ rows, showStage = false }: { rows: TokenRow[]; show
                 <td className="num px-3 py-2">{int(t.holders)} <span className={t.holderGrowth1h > 0 ? "text-up" : "text-muted"}>{t.holderGrowth1h ? `${t.holderGrowth1h > 0 ? "+" : ""}${t.holderGrowth1h.toFixed(1)}%` : ""}</span></td>
                 <td className="num px-3 py-2">{age(t.poolCreatedAt)}</td>
                 <td className="px-3 py-2"><ScoreBar score={t.opportunityScore} /></td>
-                <td className="px-3 py-2"><TrustBadge tier={t.trustTier} /></td>
+                <td className="px-3 py-2"><TrustBadge tier={t.trustTier} unverifiable={t.trust?.unverifiable} /></td>
                 <td className="px-3 py-2">{t.passedFilters ? <RiskBadge level={t.riskLevel} /> : <span className="text-muted">—</span>}</td>
                 <td className="px-3 py-2">{showStage ? <span className="text-[11px] text-muted">{t.stage.replace("_", " ")}</span> : <SignalBadge type={t.signals[0]?.type} />}</td>
               </tr>
@@ -103,7 +104,7 @@ export function TokenTable({ rows, showStage = false }: { rows: TokenRow[]; show
               <div><div className="text-muted">1h</div><Change value={t.change1h} /></div>
               <div><div className="text-muted">Score</div><ScoreBar score={t.opportunityScore} /></div>
             </div>
-            <div className="mt-2 flex flex-wrap gap-1.5"><TrustBadge tier={t.trustTier} />{t.passedFilters && <RiskBadge level={t.riskLevel} />}</div>
+            <div className="mt-2 flex flex-wrap gap-1.5"><TrustBadge tier={t.trustTier} unverifiable={t.trust?.unverifiable} />{t.passedFilters && <RiskBadge level={t.riskLevel} />}</div>
           </Link>
         ))}
       </div>

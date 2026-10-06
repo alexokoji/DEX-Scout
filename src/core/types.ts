@@ -138,6 +138,12 @@ export interface TrustFacts {
   /** % of supply held by the creator/dev wallet */
   creatorPct: number | null;
   rugged: boolean | null;
+  /**
+   * Whether any checking service covers this chain at all: true when at least one answered or the chain is on a service's list,
+   * false when none covers it (so no token there CAN be checked, which is not the same as a token that failed its checks),
+   * null when that is not known.
+   */
+  covered: boolean | null;
   /** named problems the services flagged ("danger" level) and softer cautions ("warn" level) */
   dangers: string[];
   cautions: string[];
@@ -159,6 +165,8 @@ export interface TrustReport {
   missing: string[];
   /** how many independent services contributed */
   sources: string[];
+  /** no checking service covers this token's chain, so it can't earn trust there however good it looks (see TrustFacts.covered) */
+  unverifiable?: boolean;
 }
 
 export interface ScannerFilters {
@@ -305,6 +313,8 @@ export interface SwapQuote {
   slippageBps: number;
   minReceived: number;
   networkFeeUsd: number;
+  /** false when the chain's fee could not be worked out (networkFeeUsd is then 0, not an estimate); the wallet shows the exact fee */
+  networkFeeKnown?: boolean;
   priorityFeeUsd: number;
   platformFeeUsd: number;
   route: string[];

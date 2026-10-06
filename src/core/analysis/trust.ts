@@ -57,17 +57,21 @@ export function assessTrust(snap: TokenSnapshot, raw: OnChainRaw, now = new Date
   const evm = CHAINS[snap.chain]?.family === "evm";
   const sources = f?.sources ?? [];
   const listed = f?.listed === true;
+  // no service covers this chain at all: not "the checks failed", but "nothing here can run them"
+  const unverifiable = f?.covered === false && sources.length === 0;
+  const chainName = CHAINS[snap.chain]?.name ?? snap.chain;
   const rows: Row[] = [];
   const add = (kind: Kind, id: string, label: string, status: TrustCheck["status"], detail: string) => rows.push({ kind, id, label, status, detail });
 
   // ---- was anyone able to check this token at all?
-  add("essential", "sources", "Independent checks ran", sources.length ? "pass" : "unknown", sources.length ? `Checked by ${sources.join(", ")}` : "No verification service could be reached, so nothing here has been confirmed");
+  add("essential", "sources", "Independent checks ran", sources.length ? "pass" : "unknown", sources.length ? `Checked by ${sources.join(", ")}` : unverifiable ? `No checking service covers ${chainName}, so tokens there can't be verified` : "No verification service could be reached, so nothing here has been confirmed");
 
   // ---- can it be sold / is it a honeypot
   const honeypot = f?.honeypot === true || raw.sellSimulationOk === false;
   if (honeypot) add("danger", "honeypot", "Can be sold", "fail", "Honeypot: selling this token fails or is blocked");
   else if (evm) {
     if (f?.honeypot === false && f.sellSimulated) add("essential", "honeypot", "Can be sold", "pass", "A real sell was simulated and went through");
+    else if (listed) add("essential", "honeypot", "Can be sold", "pass", "No sell test was available, but the token is on a curated list");
     else add("essential", "honeypot", "Can be sold", "unknown", "No real sell simulation could be run for this token");
   } else if (raw.dataAvailable === false) {
     add("essential", "honeypot", "Can be sold", "unknown", "The token's authorities couldn't be read just now");
@@ -82,7 +86,7 @@ export function assessTrust(snap: TokenSnapshot, raw: OnChainRaw, now = new Date
   if (evm) {
     const buy = f?.buyTaxPct ?? null;
     const sell = f?.sellTaxPct ?? null;
-    if (buy === null && sell === null) add("essential", "tax", "No trading tax", "unknown", "Buy and sell tax unknown");
+    if (buy === null && sell === null) add("essential", "tax", "No trading tax", listed ? "pass" : "unknown", listed ? "Tax wasn't measured, but the token is on a curated list" : "Buy and sell tax unknown");
     else {
       const worst = Math.max(buy ?? 0, sell ?? 0);
       const text = `Buy tax ${pct(buy ?? 0)}, sell tax ${pct(sell ?? 0)}`;
@@ -186,6 +190,11 @@ export function assessTrust(snap: TokenSnapshot, raw: OnChainRaw, now = new Date
   } else if (risks.length) {
     tier = "RISKY";
     summary = `Red flags: ${risks.map((r) => r.detail.replace(/\.$/, "")).join("; ")}.`;
+  } else if (unverifiable) {
+    // nothing wrong was found and nothing could be: say so plainly, and not as "failed its checks"
+    tier = "UNPROVEN";
+    summary = `${chainName} isn't covered by any checking service, so this token can't be verified here: no honeypot test, tax check or contract review is available. Look at the contract yourself before buying. The bot won't buy it.`;
+    missing.push(`A checking service that covers ${chainName}`);
   } else if (earns.length || unknowns.length) {
     tier = "UNPROVEN";
     missing.push(...earns.map((e) => e.detail), ...unknowns.map((u) => u.detail));
@@ -198,7 +207,7 @@ export function assessTrust(snap: TokenSnapshot, raw: OnChainRaw, now = new Date
     summary = `Passed every check with ${usd(snap.liquidityUsd)} of liquidity and ${ageText} of history. Not on a curated list. This is not a guarantee.`;
     missing.push("Be added to a curated verified list");
   }
-  return { tier, summary, checks, missing, sources };
+  return { tier, summary, checks, missing, sources, ...(unverifiable && tier === "UNPROVEN" ? { unverifiable: true } : {}) };
 }
 
 export const meetsTrust = (tier: TrustTier | null | undefined, min: TrustTier) => (tier ? TRUST_RANK[tier] >= TRUST_RANK[min] : false);

@@ -321,7 +321,8 @@ export class JupiterDexAdapter implements DexAdapter {
     // bid against the fee market of the pools this route actually trades through; the network-wide figure is the fallback
     const pools = (q.routePlan ?? []).map((r) => r.swapInfo?.ammKey).filter((k): k is string => !!k);
     const poolPriority = pools.length ? await poolPriorityLamports(pools, cap).catch(() => null) : null;
-    const networkFeeUsd = ((costs?.baseFeeLamports ?? 5000) / 1e9) * sol;
+    // the base fee as the chain reports it (getFeeForMessage); if it can't be read the fee is unknown, not a remembered 5,000 lamports
+    const networkFeeUsd = costs ? (costs.baseFeeLamports / 1e9) * sol : 0;
     const priorityFeeUsd = ((poolPriority ?? costs?.priorityFeeLamports ?? 0) / 1e9) * sol;
     return {
       chain: "solana",
@@ -335,6 +336,7 @@ export class JupiterDexAdapter implements DexAdapter {
       slippageBps: req.slippageBps,
       minReceived: outputAmount * (1 - req.slippageBps / 10_000),
       networkFeeUsd,
+      networkFeeKnown: !!costs,
       priorityFeeUsd,
       platformFeeUsd: 0,
       route: (q.routePlan ?? []).map((r) => r.swapInfo?.label ?? "?"),

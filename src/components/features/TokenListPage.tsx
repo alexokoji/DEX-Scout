@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Suspense } from "react";
 import { Card } from "@/components/ui/card";
+import { chainMeta } from "@/core/chains";
 import { collections } from "@/lib/db";
 import { cn } from "@/lib/utils";
 import { listTokens, tokenQuerySchema } from "@/services/queries";
@@ -31,9 +32,10 @@ export async function TokenListPage({ searchParams, basePath, title, subtitle, d
     if (on) sp.set("stale", "true");
     return sp.toString();
   };
-  const trustLink = (tier: string) => {
-    const sp = new URLSearchParams(Object.entries(params).filter(([k, v]) => v && k !== "trust") as [string, string][]);
+  const trustLink = (tier: string, chain?: string) => {
+    const sp = new URLSearchParams(Object.entries(params).filter(([k, v]) => v && k !== "trust" && !(chain && k === "chain")) as [string, string][]);
     sp.set("trust", tier);
+    if (chain) sp.set("chain", chain);
     return sp.toString();
   };
   const tab = (label: string, passing: string) => {
@@ -66,7 +68,15 @@ export async function TokenListPage({ searchParams, basePath, title, subtitle, d
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-surface2/40 px-3 py-2 text-xs text-muted">
             <span>
               Showing {query.trust === "VERIFIED" ? "verified" : query.trust === "TRUSTED" ? "trusted and verified" : "proven-safe-so-far"} tokens only: ones independent checks cleared, with real liquidity and history.
-              {result.untrustedHidden > 0 && ` ${result.untrustedHidden} more haven't earned trust yet (too new, too thin, or with red flags) and are hidden.`}
+              {result.untrustedHidden > 0 && ` ${result.untrustedHidden} more haven't earned trust yet (too new, too thin, or with red flags) and are hidden:`}
+              {result.hiddenByChain.slice(0, 8).map((h, i) => (
+                <span key={h.chain}>
+                  {i === 0 ? " " : ", "}
+                  <Link href={`${basePath}?${trustLink("ALL", h.chain)}`} className="text-accent">{chainMeta(h.chain).name} {h.n}</Link>
+                </span>
+              ))}
+              {result.hiddenByChain.length > 8 && `, and ${result.hiddenByChain.length - 8} more chains`}
+              {result.untrustedHidden > 0 && "."}
             </span>
             <Link href={`${basePath}?${trustLink("ALL")}`} className="text-accent">Show everything</Link>
           </div>

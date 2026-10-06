@@ -22,7 +22,7 @@ import { makeSnapshot } from "./helpers";
 const facts = (over: Partial<TrustFacts> = {}): TrustFacts => ({
   sources: ["jupiter", "rugcheck"], listed: false, organicScore: 80, honeypot: null, sellSimulated: null, buyTaxPct: null, sellTaxPct: null, openSource: null,
   mintable: null, upgradeableProxy: null, hiddenOwner: null, canReclaimOwnership: null, pausable: null, blacklist: null, lpLockedPct: 100, holders: 800,
-  creatorPct: 1, rugged: false, dangers: [], cautions: [], ...over,
+  creatorPct: 1, rugged: false, covered: true, dangers: [], cautions: [], ...over,
 });
 const raw = (over: Partial<OnChainRaw> = {}, trust: Partial<TrustFacts> | null = {}): OnChainRaw => ({
   mintAuthorityRevoked: true, freezeAuthorityRevoked: true, verified: false, topHolderPct: 0, top10HolderPct: 0, sellSimulationOk: true, metadataAnomalies: [],
@@ -117,6 +117,81 @@ describe("parsers read each service's real response shape", () => {
   });
 });
 
+describe("chains the second service doesn't cover (the reason only four chains showed up)", () => {
+  // honeypot.is simulates sells on Ethereum, BNB and Base only. GoPlus runs its own sell test on the other chains it covers.
+  const addr = "0xabc0000000000000000000000000000000000001";
+  const gp = (row: object) => ({ result: { [addr]: row } });
+
+  it("GoPlus's own buy/sell test counts as a sell test: in a pool, not a honeypot, with a measured sell tax", () => {
+    const p = parseGoPlus(gp({ is_in_dex: "1", is_honeypot: "0", buy_tax: "0", sell_tax: "0.01", is_open_source: "1", is_mintable: "0", hidden_owner: "0" }), addr)!;
+    expect(p).toMatchObject({ honeypot: false, sellSimulated: true, buyTaxPct: 0 });
+    expect(p.sellTaxPct).toBeCloseTo(1, 6);
+  });
+  it("an empty tax is 'GoPlus couldn't work it out', never 0%; with it, no sell test is claimed", () => {
+    const p = parseGoPlus(gp({ is_in_dex: "1", is_honeypot: "0", buy_tax: "", sell_tax: "" }), addr)!;
+    expect(p.buyTaxPct).toBeNull();
+    expect(p.sellTaxPct).toBeNull();
+    expect(p.sellSimulated).toBeNull();
+    // not in a pool it can test: no sell test either
+    expect(parseGoPlus(gp({ is_in_dex: "", is_honeypot: "0", buy_tax: "0", sell_tax: "0" }), addr)?.sellSimulated).toBeNull();
+  });
+  it("a token on a chain only GoPlus covers can now reach Trusted (it couldn't before: 'can be sold' stayed unknown)", () => {
+    const facts = { ...evmClean, sources: ["goplus"], sellSimulated: true } as Partial<TrustFacts>;
+    expect(tier(evmSnap({ chain: "arbitrum" }), raw({ mintAuthorityRevoked: true }, facts))).toBe("TRUSTED");
+  });
+  it("a curated list vouches for the sell test and the tax when the service couldn't measure them", () => {
+    const facts = { ...evmClean, sellSimulated: null, honeypot: false, buyTaxPct: null, sellTaxPct: null, listed: true } as Partial<TrustFacts>;
+    expect(tier(evmSnap(), raw({ mintAuthorityRevoked: true }, facts))).toBe("VERIFIED");
+    expect(tier(evmSnap(), raw({ mintAuthorityRevoked: true }, { ...facts, listed: false }))).toBe("UNPROVEN"); // not listed: still unproven
+  });
+  it("a chain no service covers is 'can't be verified', a different thing from a failed check, and says so", () => {
+    const r = assessTrust(evmSnap({ chain: "ink" }), raw({}, { sources: [], covered: false, listed: false, honeypot: null, sellSimulated: null }), NOW);
+    expect(r.tier).toBe("UNPROVEN");
+    expect(r.unverifiable).toBe(true);
+    expect(r.summary).toMatch(/Ink isn't covered by any checking service/);
+    expect(r.summary).toMatch(/bot won't buy it/);
+    // an outage is not the same thing: covered unknown, so no "unverifiable" label
+    expect(assessTrust(evmSnap(), raw({}, { sources: [], covered: null }), NOW).unverifiable).toBeUndefined();
+    // and uncovered never hides a real danger the app can see for itself
+    expect(assessTrust(evmSnap({ chain: "ink" }), raw({ sellSimulationOk: false }, { sources: [], covered: false }), NOW).tier).toBe("DANGEROUS");
+  });
+});
+
+describe("working out whether a chain is covered", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    resetTrustCache();
+  });
+  const ok = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+
+  it("reads GoPlus's own list of chains (not a list kept here): an unlisted chain is uncovered and is not even asked", async () => {
+    const asked: string[] = [];
+    vi.stubGlobal("fetch", async (u: string) => {
+      asked.push(String(u));
+      if (String(u).includes("supported_chains")) return ok({ result: [{ id: "1" }, { id: "8453" }, { id: "42161" }] });
+      return new Response("unsupported", { status: 400 });
+    });
+    const f = await fetchTrustFacts("ink", "0x" + "a".repeat(40)); // Ink is chain 57073: not on that list, and honeypot.is doesn't answer
+    expect(f).toMatchObject({ sources: [], covered: false });
+    expect(asked.some((u) => u.includes("token_security"))).toBe(false); // GoPlus wasn't asked about a chain it doesn't list
+  });
+  it("a covered chain whose services are down is 'unknown', never 'uncovered'", async () => {
+    vi.stubGlobal("fetch", async (u: string) => (String(u).includes("supported_chains") ? ok({ result: [{ id: "8453" }] }) : new Response("down", { status: 500 })));
+    const f = await fetchTrustFacts("base", "0x" + "b".repeat(40));
+    expect(f.sources).toEqual([]);
+    expect(f.covered).toBeNull();
+  });
+  it("when the list itself can't be read nothing is assumed: the chain is asked as usual", async () => {
+    const asked: string[] = [];
+    vi.stubGlobal("fetch", async (u: string) => {
+      asked.push(String(u));
+      return new Response("down", { status: 500 });
+    });
+    const f = await fetchTrustFacts("ink", "0x" + "c".repeat(40));
+    expect(f.covered).toBeNull();
+    expect(asked.some((u) => u.includes("token_security"))).toBe(true);
+  });
+});
 describe("what each kind of token earns", () => {
   it("a brand-new pump.fun-style token: every authority is revoked and nothing was flagged, yet it is only UNPROVEN, and says why", () => {
     const r = assessTrust(solid({ liquidityUsd: 5_200, volume24h: 3_400, poolCreatedAt: ago(22), holders: 58 }), raw({}, { organicScore: 0, holders: 58 }), NOW);
@@ -301,7 +376,8 @@ describe("fetching: never throws, never invents, asks once", () => {
   it("a service that rate-limits (429) is left alone for a while instead of being hammered by every token", async () => {
     let hits = 0;
     vi.stubGlobal("fetch", async (u: string) => {
-      if (String(u).includes("gopluslabs")) {
+      if (String(u).includes("supported_chains")) return ok({ result: [{ id: "8453" }] });
+      if (String(u).includes("token_security")) {
         hits++;
         return new Response("slow down", { status: 429 });
       }
@@ -388,6 +464,23 @@ afterAll(async () => {
     expect((await listTokens(q("VERIFIED"))).total).toBe(1);
     expect((await listTokens(q("UNPROVEN"))).total).toBe(3); // hides risky, dangerous and unchecked
     expect((await listTokens(q("ALL"))).total).toBe(6);
+  });
+
+  it("tokens on a chain no service covers stay listed under a trust floor (labelled), and the hidden count is broken down by chain", async () => {
+    const { listTokens, tokenQuerySchema } = await import("@/services/queries");
+    const tokens = await collections.tokens();
+    const tag = `xcover${Date.now()}`;
+    const mk = (i: number, chain: string, tierName: string, unverifiable?: boolean) => ({ ...mock, _id: newId(), address: `${tag}${i}`.padEnd(32, "0"), chain, trustTier: tierName, trust: { tier: tierName, summary: "", checks: [], missing: [], sources: [], ...(unverifiable ? { unverifiable: true } : {}) }, lastScannedAt: new Date() }) as never;
+    const docs = [mk(1, tag, "TRUSTED"), mk(2, tag, "UNPROVEN", true), mk(3, tag, "UNPROVEN"), mk(4, tag, "UNPROVEN"), mk(5, tag, "RISKY")] as { _id: string }[];
+    ids.push(...docs.map((d) => d._id));
+    await tokens.insertMany(docs as never);
+    const r = await listTokens(tokenQuerySchema.parse({ chain: tag, passing: "false", trust: "TRUSTED", pageSize: 50 }));
+    expect(r.total).toBe(2); // the trusted one, and the one on a chain nothing can check
+    expect(r.rows.map((x) => (x as { trust?: { unverifiable?: boolean } }).trust?.unverifiable ?? false).sort()).toEqual([false, true]);
+    expect(r.untrustedHidden).toBe(3); // the other unproven two and the risky one
+    expect(r.hiddenByChain).toEqual([{ chain: tag, n: 3 }]);
+    // the chain filter is how the page links from "Robinhood 3" to those tokens
+    expect((await listTokens(tokenQuerySchema.parse({ chain: tag, passing: "false", trust: "ALL", pageSize: 50 }))).total).toBe(5);
   });
 
   it("analysis stores the trust tier and its checks on the token", async () => {

@@ -414,6 +414,7 @@ export function onChainAt(t: MockTokenSpec, nowMin: number): OnChainRaw {
       holders,
       creatorPct: 1,
       rugged: rg >= 0.98,
+      covered: true,
       dangers: [],
       cautions: [],
     },

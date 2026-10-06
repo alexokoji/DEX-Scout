@@ -82,7 +82,11 @@ export async function listTokens(query: TokenQuery) {
   if (query.chain) where.chain = query.chain;
   if (query.passing === "true") where.passedFilters = true;
   const trustTiers = query.trust && query.trust !== "ALL" ? TRUST_TIERS.filter((t) => TRUST_RANK[t] >= TRUST_RANK[query.trust as TrustTier]) : null;
-  if (trustTiers) where.trustTier = { $in: trustTiers };
+  // A chain no checking service covers can't produce a trusted token, however good it is, so a trust floor would hide the whole
+  // chain. Its tokens stay listed (labelled "can't be verified") instead of vanishing; the bot still won't buy them.
+  const trustCond = (trustTiers ? { $or: [{ trustTier: { $in: trustTiers } }, { "trust.unverifiable": true }] } : null) as Filter<TokenDoc> | null;
+  const baseWhere = { ...where };
+  if (trustCond) where.$and = [...(where.$and ?? []), trustCond];
   // A price that hasn't been refreshed recently isn't a price: keep those out of the lists unless asked.
   const staleCutoff = new Date(Date.now() - PRICE_MAX_AGE_MS);
   if (query.stale !== "true") where.lastScannedAt = { $gte: staleCutoff };
@@ -106,9 +110,11 @@ export async function listTokens(query: TokenQuery) {
   // how many matching tokens were left out for having an old price (for the "show them" link)
   const staleHidden = query.stale === "true" ? 0 : await tokensCol.countDocuments({ ...where, lastScannedAt: { $lt: staleCutoff } });
   // how many (otherwise matching) tokens the trust floor left out, for the "show them" link
-  const { trustTier: _t, ...withoutTrust } = where;
-  const untrustedHidden = trustTiers ? await tokensCol.countDocuments(withoutTrust as Filter<TokenDoc>).then((n) => Math.max(0, n - total)) : 0;
-  return { total, page: query.page, pageSize: query.pageSize, pages: Math.max(1, Math.ceil(total / query.pageSize)), staleHidden, untrustedHidden, rows: withSignals };
+  const hiddenByChain = trustCond
+    ? (await tokensCol.aggregate<{ _id: string; n: number }>([{ $match: { ...baseWhere, $nor: [trustCond] } }, { $group: { _id: "$chain", n: { $sum: 1 } } }, { $sort: { n: -1 } }]).toArray()).map((g) => ({ chain: g._id, n: g.n }))
+    : [];
+  const untrustedHidden = hiddenByChain.reduce((s, g) => s + g.n, 0);
+  return { total, page: query.page, pageSize: query.pageSize, pages: Math.max(1, Math.ceil(total / query.pageSize)), staleHidden, untrustedHidden, hiddenByChain, rows: withSignals };
 }
 
 export async function attachTokens<T extends { tokenId: string }>(rows: T[]): Promise<(T & { token: ReturnType<typeof withId<TokenDoc>> })[]> {

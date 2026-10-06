@@ -12,7 +12,7 @@ import { DexScreenerDataProvider } from "../dexscreener";
 import { sellCheckInconclusive } from "../simFailure";
 import { getJson } from "../http";
 import type { DexAdapter, QuoteRequest, SwapSimulation, TransactionStatus } from "../interfaces";
-import { evmOnChain, evmSwapFeeNative, nativeUsd, tokenDecimals, ZeroXDexAdapter } from "./evmProviders";
+import { evmOnChain, nativeUsd, tokenDecimals, ZeroXDexAdapter } from "./evmProviders";
 
 interface RouteInput {
   chain: ChainId;
@@ -178,9 +178,8 @@ export class MultiEvmDexAdapter implements DexAdapter {
         // order wrongly, a wrong pool, a unit mix-up). Refuse it rather than sign it.
         if (signedImpact < -25) throw new Error(`quote is ${Math.abs(signedImpact).toFixed(0)}% away from the market price in the user's favour; refusing as it points to bad pricing data`);
         const impact = Math.max(0, signedImpact);
-        // network fee: the aggregator's own gas figure, else the chain's current gas price; the hand-set per-chain typical is the last resort
-        const gasNative = out.networkFeeUsd == null ? await evmSwapFeeNative(req.chain).catch(() => null) : null;
-        const networkFeeUsd = out.networkFeeUsd ?? (gasNative !== null ? gasNative * nat : CHAINS[req.chain].typicalFeeUsd);
+        // network fee: the aggregator's own gas figure for this route at the chain's current gas price, or unknown (the wallet shows the exact fee)
+        const networkFeeUsd = out.networkFeeUsd ?? 0;
         const raw: StoredRaw = {
           aggregator: agg.name, sellAmount: sellAmount.toString(), sellToken: input.sellToken, buyToken: input.buyToken, sellDecimals: input.sellDecimals,
           buyDecimals: input.buyDecimals, slippageBps: req.slippageBps, buyAmount: out.buyAmount.toString(), networkFeeUsd: out.networkFeeUsd, route: out.route, payload: out.payload,
@@ -196,6 +195,7 @@ export class MultiEvmDexAdapter implements DexAdapter {
           slippageBps: req.slippageBps,
           minReceived: outputAmount * (1 - req.slippageBps / 10_000),
           networkFeeUsd,
+          networkFeeKnown: out.networkFeeUsd != null,
           priorityFeeUsd: (req.priorityFeeNative ?? 0) * nat,
           platformFeeUsd: 0,
           route: out.route.length ? out.route : [agg.name],
