@@ -149,6 +149,34 @@ describe("EVM gas from the chain's current gas price", () => {
   });
 });
 
+describe("what the one approval costs when arming auto-sell on an EVM chain", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const WETH = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
+  const stub = (gas: string | null) =>
+    vi.stubGlobal("fetch", async (u: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body));
+        if (body.method === "eth_gasPrice") return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: "0x59682f00" }), { status: 200 }); // 1.5 gwei
+        if (body.method === "eth_estimateGas") return gas ? new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: gas }), { status: 200 }) : new Response("down", { status: 500 });
+      }
+      if (String(u).includes(WETH)) return new Response(JSON.stringify({ pairs: [{ chainId: "ethereum", baseToken: { address: WETH }, quoteToken: { address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" }, priceUsd: "3000", priceNative: "1", liquidity: { usd: 5e8 } }] }), { status: 200 });
+      return new Response("down", { status: 500 });
+    });
+  const approval = { from: "0x" + "1".repeat(40), to: "0x" + "2".repeat(40), data: "0x095ea7b3" };
+
+  it("is the chain's own gas estimate for that transaction x the gas price x the coin's price, in dollars", async () => {
+    const { evmTxFeeUsd } = await import("@/core/providers/evm/evmProviders");
+    stub("0xb71b"); // 46,875 gas: a typical ERC-20 approve
+    const fee = await evmTxFeeUsd("base", approval);
+    expect(fee).toBeCloseTo((1.5e9 * 46_875 * 3000) / 1e18, 6); // about $0.21 at 1.5 gwei and $3,000 ETH
+  });
+  it("is unknown (null), never a made-up number, when the gas estimate can't be had", async () => {
+    const { evmTxFeeUsd } = await import("@/core/providers/evm/evmProviders");
+    stub(null);
+    expect(await evmTxFeeUsd("linea", approval)).toBeNull();
+  });
+});
+
 let dbUp = false;
 try {
   await (await collections.users()).findOne({});

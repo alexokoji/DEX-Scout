@@ -92,6 +92,19 @@ export async function evmGasPriceWei(chain: ChainId): Promise<bigint | null> {
   }
 }
 
+/**
+ * What a specific transaction would cost the wallet right now in dollars: the chain's own gas estimate for it x the current gas
+ * price x the native coin's price. null = could not be worked out (the wallet then shows the exact fee itself).
+ */
+export async function evmTxFeeUsd(chain: ChainId, tx: { from?: string; to: string; data: string; value?: string }): Promise<number | null> {
+  const wei = await evmGasPriceWei(chain);
+  if (wei === null) return null;
+  const gas = await evmRpc<string>(chain, "eth_estimateGas", [tx], 6_000).then((g) => BigInt(g), () => BigInt(0));
+  if (gas <= BigInt(0)) return null;
+  const usd = await nativeUsd(chain).catch(() => 0);
+  return usd > 0 ? (Number(wei * gas) / 1e18) * usd : null;
+}
+
 /** What one swap costs in gas right now, in the native coin (current gas price x a typical swap's gas, with a margin). null = unknown. */
 export async function evmSwapFeeNative(chain: ChainId): Promise<number | null> {
   const wei = await evmGasPriceWei(chain);

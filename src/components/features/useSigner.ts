@@ -71,16 +71,23 @@ export function useSigner() {
       return until(connected);
     },
     /** Auto-sell on EVM: switch to the chain, send the one-time token approval if needed, then sign each order (gasless). */
-    async signEvmOrders(chainId: number, approval: { to: string; data: string; value?: string } | null, typedData: unknown[]): Promise<string[]> {
+    async signEvmOrders(chainId: number, approval: { to: string; data: string; value?: string } | null, typedData: unknown[], onStep?: (s: { step: number; of: number; kind: "approval" | "confirming" | "order" }) => void): Promise<string[]> {
       if (!(await evmReady())) throw new Error("Connect a wallet that supports this chain first");
       const evmNow = () => evmRef.current;
+      const of = typedData.length + (approval ? 1 : 0);
+      let step = 0;
       await evmNow().switchChain(chainId);
       if (approval) {
+        onStep?.({ step: ++step, of, kind: "approval" });
         const hash = await evmNow().sendTransaction(approval);
+        onStep?.({ step, of, kind: "confirming" });
         if (!(await evmNow().waitForReceipt(hash))) throw new Error("The token approval was not confirmed");
       }
       const sigs: string[] = [];
-      for (const t of typedData) sigs.push(await evmNow().signTypedData(t));
+      for (const t of typedData) {
+        onStep?.({ step: ++step, of, kind: "order" });
+        sigs.push(await evmNow().signTypedData(t));
+      }
       return sigs;
     },
     /** One EIP-712 signature on the given chain (e.g. cancelling auto-sell orders). */

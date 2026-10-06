@@ -2,7 +2,7 @@ import { autoSellVenue, CHAINS } from "@/core/chains";
 import { fillDelta, mergeForMinimum, minProceedsRaw, planAutoSells, toRaw, type PlannedOrder } from "@/core/trading/autoSell";
 import { cancelCowOrders, cowAllowance, cowApprovalTx, cowCancelTypedData, cowTypedData, buildCowOrder, getCowOrder, getCowTradeHashes, submitCowOrder, COW_RELAYER } from "@/core/providers/limitOrders/cow";
 import { cancelJupiterOrder, createJupiterOrder, getJupiterOrder, jupiterFills, JUP_FEE_FRACTION, JUP_MIN_ORDER_USD } from "@/core/providers/limitOrders/jupiter";
-import { tokenDecimals } from "@/core/providers/evm/evmProviders";
+import { evmTxFeeUsd, tokenDecimals } from "@/core/providers/evm/evmProviders";
 import { cancelKyberOrders, erc20Allowance, erc20ApprovalTx, kyberCancelSign, kyberContract, kyberFills, kyberFindOrder, kyberSignMessage, submitKyberOrder, type KyberOrder, type KyberOrderRequest } from "@/core/providers/limitOrders/kyber";
 import { providers } from "@/core/providers/registry";
 import { mintDecimals } from "@/core/providers/solana/solanaProviders";
@@ -155,17 +155,21 @@ export async function prepareArmEvm(userId: string, positionId: string, connecte
       await col.updateOne({ _id: d._id }, { $set: { venueData: { salt: String(typed.message.salt), takerAsset: taker, contract, expiredAt: req.expiredAt } } });
       orders.push({ id: d._id, levels: d.levels, gainPct: d.gainPct, targetPriceUsd: d.targetPriceUsd, sellAmount: d.sellAmount, typedData: typed });
     }
-    return { venue: "kyber" as const, chain: token.chain, chainId, note: plan.note, approval: allowance >= total ? null : erc20ApprovalTx(token.address, contract, total), orders };
+    const approval = allowance >= total ? null : erc20ApprovalTx(token.address, contract, total);
+    return { venue: "kyber" as const, chain: token.chain, chainId, note: plan.note, approval, approvalFeeUsd: approval ? await evmTxFeeUsd(chain, { from: wallet.address, ...approval }).catch(() => null) : null, orders };
   }
 
   const allowance = await cowAllowance(chain, token.address, wallet.address).catch(() => BigInt(0));
+  const approval = allowance >= total ? null : cowApprovalTx(token.address, total);
   return {
     venue: "cow" as const,
     chain: token.chain,
     chainId,
     note: plan.note,
     relayer: COW_RELAYER,
-    approval: allowance >= total ? null : cowApprovalTx(token.address, total),
+    approval,
+    /** what the one approval transaction costs, worked out from the chain, so the wallet's figure isn't a surprise */
+    approvalFeeUsd: approval ? await evmTxFeeUsd(chain, { from: wallet.address, ...approval }).catch(() => null) : null,
     orders: docs.map((d) => ({
       id: d._id,
       levels: d.levels,

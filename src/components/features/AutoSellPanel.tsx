@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badges";
 import { Button } from "@/components/ui/button";
 import { autoSellVenue, CHAINS } from "@/core/chains";
 import type { ChainId } from "@/core/types";
-import { price } from "@/lib/format";
+import { price, usd } from "@/lib/format";
 import { explainWalletError } from "@/lib/txErrors";
 import { useSigner } from "./useSigner";
 
@@ -64,8 +64,21 @@ export function AutoSellPanel({ positionId, chain, orders }: { positionId: strin
   const arm = () =>
     run(async () => {
       if (venue !== "jupiter") {
-        const p = await post<{ chainId: number; approval: { to: string; data: string; value?: string } | null; orders: { id: string; typedData: unknown }[] }>("prepare", { positionId, wallet: signer.addressFor(chain as ChainId) ?? undefined });
-        const sigs = await signer.signEvmOrders(p.chainId, p.approval, p.orders.map((o) => o.typedData));
+        const p = await post<{ chainId: number; approval: { to: string; data: string; value?: string } | null; approvalFeeUsd: number | null; orders: { id: string; typedData: unknown }[] }>("prepare", { positionId, wallet: signer.addressFor(chain as ChainId) ?? undefined });
+        // Say what the wallet is about to ask, before it asks: one approval transaction (the only thing that costs a network fee),
+        // then one FREE signature per target. A signature popup shows the amount being sold, which reads like a fee but isn't one.
+        const n = p.orders.length;
+        const fee = p.approvalFeeUsd == null ? "a small network fee" : `a network fee of about ${usd(p.approvalFeeUsd, p.approvalFeeUsd < 0.1 ? 4 : 2)}`;
+        const sigsWord = `${n} free signature${n === 1 ? "" : "s"}`;
+        const stepToast = "autosell-steps";
+        toast.message(p.approval ? `Your wallet will ask for 1 approval (${fee}), then ${sigsWord}, one per target. A signature costs nothing: it shows what would be sold, not a fee.` : `Your wallet will ask for ${sigsWord}, one per target. No approval is needed this time, and a signature costs nothing: it shows what would be sold, not a fee.`, { id: stepToast, duration: 20_000 });
+        const sigs = await signer.signEvmOrders(p.chainId, p.approval, p.orders.map((o) => o.typedData), (s) => {
+          const msg = s.kind === "approval" ? `Step ${s.step} of ${s.of}: approve the token in your wallet (${fee}). This is the only step that costs a network fee.`
+            : s.kind === "confirming" ? "Approval sent. Waiting for the network to confirm it before the signatures…"
+            : `Step ${s.step} of ${s.of}: sign order ${s.step - (p.approval ? 1 : 0)} of ${n}. Free, no network fee. It shows the amount that will be sold at the target price.`;
+          toast.message(msg, { id: stepToast, duration: 120_000 });
+        });
+        toast.dismiss(stepToast);
         const res = await post<{ activated: string[]; failed: { id: string; error: string }[] }>("activate", { positionId, signatures: Object.fromEntries(p.orders.map((o, i) => [o.id, sigs[i]])) });
         if (res.failed.length) throw new Error(`${res.activated.length} order(s) placed, ${res.failed.length} failed: ${res.failed[0].error}`);
       } else {
@@ -126,7 +139,7 @@ export function AutoSellPanel({ positionId, chain, orders }: { positionId: strin
         </div>
       )}
       <div className="mt-1.5 text-[10px] text-muted">
-        {venue === "cow" ? "Limit orders via CoW Protocol: one token approval for the exact amount, then gasless signatures." : venue === "kyber" ? "Limit orders via KyberSwap: one token approval for the exact amount, then gasless signatures. You receive the wrapped coin (e.g. WETH), which you can unwrap in your wallet." : "Limit orders via Jupiter: each order moves its tokens into Jupiter's escrow until it fills or you cancel. Jupiter keeps about 0.8% of the proceeds."}
+        {venue === "cow" ? "Limit orders via CoW Protocol: one token approval for the exact amount (the only network fee you pay), then one free signature per target. Once armed, the orders fill by themselves, with nothing more to sign. They last 14 days; re-arm after that." : venue === "kyber" ? "Limit orders via KyberSwap: one token approval for the exact amount (the only network fee you pay), then one free signature per target. Once armed, the orders fill by themselves, with nothing more to sign. They last 14 days; re-arm after that. You receive the wrapped coin (e.g. WETH), which you can unwrap in your wallet." : "Limit orders via Jupiter: each order moves its tokens into Jupiter's escrow until it fills or you cancel. Jupiter keeps about 0.8% of the proceeds."}
       </div>
     </div>
   );
