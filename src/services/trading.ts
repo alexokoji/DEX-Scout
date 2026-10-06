@@ -504,11 +504,12 @@ export async function reconcileLiveTrade(tradeId: string) {
   const nativeUsdNow = insp && insp.nativeDelta !== 0 ? await providers().chains[tChain].nativeUsdPrice().catch(() => 0) : 0;
   const realTokens = insp ? Math.abs(insp.tokenDelta) : 0;
   const tokenAmountActual = realTokens > 0 ? realTokens : trade.tokenAmount;
-  // What a buy cost = the amount swapped + the fees. NOT the native coin that actually left the wallet: on Solana that also
-  // contains the one-off ~0.002 SOL deposit for the new token account (about 3% of a $10 buy, recoverable, not a trading
-  // cost), which made every new position open several percent "down" against the chart. The entry PRICE is the swap alone.
+  // What a buy cost = the amount swapped. Not the network fee (already paid, it can't change whether the position is up or
+  // down, and on a small buy it made a token that was up on price read as down), and not the native coin that actually left
+  // the wallet: on Solana that also contains the one-off ~0.002 SOL deposit for the new token account (recoverable, not a
+  // trading cost). The cost basis, the entry price and the profit targets all measure the same thing: the swap.
   const swapUsd = trade.inputUsd;
-  const buyCostUsd = swapUsd + trade.networkFeeUsd;
+  const buyCostUsd = swapUsd;
   const sellProceedsUsd = insp && nativeUsdNow > 0 ? Math.max(0, insp.nativeDelta) * nativeUsdNow : trade.inputUsd - trade.feesUsd - trade.networkFeeUsd;
 
   const positions = await collections.positions();

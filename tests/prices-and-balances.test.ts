@@ -174,7 +174,7 @@ afterAll(async () => {
     }
   });
 
-  it("a bought position records the price actually paid for the tokens, with fees in the cost but NOT the token-account deposit, and starts at the live market price", async () => {
+  it("a bought position records the price actually paid for the tokens, with neither the fee nor the token-account deposit in its cost, and starts at the live market price", async () => {
     const { reconcileLiveTrade } = await import("@/services/trading");
     const { providers } = await import("@/core/providers/registry");
     const token = await makeToken("solana", 0.0055); // the stored price is an hour old...
@@ -197,8 +197,8 @@ afterAll(async () => {
       const pos = (await (await collections.positions()).findOne({ _id: (await (await collections.trades()).findOne({ _id: tradeId }))!.positionId! }))!;
       created.push(); // positions are cleaned by userId
       expect(pos.entryPriceUsd).toBeCloseTo(10 / 1000, 10); // $10 swapped for 1000 tokens: $0.01 each, not inflated by the deposit
-      expect(pos.investedUsd).toBeCloseTo(10.03, 6); // swap + the fee quoted
-      expect(pos.costBasisUsd).toBeCloseTo(10.03, 6);
+      expect(pos.investedUsd).toBeCloseTo(10, 6); // the swap only: the quoted fee is already paid and does not move the position's profit
+      expect(pos.costBasisUsd).toBeCloseTo(10, 6);
       expect(pos.entryMarketPriceUsd).toBe(0.006); // the market at the time, kept to compare with what was paid
       expect(pos.currentPriceUsd).toBe(0.006); // started at the live price, not the hour-old 0.0055
       expect(pos.priceAt).toBeInstanceOf(Date);

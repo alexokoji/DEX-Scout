@@ -21,7 +21,7 @@ export default async function PortfolioPage() {
         <Stat label="Connected wallet" value={pf.wallet?.balanceUsd != null ? usd(pf.wallet.balanceUsd) : "—"} sub={pf.wallet ? pf.wallet.summary || "no balance" : <Link href="/wallet" className="text-accent">Link a wallet</Link>} />
         <Stat label="Open position value" value={usd(pf.openPositionValueUsd)} sub={`${pf.positions} positions`} />
         <Stat label="Available to trade" value={pf.capital.availableUsd !== null ? usd(pf.capital.availableUsd) : "—"} sub={`${usd(pf.capital.deployedUsd)} deployed`} />
-        <Stat label="Unrealized P/L" value={usd(pf.unrealizedPnlUsd, Math.abs(pf.unrealizedPnlUsd) < 0.1 ? 4 : 2)} tone={pf.unrealizedPnlUsd >= 0 ? "up" : "down"} sub={pf.openFeesUsd >= 0.0001 ? `on price · ${usd(pf.unrealizedAfterFeesUsd, Math.abs(pf.unrealizedAfterFeesUsd) < 0.1 ? 4 : 2)} after ${usd(pf.openFeesUsd, 4)} fees` : "on price"} />
+        <Stat label="Unrealized P/L" value={usd(pf.unrealizedPnlUsd, Math.abs(pf.unrealizedPnlUsd) < 0.1 ? 4 : 2)} tone={pf.unrealizedPnlUsd >= 0 ? "up" : "down"} />
         <Stat label="Realized P/L" value={usd(pf.realizedPnlUsd)} tone={pf.realizedPnlUsd >= 0 ? "up" : "down"} sub={`Est. equity ${usd(total)}`} />
       </div>
       <Card>

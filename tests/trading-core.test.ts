@@ -60,26 +60,19 @@ describe("position calculations", () => {
     expect(m.targetProgress).toBeCloseTo(0.5);
   });
 
-  it("a token that is up on price is shown as a profit, with the buy fee beside it, not folded into the headline", () => {
-    // the position from the report: 14.66 tokens bought at $0.006823 (a $0.10 swap) plus a ~$0.0099 fee, now priced $0.006937
+  it("a token that is up on price is shown as a profit, whatever the buy fee was", () => {
+    // the position from the report: 14.66 tokens bought at $0.006823 (a $0.10 swap), now priced $0.006937
     const swap = 14.66 * 0.006823;
-    const m = computeMetrics({ entryPriceUsd: 0.006823, initialAmount: 14.66, amount: 14.66, costBasisUsd: swap + 0.0099, targetsHit: 0 }, 0.006937, DEFAULT_TARGETS_MULTI);
+    const m = computeMetrics({ entryPriceUsd: 0.006823, initialAmount: 14.66, amount: 14.66, costBasisUsd: swap, targetsHit: 0 }, 0.006937, DEFAULT_TARGETS_MULTI);
     expect(m.pricePnlPct).toBeCloseTo((0.006937 / 0.006823 - 1) * 100, 6); // +1.67%, the move the targets track
     expect(m.pricePnlUsd).toBeCloseTo(14.66 * (0.006937 - 0.006823), 8);
     expect(m.pricePnlUsd).toBeGreaterThan(0);
-    expect(m.feesUsd).toBeCloseTo(0.0099, 6);
-    expect(m.unrealizedPnlUsd).toBeLessThan(0); // after the fee it is down: both are true and both are shown
-    expect(m.pnlPct).toBeCloseTo(-7.4, 0);
-    expect(m.unrealizedPnlUsd).toBeCloseTo(m.pricePnlUsd - m.feesUsd, 8);
-  });
-
-  it("no fees in the cost means the two P/L figures agree, and a partly sold position keeps only its share of the fee", () => {
-    const m = computeMetrics(pos(), 1.04, DEFAULT_TARGETS_MULTI);
-    expect(m.feesUsd).toBeCloseTo(0);
-    expect(m.pricePnlUsd).toBeCloseTo(m.unrealizedPnlUsd);
-    const sold = applySell({ ...pos(), costBasisUsd: 102, realizedPnlUsd: 0 }, 50, 55); // half of 100 tokens bought at $1 + $2 of fees
-    const after = computeMetrics({ ...pos(), amount: sold.amount, costBasisUsd: sold.costBasisUsd }, 1.04, DEFAULT_TARGETS_MULTI);
-    expect(after.feesUsd).toBeCloseTo(1); // half the fee left with the half sold
+    expect(m.unrealizedPnlUsd).toBeCloseTo(m.pricePnlUsd, 8); // a new position's cost is the swap, so there is only one figure
+    expect(m.pnlPct).toBeCloseTo(m.pricePnlPct, 6);
+    // a position opened before this carries its buy fee in the cost basis; the headline still follows price
+    const old = computeMetrics({ entryPriceUsd: 0.006823, initialAmount: 14.66, amount: 14.66, costBasisUsd: swap + 0.0099, targetsHit: 0 }, 0.006937, DEFAULT_TARGETS_MULTI);
+    expect(old.pricePnlUsd).toBeCloseTo(m.pricePnlUsd, 10);
+    expect(old.pricePnlUsd).toBeGreaterThan(0);
   });
 
   it("a loss is just OPEN", () => {

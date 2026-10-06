@@ -29,7 +29,7 @@ interface PV {
   signal: { id: string; type: string; score: number } | null;
   targets: { level: number; gainPct: number; sellPct: number }[];
   autoSells?: AutoSellView[];
-  metrics: { currentValueUsd: number; pricePnlUsd: number; pricePnlPct: number; feesUsd: number; unrealizedPnlUsd: number; pnlPct: number; nextTargetLevel: number | null; nextTargetGainPct: number | null; targetProgress: number };
+  metrics: { currentValueUsd: number; pricePnlUsd: number; pricePnlPct: number; unrealizedPnlUsd: number; pnlPct: number; nextTargetLevel: number | null; nextTargetGainPct: number | null; targetProgress: number };
 }
 
 export function PositionsView({ positions, actions = true }: { positions: PV[]; actions?: boolean }) {
@@ -57,7 +57,7 @@ export function PositionsView({ positions, actions = true }: { positions: PV[]; 
                 {closed ? (
                   <PnL value={p.realizedPnlUsd} pct={p.investedUsd > 0 ? (p.realizedPnlUsd / p.investedUsd) * 100 : undefined} className="text-base font-semibold" />
                 ) : (
-                  <LivePositionPnL chain={p.token.chain} address={p.token.address} fallbackUsd={p.currentPriceUsd} amount={p.amount} entryPriceUsd={p.entryPriceUsd} costBasisUsd={p.costBasisUsd} className="text-base font-semibold" />
+                  <LivePositionPnL chain={p.token.chain} address={p.token.address} fallbackUsd={p.currentPriceUsd} amount={p.amount} entryPriceUsd={p.entryPriceUsd} className="text-base font-semibold" />
                 )}
                 {actions && !closed && <ClosePositionButton id={p.id} symbol={p.token.symbol} />}
               </div>
@@ -71,11 +71,7 @@ export function PositionsView({ positions, actions = true }: { positions: PV[]; 
               </div>
               {closed ? <Cell k="Current" v={price(p.currentPriceUsd)} /> : <LivePositionPrice chain={p.token.chain} address={p.token.address} fallbackUsd={p.currentPriceUsd} entryPriceUsd={p.entryPriceUsd} />}
               <Cell k="Amount" v={tokens(p.amount)} />
-              <div>
-                <div className="text-muted">Invested</div>
-                <div className="num">{usd(p.investedUsd, p.investedUsd < 1 ? 4 : 2)}</div>
-                {p.metrics.feesUsd >= 0.0001 ? <div className="text-[10px] text-muted">incl. {usd(p.metrics.feesUsd, 4)} fees</div> : null}
-              </div>
+              <Cell k="Invested" v={usd(p.investedUsd, p.investedUsd < 1 ? 4 : 2)} />
               <Cell k="Value" v={usd(p.metrics.currentValueUsd, p.metrics.currentValueUsd < 1 ? 4 : 2)} />
               <Cell k="Realized" v={usd(p.realizedPnlUsd)} />
               <div>

@@ -8,9 +8,7 @@ export interface PositionMetrics {
   /** what the position has made on PRICE: what it is worth now against what the tokens cost at the price paid. This is the headline, and what the profit targets track. */
   pricePnlUsd: number;
   pricePnlPct: number;
-  /** the fees (network, priority) still sitting in the cost of the tokens held */
-  feesUsd: number;
-  /** after those fees: value against the full cost basis, i.e. what you would have if you sold for this price right now, less only the buy fees */
+  /** value against the cost basis (the swap; positions opened before fees were left out of it also carry their buy fee here) */
   unrealizedPnlUsd: number;
   pnlPct: number;
   nextTargetLevel: number | null;
@@ -22,18 +20,16 @@ export function computeMetrics(pos: PositionState, price: number, targets: Profi
   const currentValueUsd = pos.amount * price;
   const unrealizedPnlUsd = currentValueUsd - pos.costBasisUsd;
   const pnlPct = pos.costBasisUsd > 0 ? (unrealizedPnlUsd / pos.costBasisUsd) * 100 : 0;
-  // On a small position the fees are a large share of what was paid (a $0.01 fee on a $0.10 buy is 10%), so a token that is up
-  // 2% on price reads as down 7% once they are counted. Both are true; showing only the second looked like a wrong profit figure.
+  // Profit is measured on price: the buy fee is already paid and cannot change whether the position is up or down (on a $0.10
+  // buy a $0.01 fee made a token that was up 2% read as down 7%, against a target that was correctly tracking the gain).
   const swapCostUsd = pos.amount * pos.entryPriceUsd;
   const pricePnlUsd = currentValueUsd - swapCostUsd;
   const pricePnlPct = pos.entryPriceUsd > 0 ? (price / pos.entryPriceUsd - 1) * 100 : 0;
-  const feesUsd = Math.max(0, pos.costBasisUsd - swapCostUsd);
   const p = targetProgress(pos.entryPriceUsd, price, targets, pos.targetsHit);
   return {
     currentValueUsd,
     pricePnlUsd,
     pricePnlPct,
-    feesUsd,
     unrealizedPnlUsd,
     pnlPct,
     nextTargetLevel: p.nextLevel,

@@ -23,7 +23,7 @@ export default async function DashboardPage() {
         <Stat label="Available to trade" value={pf.capital.availableUsd !== null ? usd(pf.capital.availableUsd) : "—"} sub={pf.wallet ? `${usd(pf.capital.deployedUsd)} deployed` : "connect a wallet"} />
         <Stat label="Open positions" value={String(pf.positions)} sub={`${pf.capital.slotsLeft} slots left`} />
         <Stat label="Realized P/L" value={usd(pf.realizedPnlUsd)} tone={pf.realizedPnlUsd > 0 ? "up" : pf.realizedPnlUsd < 0 ? "down" : undefined} />
-        <Stat label="Unrealized P/L" value={usd(pf.unrealizedPnlUsd, Math.abs(pf.unrealizedPnlUsd) < 0.1 ? 4 : 2)} tone={pf.unrealizedPnlUsd > 0 ? "up" : pf.unrealizedPnlUsd < 0 ? "down" : undefined} sub={pf.openFeesUsd >= 0.0001 ? `on price · ${usd(pf.unrealizedAfterFeesUsd, Math.abs(pf.unrealizedAfterFeesUsd) < 0.1 ? 4 : 2)} after ${usd(pf.openFeesUsd, 4)} fees` : "on price"} />
+        <Stat label="Unrealized P/L" value={usd(pf.unrealizedPnlUsd, Math.abs(pf.unrealizedPnlUsd) < 0.1 ? 4 : 2)} tone={pf.unrealizedPnlUsd > 0 ? "up" : pf.unrealizedPnlUsd < 0 ? "down" : undefined} />
         <Stat label="Signals today" value={String(d.todaySignals)} sub={`${d.activeSignals} active now`} />
         <Stat label="Trades today" value={String(d.tradesToday)} />
         <Stat label="Bot" value={botStatus} tone={botStatus === "ACTIVE" ? "up" : botStatus === "DISABLED" ? "down" : "warn"} sub={d.settings.autoTradingEnabled ? "Auto trading ON" : "Manual mode"} />

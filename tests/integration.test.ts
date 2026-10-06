@@ -280,7 +280,7 @@ d("LIVE trading: server-enforced gates and on-chain-confirmation bookkeeping", (
     expect(pos!.status).toBe("OPEN");
     expect(pos!.origin).toBe("MANUAL");
     expect(pos!.sourceSignalId).toBe(sig._id);
-    expect(pos!.investedUsd).toBeCloseTo(10 + 0.02, 6); // inputUsd + networkFeeUsd (no on-chain inspection available in mock mode)
+    expect(pos!.investedUsd).toBeCloseTo(10, 6); // the swap only: the $0.02 network fee is already paid and is not part of what the position is measured against
     expect(pos!.amount).toBeCloseTo(100, 6);
 
     const consumed = await signals.findOne({ _id: sig._id });
