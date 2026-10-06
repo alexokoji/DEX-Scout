@@ -138,6 +138,11 @@ export function AutoSellPanel({ positionId, chain, orders }: { positionId: strin
           ))}
         </div>
       )}
+      {venue === "jupiter" && active.length === 0 && (
+        <div className="mt-1.5 text-[11px] text-muted">
+          Jupiter refuses limit orders below its own minimum size, so a small position can&apos;t be auto-sold on Solana. For those, reaching a target only queues a sell for you to sign (a notification), and it waits 10 minutes: nothing can sell it while you are away, because only your wallet can sign.
+        </div>
+      )}
       <div className="mt-1.5 text-[10px] text-muted">
         {venue === "cow" ? "Limit orders via CoW Protocol: one token approval for the exact amount (the only network fee you pay), then one free signature per target. Once armed, the orders fill by themselves, with nothing more to sign. They last 14 days; re-arm after that." : venue === "kyber" ? "Limit orders via KyberSwap: one token approval for the exact amount (the only network fee you pay), then one free signature per target. Once armed, the orders fill by themselves, with nothing more to sign. They last 14 days; re-arm after that. You receive the wrapped coin (e.g. WETH), which you can unwrap in your wallet." : "Limit orders via Jupiter: each order moves its tokens into Jupiter's escrow until it fills or you cancel. Jupiter keeps a small fee out of the proceeds; each fill shows exactly how much."}
       </div>

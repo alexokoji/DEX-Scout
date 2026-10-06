@@ -291,6 +291,56 @@ const E18 = BigInt("1000000000000000000");
     vi.restoreAllMocks();
   });
 
+  it("an armed order the market has stayed past without it filling: the second check queues a sell for the user; dropping back clears it; a closed position is never reopened by the monitor", async () => {
+    const { monitorPosition } = await import("@/services/positionMonitor");
+    const { providers } = await import("@/core/providers/registry");
+    const token = await makeToken("base", 0.0108); // +8% on a 0.01 entry: exactly at the first target
+    const pos = await armAll(token, { targetsSnapshot: [{ level: 1, gainPct: 8, sellPct: 100 }] });
+    const col = await collections.autoSellOrders();
+    let price = 0.0108;
+    vi.spyOn(providers().dex, "buildSwapTransaction").mockResolvedValue({ unsignedTxBase64: "unsigned" });
+    vi.spyOn(providers().dex, "getQuote").mockImplementation(async (req) => ({ chain: req.chain, inputMint: "a", outputMint: "b", inputAmountUsd: 1, outputAmount: 1, effectivePriceUsd: price, priceImpactPct: 0.2, slippageBps: 300, minReceived: 1, networkFeeUsd: 0.01, priorityFeeUsd: 0, platformFeeUsd: 0, route: [], expiresAt: new Date(Date.now() + 60_000), raw: null, source: "LIVE" }) as never);
+    vi.spyOn(providers().data, "getSnapshot").mockImplementation(async () => ({ ...template, chain: token.chain, address: token.address, priceUsd: price, liquidityUsd: 900_000, liquidity1hAgoUsd: 900_000, poolCreatedAt: new Date(), observedAt: new Date() }) as never);
+    const snapshotOf = async () => (await (await collections.positions()).findOne({ _id: pos._id }))!;
+    const run = async (p?: PositionDoc) => monitorPosition(p ?? (await snapshotOf()), (await (await collections.tokens()).findOne({ _id: token._id }))!);
+    const queued = async () => (await collections.trades()).countDocuments({ positionId: pos._id, side: "SELL", status: "PREPARED" });
+    const order = async () => (await col.findOne({ positionId: pos._id, status: "ACTIVE" }))!;
+
+    await run();
+    expect(await queued()).toBe(0); // first sight of the target: the order gets its chance
+    expect((await order()).targetSeenAt).toBeTruthy();
+    price = 0.0100; // back under the target: the mark clears, so a later touch starts again
+    await run();
+    expect((await order()).targetSeenAt ?? null).toBeNull();
+    price = 0.0108;
+    await run();
+    expect(await queued()).toBe(0);
+    await run(); // still at the target on the next check and the order hasn't filled
+    expect(await queued()).toBe(1);
+    const sell = await (await collections.trades()).findOne({ positionId: pos._id, side: "SELL", status: "PREPARED" });
+    expect((sell!.quote as { reason: string }).reason).toMatch(/hasn't filled/);
+    await run();
+    expect(await queued()).toBe(1); // asking again while one is waiting adds nothing
+
+    // the position closes (a sale booked) while a check that read it earlier is still running: its write must not undo that
+    const stale = await snapshotOf();
+    await (await collections.positions()).updateOne({ _id: pos._id }, { $set: { status: "CLOSED", amount: 0, closedAt: new Date() } });
+    await run(stale);
+    expect((await snapshotOf()).status).toBe("CLOSED");
+    vi.restoreAllMocks();
+  });
+
+  it("a position that already has a close time but an open-looking status (caught by that race) is put right", async () => {
+    const { healClosedPositions } = await import("@/services/trading");
+    const token = await makeToken("base", 0.01);
+    const pos = await makePosition(token, { status: "PROFITABLE", amount: 0, closedAt: new Date() });
+    const open = await makePosition(token);
+    expect(await healClosedPositions(userId)).toBeGreaterThanOrEqual(1);
+    const positions = await collections.positions();
+    expect((await positions.findOne({ _id: pos._id }))!.status).toBe("CLOSED");
+    expect((await positions.findOne({ _id: open._id }))!.status).toBe("OPEN"); // an open one is left alone
+  });
+
   it("cancelling: EVM takes one signature for all orders; Solana one transaction per order", async () => {
     const { prepareCancelEvm, confirmCancelEvm, prepareCancelSolana, confirmCancelSolana } = await import("@/services/autoSell");
     const token = await makeToken("base", 0.0108);

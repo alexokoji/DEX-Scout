@@ -11,8 +11,8 @@ import { analyzeSnapshot } from "./analysis";
 import { getSettings } from "./settings";
 import { checkScannerHealth, notifyUser } from "./notifications";
 import { positionAlert } from "./notificationMessages";
-import { activeAutoSellLevels, syncAutoSells } from "./autoSell";
-import { prepareLiveSell } from "./trading";
+import { activeAutoSellLevels, syncAutoSells, unfilledPastTarget } from "./autoSell";
+import { healClosedPositions, prepareLiveSell } from "./trading";
 import { touchWorker } from "./workerState";
 
 interface HealthNotes {
@@ -58,8 +58,10 @@ export async function monitorPosition(pos: PositionDoc, token: TokenDoc): Promis
   // "profitable" is judged on price, the way the targets and the headline P&L are; `unrealized` (after buy fees) is what a sale would net
   const status = deriveStatus({ closed: false, emergency: assessment.health === "EMERGENCY", targetsHit: pos.targetsHit, unrealizedPnlUsd: pos.amount * (price - pos.entryPriceUsd) });
 
+  // Not for a position that closed while this check was running (the analysis above takes seconds, a sale can book in that time):
+  // writing the status back would bring a sold position back into the open list.
   await positions.updateOne(
-    { _id: pos._id },
+    { _id: pos._id, status: { $ne: "CLOSED" } },
     {
       $set: {
         currentPriceUsd: price,
@@ -108,6 +110,19 @@ export async function monitorPosition(pos: PositionDoc, token: TokenDoc): Promis
     return;
   }
 
+  // A limit order is not a market sell: it fills only when a buyer takes it at its price, and the market touching that price doesn't
+  // make that happen (a small order on a quiet chain can wait, or never fill). If the market has stayed at or above an armed order's
+  // target on two checks in a row and the order still hasn't filled, queue a sell for the user to sign rather than wait on it.
+  const stuck = await unfilledPastTarget(pos._id, price);
+  if (stuck.length) {
+    const level = Math.max(...stuck.flatMap((o) => o.levels));
+    await logEvent({ type: "TARGET_REACHED", source: "monitor", userId: pos.userId, message: `${token.symbol} is at its target but the auto-sell order for target ${level} hasn't filled`, data: { positionId: pos._id } });
+    if (liveTradingAllowed()) {
+      await prepareLiveSell(pos.userId, pos._id, stuck.reduce((s, o) => s + o.sellAmount, 0), "TARGET_EXIT", `Target ${level} reached, but its auto-sell order hasn't filled (a limit order only fills when a buyer takes it)`, level);
+    }
+    return;
+  }
+
   // ── Max position age: only ever closes a position that is in profit; losers are held (no stop loss) ──
   if (covered.size === 0 && settings.maxPositionAgeHours && Date.now() - pos.openedAt.getTime() > settings.maxPositionAgeHours * 3_600_000) {
     if (unrealized > 0) {
@@ -115,7 +130,7 @@ export async function monitorPosition(pos: PositionDoc, token: TokenDoc): Promis
     } else if (!notes.maxAgeNoted) {
       await positionEvents.insertOne({ _id: newId(), positionId: pos._id, type: "MAX_AGE", message: "Maximum age reached but position is not in profit — holding (no automatic stop loss)", data: null, createdAt: new Date() });
       await positions.updateOne(
-        { _id: pos._id },
+        { _id: pos._id, status: { $ne: "CLOSED" } },
         { $set: { healthNotes: { ...notes, positives: assessment.positives, negatives: assessment.negatives, emergencyReasons: assessment.emergencyReasons, maxAgeNoted: true } } },
       );
     }
@@ -127,6 +142,7 @@ export async function runPositionMonitorCycle(): Promise<{ monitored: number; er
   await syncAutoSells().catch((err) => logEvent({ type: "WORKER_ERROR", source: "monitor", level: "WARN", message: `Auto-sell sync failed: ${safeMessage(err)}` }));
   const positionsCol = await collections.positions();
   const tokensCol = await collections.tokens();
+  await healClosedPositions().catch(() => {});
   const positions = await positionsCol.find({ status: { $ne: "CLOSED" }, amount: { $gt: 0 } }).toArray();
   const tokens = await tokensCol.find({ _id: { $in: [...new Set(positions.map((p) => p.tokenId))] } }).toArray();
   const tokenById = new Map(tokens.map((t) => [t._id, t]));

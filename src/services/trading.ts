@@ -620,9 +620,22 @@ export async function reconcileLiveTrade(tradeId: string) {
  * scheduled run. Called when positions are shown, so what is on screen is what the chain says. Cheap: one status lookup per trade.
  */
 export async function reconcileUserPending(userId: string): Promise<void> {
+  await healClosedPositions(userId).catch(() => {});
   const trades = await collections.trades();
   const pending = await trades.find({ userId, status: "PENDING", "transaction.signature": { $ne: null } }, { projection: { _id: 1 } }).limit(10).toArray();
   await Promise.all(pending.map((t) => reconcileLiveTrade(t._id).catch(() => {})));
+}
+
+/**
+ * A position whose sale has booked (it has a close time) is closed, whatever its status field says. The position monitor reads a position,
+ * spends a few seconds on the market data, then writes its status back: if a sale booked in those seconds the write used to undo the
+ * closing, leaving a sold position (nothing left in it) in the open list. The monitor no longer writes to a closed position; this puts
+ * right any that were already caught that way.
+ */
+export async function healClosedPositions(userId?: string): Promise<number> {
+  const positions = await collections.positions();
+  const r = await positions.updateMany({ ...(userId ? { userId } : {}), status: { $ne: "CLOSED" }, closedAt: { $ne: null } }, { $set: { status: "CLOSED" } });
+  return r.modifiedCount;
 }
 
 /** Prepare an unsigned LIVE sell that waits in the user's approval queue (no keys are held server-side). */

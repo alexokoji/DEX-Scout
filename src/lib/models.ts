@@ -432,6 +432,8 @@ export interface AutoSellOrderDoc {
   activatedAt: Date | null;
   updatedAt: Date;
   lastSyncAt: Date | null;
+  /** when the position monitor first saw the market at or above this order's target while the order was still unfilled (cleared if the price drops back) */
+  targetSeenAt?: Date | null;
 }
 
 export interface NotificationPrefsDoc {

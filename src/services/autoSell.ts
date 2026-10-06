@@ -377,6 +377,28 @@ export async function activeAutoSellLevels(positionId: string): Promise<Set<numb
   return new Set(docs.flatMap((d) => d.levels));
 }
 
+/**
+ * The armed EVM orders whose target the market has stayed at or above on two checks in a row without the order filling. A limit order
+ * fills only when a buyer takes it at its price; the market touching that price doesn't guarantee one does. Solana orders are left
+ * alone: their tokens sit in escrow, so they can't be sold another way while the order stands. The first check that sees the price at
+ * the target only marks the order; falling back below it clears the mark.
+ */
+export async function unfilledPastTarget(positionId: string, price: number): Promise<AutoSellOrderDoc[]> {
+  const col = await collections.autoSellOrders();
+  const orders = await col.find({ positionId, status: "ACTIVE", venue: { $ne: "jupiter" } }).toArray();
+  const due: AutoSellOrderDoc[] = [];
+  for (const o of orders) {
+    if (!(price >= o.targetPriceUsd)) {
+      if (o.targetSeenAt) await col.updateOne({ _id: o._id }, { $set: { targetSeenAt: null } });
+    } else if (!o.targetSeenAt) {
+      await col.updateOne({ _id: o._id }, { $set: { targetSeenAt: new Date() } });
+    } else {
+      due.push(o);
+    }
+  }
+  return due;
+}
+
 export interface VenueState {
   state: "open" | "filled" | "cancelled" | "expired" | "missing";
   sellRaw: bigint;
