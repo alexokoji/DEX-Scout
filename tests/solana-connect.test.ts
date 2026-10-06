@@ -4,7 +4,28 @@
  * so the wallet connected but the app's Solana state never changed. These tests model that library behaviour faithfully.
  */
 import { describe, expect, it, vi } from "vitest";
-import { connectSolanaWallet, type SolLike } from "@/lib/solanaConnect";
+import { connectSolanaWallet, pickSolanaWallet, type SolLike, waitForSolanaWallet } from "@/lib/solanaConnect";
+
+describe("choosing the Solana wallet to connect for an action", () => {
+  it("prefers the wallet already connected for EVM (MetaMask offers both), then the last one used, then the only one", () => {
+    expect(pickSolanaWallet({ evmName: "MetaMask", selected: "Phantom", installed: ["Phantom", "MetaMask"] })).toBe("MetaMask");
+    expect(pickSolanaWallet({ evmName: "Coinbase Wallet", selected: null, installed: ["Coinbase Wallet"] })).toBe("Coinbase Wallet");
+    expect(pickSolanaWallet({ evmName: "Phantom", selected: null, installed: ["Phantom Wallet"] })).toBe("Phantom Wallet"); // same wallet, named slightly differently
+    expect(pickSolanaWallet({ evmName: "Rabby", selected: "Phantom", installed: ["Phantom", "Backpack"] })).toBe("Phantom"); // Rabby has no Solana: use the last one
+    expect(pickSolanaWallet({ evmName: "Rabby", selected: null, installed: ["Backpack"] })).toBe("Backpack"); // the only one there is
+  });
+  it("won't guess between several, and says none when none is offered", () => {
+    expect(pickSolanaWallet({ evmName: "Rabby", selected: null, installed: ["Phantom", "Backpack"] })).toBeNull();
+    expect(pickSolanaWallet({ evmName: "MetaMask", selected: null, installed: [] })).toBeNull();
+    expect(pickSolanaWallet({ evmName: null, selected: "Gone", installed: [] })).toBeNull();
+  });
+  it("waits for a wallet that registers a moment after the page loads, and gives up after the timeout", async () => {
+    const installed: string[] = [];
+    setTimeout(() => installed.push("MetaMask"), 60);
+    await expect(waitForSolanaWallet(() => pickSolanaWallet({ evmName: "MetaMask", selected: null, installed }), { timeoutMs: 1000, pollMs: 10 })).resolves.toBe("MetaMask");
+    await expect(waitForSolanaWallet(() => null, { timeoutMs: 60, pollMs: 10 })).resolves.toBeNull();
+  });
+});
 
 /**
  * A wallet-adapter whose select() takes effect only after a delay (a React re-render), and whose connection is only

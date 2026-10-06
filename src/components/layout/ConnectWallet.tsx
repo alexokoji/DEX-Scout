@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badges";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/form";
 import { shortAddr } from "@/lib/format";
-import { connectSolanaWallet as connectSolana, type SolLike } from "@/lib/solanaConnect";
+import { connectSolanaWallet as connectSolana, pickSolanaWallet, type SolLike, waitForSolanaWallet } from "@/lib/solanaConnect";
 import { useEvmWallet } from "./EvmWalletProvider";
 
 /**
@@ -130,11 +130,23 @@ export function ConnectWalletProvider({ children }: { children: React.ReactNode 
           return true;
         }
         if (solRef.current.connected) return true;
-        // prefer the wallet already connected for EVM if it also supports Solana, then the one selected for Solana
-        const active = evmRef.current.activeWallet ? norm(evmRef.current.activeWallet.name) : null;
-        const via = entriesRef.current.find((e) => e.key === active && e.solName)?.solName ?? solRef.current.wallet?.adapter.name ?? null;
+        // the wallet already connected for EVM if it also supports Solana, else the one used last time, else the only one there is;
+        // waits a few seconds for wallets that haven't registered with the page yet rather than giving up at once
+        const via = await waitForSolanaWallet(() =>
+          pickSolanaWallet({
+            evmName: evmRef.current.activeWallet?.name ?? null,
+            selected: solRef.current.wallet?.adapter.name ?? null,
+            installed: solRef.current.wallets.filter((w) => w.readyState === "Installed" || w.readyState === "Loadable").map((w) => w.adapter.name),
+          }),
+        );
         if (!via) {
-          setOpen(true);
+          const evmName = evmRef.current.activeWallet?.name;
+          if (evmName) {
+            // the wallet IS there, it just isn't offering Solana to this page: say that, instead of "no wallet detected"
+            toast.error(`${evmName} is connected, but it isn't offering a Solana account to this page. Open ${evmName}, make sure a Solana account is added and enabled, then reload.`, { duration: 15_000 });
+          } else {
+            setOpen(true);
+          }
           return false;
         }
         await connectSolanaWallet(via);
@@ -174,7 +186,9 @@ export function ConnectWalletProvider({ children }: { children: React.ReactNode 
               </div>
             )}
 
-            {entries.length === 0 ? (
+            {entries.length === 0 && anyConnected ? (
+              <p className="text-xs text-muted">Your wallet is connected above. This page can&apos;t see any other wallet to switch to.</p>
+            ) : entries.length === 0 ? (
               <div className="space-y-2 text-sm">
                 <p className="text-muted">No wallet detected in this browser.</p>
                 <p className="text-xs text-muted">
