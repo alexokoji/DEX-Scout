@@ -30,6 +30,9 @@ const maskedTarget = (uri: string) => {
 async function main() {
   const uri = process.env.MONGODB_URI ?? "";
   if (!uri) throw new Error("MONGODB_URI is not set");
+  // An Atlas "mongodb+srv" address is looked up with a DNS SRV query, which some home routers and ISP resolvers refuse (the error is
+  // "querySrv ECONNREFUSED"). Ask public resolvers instead; this affects only this script.
+  if (uri.startsWith("mongodb+srv://")) (await import("node:dns")).setServers(["1.1.1.1", "8.8.8.8"]);
   const { closeDb } = await import("../src/lib/db");
   const { cleanUpPositions } = await import("../src/services/positionCleanup");
   console.log(`[cleanup] database: ${maskedTarget(uri)}`);
