@@ -8,7 +8,13 @@
  * available to cancel), so it is parsed defensively.
  */
 const BASE = "https://lite-api.jup.ag/trigger/v1";
-export const JUP_MIN_ORDER_USD = 5.5; // Jupiter rejects under $5; stay clear of the edge
+/**
+ * Jupiter's own rule, from its API ("Order size must be at least 5 USD"), tested live: the order's size is the larger of what
+ * the tokens are worth now and what it pays at its target price, and in practice the edge sat a little under $5 (an order
+ * measured $4.90 was accepted, $4.84 refused). 3% above $5 keeps clear of that edge and of price moves between our check and
+ * the order being created.
+ */
+export const JUP_MIN_ORDER_USD = 5.15;
 export const WSOL = "So11111111111111111111111111111111111111112";
 /** Jupiter keeps about 0.8% of the output on fills (seen on real fills); grossed into the limit so the user nets the target. */
 export const JUP_FEE_FRACTION = 0.01;

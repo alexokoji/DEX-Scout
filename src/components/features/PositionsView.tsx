@@ -59,7 +59,7 @@ export function PositionsView({ positions, actions = true }: { positions: PV[]; 
                 ) : (
                   <LivePositionPnL chain={p.token.chain} address={p.token.address} fallbackUsd={p.currentPriceUsd} amount={p.amount} entryPriceUsd={p.entryPriceUsd} className="text-base font-semibold" />
                 )}
-                {actions && !closed && <ClosePositionButton id={p.id} symbol={p.token.symbol} />}
+                {actions && !closed && <ClosePositionButton id={p.id} symbol={p.token.symbol} chain={p.token.chain} />}
               </div>
             </div>
 

@@ -589,7 +589,7 @@ export async function reconcileLiveTrade(tradeId: string) {
 /** Wording for the "a sell is waiting for your signature" notification (kept here as an export for existing callers/tests). */
 export const sellQueuedNotification = sellQueued;
 
-export async function prepareLiveSell(userId: string, positionId: string, sellAmount: number, kind: TradeKind, reason: string, targetLevel?: number) {
+export async function prepareLiveSell(userId: string, positionId: string, sellAmount: number, kind: TradeKind, reason: string, targetLevel?: number, connectedWallet?: string) {
   assertEnvironment("LIVE");
   const positions = await collections.positions();
   const trades = await collections.trades();
@@ -599,7 +599,7 @@ export async function prepareLiveSell(userId: string, positionId: string, sellAm
   if (dup) return { trade: withId(dup), created: false as const };
   const token = await getToken(pos.tokenId);
   // sell from the wallet that holds the tokens (the one that bought), if it is still linked
-  const wallet = await liveWallet(userId, token.chain, pos.walletAddress ?? undefined).catch(() => liveWallet(userId, token.chain));
+  const wallet = await liveWallet(userId, token.chain, pos.walletAddress ?? undefined).catch(() => liveWallet(userId, token.chain, connectedWallet));
   const settings = await getSettings(userId);
   const amount = Math.min(sellAmount, pos.amount);
   const p = providers();

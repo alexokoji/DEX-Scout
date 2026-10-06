@@ -41,23 +41,35 @@ describe("planAutoSells", () => {
 });
 
 describe("mergeForMinimum (venues with a minimum order size)", () => {
-  const plan = () => planAutoSells(pos(), DEFAULT_TARGETS); // 4 x 2500 tokens
+  // a position bought at the current price: `price` is both what it was bought at and what it is worth now
+  const plan = (price = 0.01) => planAutoSells(pos({ entryPriceUsd: price }), DEFAULT_TARGETS); // 4 x 2500 tokens
   it("leaves orders alone when each is big enough", () => {
-    expect(mergeForMinimum(plan(), 0.01, 5.5)).toHaveLength(4); // 2500 * 0.01 = $25 each
+    expect(mergeForMinimum(plan(0.01), 0.01, 5.15)).toHaveLength(4); // 2500 * 0.01 = $25 each
   });
   it("merges slices that are too small forward, selling them at the EARLIER target, and never loses tokens", () => {
-    const m = mergeForMinimum(plan(), 0.0025, 5.5); // $6.25 each is fine...
+    const m = mergeForMinimum(plan(0.0025), 0.0025, 5.15); // $6.25 each is fine...
     expect(m).toHaveLength(4);
-    const small = mergeForMinimum(plan(), 0.0015, 5.5); // $3.75 each: pairs are needed
+    const small = mergeForMinimum(plan(0.0015), 0.0015, 5.15); // $3.75 each ($4.05 at the first target): pairs are needed
     expect(small.map((o) => o.levels)).toEqual([[1, 2], [3, 4]]);
     expect(small[0].gainPct).toBe(8); // earlier target's price
-    expect(small[0].targetPriceUsd).toBeCloseTo(0.0108, 10);
+    expect(small[0].targetPriceUsd).toBeCloseTo(0.0015 * 1.08, 10);
     expect(small.reduce((s, o) => s + o.tokenAmount, 0)).toBe(10_000);
   });
   it("a too-small tail joins the previous order; a position below the minimum entirely gets no order", () => {
-    const tail = mergeForMinimum([{ levels: [1], gainPct: 8, targetPriceUsd: 1, tokenAmount: 100 }, { levels: [2], gainPct: 15, targetPriceUsd: 1.1, tokenAmount: 1 }], 0.1, 5.5);
+    const tail = mergeForMinimum([{ levels: [1], gainPct: 8, targetPriceUsd: 1, tokenAmount: 100 }, { levels: [2], gainPct: 15, targetPriceUsd: 1.1, tokenAmount: 1 }], 1, 5.15);
     expect(tail).toEqual([{ levels: [1, 2], gainPct: 8, targetPriceUsd: 1, tokenAmount: 101 }]);
-    expect(mergeForMinimum(plan(), 0.0001, 5.5)).toEqual([]);
+    expect(mergeForMinimum(plan(0.0001), 0.0001, 5.15)).toEqual([]);
+  });
+  it("measures an order the way Jupiter does (tested live): the larger of its value now and its value at its target price", () => {
+    const one = (tokenAmount: number, targetPriceUsd: number) => [{ levels: [1], gainPct: 0, targetPriceUsd, tokenAmount }];
+    // $2.60 of tokens now: refused with a +10% target ($2.86 at target), accepted with a +100% target ($5.20 at target)
+    expect(mergeForMinimum(one(26, 0.11), 0.1, 5.15)).toEqual([]);
+    expect(mergeForMinimum(one(26, 0.2), 0.1, 5.15)).toHaveLength(1);
+    // $5.20 now with a target below the current price (the position is already up): its value now counts
+    expect(mergeForMinimum(one(52, 0.09), 0.1, 5.15)).toHaveLength(1);
+    // the edge: $4.6 now with a +10% target pays out $5.06, which Jupiter accepted; this margin is deliberately a little higher
+    expect(mergeForMinimum(one(46, 0.11), 0.1, 5.15)).toEqual([]);
+    expect(mergeForMinimum(one(47, 0.11), 0.1, 5.15)).toHaveLength(1); // $5.17 at target
   });
 });
 

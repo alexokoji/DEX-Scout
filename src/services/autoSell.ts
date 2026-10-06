@@ -68,9 +68,9 @@ export async function buildPlan(pos: PositionDoc, token: TokenDoc): Promise<{ ve
   }
   const merged = mergeForMinimum(planned, token.priceUsd, JUP_MIN_ORDER_USD);
   const note = !merged.length
-    ? "This position is below Jupiter's $5 minimum order, so auto-sell can't be used; you'll get a notification to sign target sells instead."
+    ? "This position is too small for Jupiter's limit orders: Jupiter's service refuses any order worth under $5 (counted at the order's target price), and that rule is Jupiter's, not this app's. You'll get a notification to sign target sells instead."
     : merged.length < planned.length
-      ? "Jupiter orders must be at least $5 each, so some small targets were merged into fewer, larger sells at the earlier target."
+      ? "Jupiter's limit orders must be worth at least $5 each (counted at the order's target price), so some small targets were merged into fewer, larger sells at the earlier target."
       : null;
   return { venue, orders: merged, note };
 }

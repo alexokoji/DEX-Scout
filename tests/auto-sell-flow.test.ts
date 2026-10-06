@@ -315,22 +315,27 @@ const E18 = BigInt("1000000000000000000");
 
   it("Solana: small positions merge targets into fewer orders (Jupiter's minimum), and one too small gets none", async () => {
     const { prepareArmSolanaPlan } = await import("@/services/autoSell");
-    const sol = await makeToken("solana", 0.001); // 10,000 tokens = $10: one order of at least $5.5, not four
-    const pos = await makePosition(sol);
+    const sol = await makeToken("solana", 0.0005); // 10,000 tokens = $5 now, $5.40 at the first target: one order (Jupiter counts the payout at the target price), not four
+    const pos = await makePosition(sol, { entryPriceUsd: 0.0005, currentPriceUsd: 0.0005 }); // bought at today's price
     const plan = await prepareArmSolanaPlan(userId, pos._id);
     expect(plan.orders).toHaveLength(1);
     expect(plan.orders[0].levels).toEqual([1, 2, 3, 4]);
     expect(plan.orders[0].gainPct).toBe(8);
     expect(plan.note).toMatch(/merged/);
-    const tiny = await makePosition(await makeToken("solana", 0.0001)); // $1
+    const tiny = await makePosition(await makeToken("solana", 0.0001), { entryPriceUsd: 0.0001, currentPriceUsd: 0.0001 }); // $1
     await expect(prepareArmSolanaPlan(userId, tiny._id)).rejects.toMatchObject({ status: 422 });
+    // the position from before this was measured at today's value alone ($10 -> one order) now splits into two, since each pair pays out over $5 at its target
+    const ten = await prepareArmSolanaPlan(userId, (await makePosition(await makeToken("solana", 0.001), { entryPriceUsd: 0.001, currentPriceUsd: 0.001 }))._id);
+    expect(ten.orders.map((o) => o.levels)).toEqual([[1, 2], [3, 4]]);
+    // and a refusal says whose rule it is
+    await expect(prepareArmSolanaPlan(userId, tiny._id)).rejects.toThrow(/Jupiter's, not this app's/);
   });
 
   it("Solana: a completed order (real Jupiter history shape) is booked; one that never landed fails after the grace period", async () => {
     const { prepareArmSolanaPlan, prepareSolanaOrder, activateSolana, syncAutoSells } = await import("@/services/autoSell");
     await isolate();
-    const sol = await makeToken("solana", 0.001);
-    const pos = await makePosition(sol); // $10 -> one order for all 10,000 tokens at +8%
+    const sol = await makeToken("solana", 0.0005);
+    const pos = await makePosition(sol, { entryPriceUsd: 0.0005, currentPriceUsd: 0.0005 }); // $5 -> one order for all 10,000 tokens at +8%
     const plan = await prepareArmSolanaPlan(userId, pos._id);
     await prepareSolanaOrder(userId, plan.orders[0].id);
     await activateSolana(userId, plan.orders[0].id, SOLSIG);

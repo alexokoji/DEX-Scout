@@ -30,14 +30,18 @@ export function planAutoSells(pos: PositionState, targets: ProfitTargetConfig[])
 }
 
 /**
- * Venues with a minimum order size (Jupiter: about $5) can't take a tiny slice. Merge a slice that is too small with the
+ * Venues with a minimum order size (Jupiter: $5) can't take a tiny slice. Merge a slice that is too small with the
  * NEXT target, and sell the merged amount at the EARLIER target's price (locking the profit in sooner rather than later).
  * Whatever is left over at the end that is still too small joins the previous order. Total tokens are always preserved.
+ *
+ * An order's size is measured the way Jupiter measures it, tested live: the larger of what the tokens are worth now and
+ * what the order pays out at its target price. (A $2.60 slice with a +100% target is accepted, because it would pay $5.20;
+ * the same $2.60 with a +10% target is refused.) Measuring only today's value refused slices Jupiter would take.
  */
 export function mergeForMinimum(orders: PlannedOrder[], currentPriceUsd: number, minUsd: number): PlannedOrder[] {
   const out: PlannedOrder[] = [];
   let carry: PlannedOrder | null = null;
-  const big = (o: PlannedOrder) => o.tokenAmount * currentPriceUsd >= minUsd;
+  const big = (o: PlannedOrder) => o.tokenAmount * Math.max(currentPriceUsd, o.targetPriceUsd) >= minUsd;
   for (const o of orders) {
     const cur: PlannedOrder = carry
       ? { levels: [...carry.levels, ...o.levels], gainPct: carry.gainPct, targetPriceUsd: carry.targetPriceUsd, tokenAmount: carry.tokenAmount + o.tokenAmount }
