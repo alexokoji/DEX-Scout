@@ -394,6 +394,29 @@ export function onChainAt(t: MockTokenSpec, nowMin: number): OnChainRaw {
     liquidityRemovedUsd1h: Math.max(0, -delta),
     suspiciousTxRatio: t.archetype === "trap" ? 0.45 : t.archetype === "rug" ? 0.25 : 0.03 + 0.05 * rnd(t.index, 78),
     poolActive: rg < 0.98,
+    // what verification services would say about this synthetic token, so the mock market exercises every trust tier
+    trust: {
+      sources: ["mock"],
+      listed: t.verified,
+      organicScore: t.archetype === "trap" ? 5 : 70,
+      honeypot: t.archetype === "trap" || rg >= 0.5,
+      sellSimulated: true,
+      buyTaxPct: 0,
+      sellTaxPct: 0,
+      openSource: true,
+      mintable: !t.mintRevoked,
+      upgradeableProxy: false,
+      hiddenOwner: false,
+      canReclaimOwnership: false,
+      pausable: false,
+      blacklist: false,
+      lpLockedPct: t.archetype === "rug" ? 0 : 95,
+      holders,
+      creatorPct: 1,
+      rugged: rg >= 0.98,
+      dangers: [],
+      cautions: [],
+    },
   };
 }
 

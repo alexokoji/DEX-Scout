@@ -8,8 +8,8 @@ export default async function ScannerPage({ searchParams }: { searchParams: Prom
       searchParams={await searchParams}
       basePath="/scanner"
       title="Scanner"
-      subtitle="Every token the scanner has discovered — no result cap. Rows update as the background scanner runs."
-      defaults={{ passing: "false", sort: "poolCreatedAt", showStage: true }}
+      subtitle="Tokens the scanner has discovered and independent checks have cleared. Switch the Trust filter to see the rest. Rows update as the background scanner runs."
+      defaults={{ passing: "false", sort: "poolCreatedAt", showStage: true, trust: "TRUSTED" }}
     />
   );
 }

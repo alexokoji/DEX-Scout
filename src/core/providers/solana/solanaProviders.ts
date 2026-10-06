@@ -14,6 +14,7 @@ import { getJson, withTimeout } from "../http";
 import type { ChainAdapter, DexAdapter, PreflightResult, QuoteRequest, SwapReserve, SwapSimulation, TransactionStatus } from "../interfaces";
 import { explainSolanaSimulation } from "./errors";
 import { looksLikeHoneypotFlow } from "../../analysis/honeypot";
+import { fetchTrustFacts } from "../trust";
 import { sellCheckInconclusive } from "../simFailure";
 
 const SOL_MINT = CHAINS.solana.wrappedNative;
@@ -211,6 +212,7 @@ const HOLDERS_BACKOFF_MS = 5 * 60_000;
 /** Solana raw facts: mint/freeze authority, top-holder concentration, sell-side heuristics. */
 export async function solanaOnChain(_chain: ChainId, address: string, snapshot: TokenSnapshot): Promise<OnChainRaw> {
   const mint = new PublicKey(address);
+  const trustPromise = fetchTrustFacts(_chain, address); // independent services, asked while the RPC calls run
   const anomalies: string[] = [];
   let mintRevoked = false;
   let freezeRevoked = false;
@@ -244,13 +246,15 @@ export async function solanaOnChain(_chain: ChainId, address: string, snapshot: 
     }
   }
   const buyShare = snapshot.buys1h / Math.max(1, snapshot.buys1h + snapshot.sells1h);
+  const trust = await trustPromise;
   return {
     mintAuthorityRevoked: mintRevoked,
     freezeAuthorityRevoked: freezeRevoked,
-    verified: false,
+    verified: trust.listed === true,
     topHolderPct,
     top10HolderPct: top10,
-    sellSimulationOk: !looksLikeHoneypotFlow(snapshot),
+    sellSimulationOk: trust.honeypot === true ? false : !looksLikeHoneypotFlow(snapshot),
+    trust,
     metadataAnomalies: anomalies,
     largeBuys1h: 0,
     largeSells1h: 0,

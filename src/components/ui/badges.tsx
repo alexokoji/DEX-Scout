@@ -23,6 +23,20 @@ export function RiskBadge({ level }: { level: string }) {
   return <Badge tone={tone}>{label}</Badge>;
 }
 
+const TRUST: Record<string, [keyof typeof TONES, string, string]> = {
+  VERIFIED: ["green", "✓ Verified", "On a curated verified list and passed every check"],
+  TRUSTED: ["green", "Trusted", "Passed every check, with real liquidity and some history"],
+  UNPROVEN: ["amber", "Unproven", "No red flags found, but it hasn't earned trust yet"],
+  RISKY: ["red", "Risky", "Red flags found"],
+  DANGEROUS: ["red", "Dangerous", "Honeypot, rug, or a tax that takes the proceeds"],
+};
+/** How far a token has earned trust. A token that hasn't been checked yet shows as such, never as fine. */
+export function TrustBadge({ tier, className }: { tier?: string | null; className?: string }) {
+  if (!tier || !TRUST[tier]) return <Badge tone="gray" className={className}>Not checked</Badge>;
+  const [tone, label, hint] = TRUST[tier];
+  return <span title={hint}><Badge tone={tone} className={className}>{label}</Badge></span>;
+}
+
 export function SignalBadge({ type }: { type?: string | null }) {
   if (!type) return <span className="text-muted">—</span>;
   return <Badge tone={type === "BUY" ? "green" : type === "WATCH" ? "blue" : type === "EXIT" ? "amber" : "gray"}>{type}</Badge>;

@@ -1,4 +1,5 @@
-import type { RiskLevel, SafetyResult, SwapQuote } from "../types";
+import type { RiskLevel, SafetyResult, SwapQuote, TrustReport, TrustTier } from "../types";
+import { TRUST_LABEL, TRUST_RANK } from "../types";
 
 const RISK_ORDER: Record<RiskLevel, number> = { LOWER: 0, MODERATE: 1, HIGH: 2, CRITICAL: 3 };
 
@@ -9,6 +10,8 @@ export interface TradeLimits {
   minVolume24hUsd: number;
   minOpportunityScore: number;
   maxAllowedRisk: RiskLevel;
+  /** the least-earned trust the bot will buy */
+  minTrust: TrustTier;
 }
 
 export interface TradeCandidate {
@@ -18,6 +21,7 @@ export interface TradeCandidate {
   safety: SafetyResult;
   quote: SwapQuote;
   sellSimulationOk: boolean;
+  trust: TrustReport;
 }
 
 /**
@@ -31,6 +35,10 @@ export function validateEntry(c: TradeCandidate, l: TradeLimits, opts: { automat
   if (c.quote.expiresAt.getTime() < now.getTime()) v.push("Quote expired");
   if (c.safety.criticalIssues.length) v.push(`Critical safety issues: ${c.safety.criticalIssues.join("; ")}`);
   if (!c.sellSimulationOk) v.push("Sell simulation failed");
+  // A dangerous token (honeypot, confirmed rug, confiscatory tax) is blocked for everyone, hand-made buys included.
+  if (c.trust.tier === "DANGEROUS") v.push(`Dangerous token: ${c.trust.summary}`);
+  // The bot trades unattended, so it only buys what has earned trust. A person looking at the token decides for themselves (see entryWarnings).
+  else if (opts.automatic && TRUST_RANK[c.trust.tier] < TRUST_RANK[l.minTrust]) v.push(`Trust: ${TRUST_LABEL[c.trust.tier]}, below the ${TRUST_LABEL[l.minTrust]} minimum. ${c.trust.summary}`);
   if (c.quote.priceImpactPct > l.maxPriceImpactPct) {
     v.push(`Price impact ${c.quote.priceImpactPct.toFixed(2)}% exceeds limit ${l.maxPriceImpactPct}%`);
   }

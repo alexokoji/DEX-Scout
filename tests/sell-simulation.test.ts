@@ -140,7 +140,7 @@ afterAll(async () => {
     await (await collections.tradingAccounts()).insertOne({ _id: newId(), userId, environment: "LIVE", realizedPnlUsd: 0, createdAt: now });
     await (await collections.wallets()).insertOne({ _id: newId(), userId, chain: "solana", address: "W".repeat(44), label: null, verifiedAt: now, createdAt: now });
     await getSettings(userId);
-    await (await collections.tradingSettings()).updateOne({ userId }, { $set: { minOpportunityScore: 0, minLiquidityUsd: 0, minVolume24hUsd: 0, maxPriceImpactPct: 50, maxAllowedRisk: "HIGH" } });
+    await (await collections.tradingSettings()).updateOne({ userId }, { $set: { minOpportunityScore: 0, minLiquidityUsd: 0, minVolume24hUsd: 0, maxPriceImpactPct: 50, maxAllowedRisk: "HIGH", minTrust: "UNPROVEN" } });
   });
   afterEach(() => vi.restoreAllMocks());
   afterAll(async () => {
@@ -155,7 +155,7 @@ afterAll(async () => {
     vi.spyOn(dex, "getQuote").mockImplementation(async (req) => ({ ...(await real(req)), effectivePriceUsd: token.priceUsd, priceImpactPct: 0.3 }));
     vi.spyOn(dex, "simulateSwap").mockResolvedValue(sim);
   }
-  const input = { chain: "solana" as const, tokenAddress: "", amountUsd: 5, slippageBps: 300, environment: "LIVE" as const };
+  const input = { chain: "solana" as const, tokenAddress: "", amountUsd: 5, slippageBps: 300, environment: "LIVE" as const, acknowledgeTrust: true };
 
   it("a REAL 'no sell route' still blocks the buy", async () => {
     const { quoteTrade } = await import("@/services/trading");

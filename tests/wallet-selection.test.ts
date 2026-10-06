@@ -62,7 +62,7 @@ describe("messages name the wallet they checked", () => {
     const mk = (address: string, ageMs: number) => ({ _id: newId(), userId, chain: "solana", address, label: null, verifiedAt: new Date(now - ageMs), createdAt: new Date(now - ageMs) });
     await (await collections.wallets()).insertMany([mk(OLD, 3000), mk(FUNDED, 2000), mk(NEWEST, 1000)]);
     await getSettings(userId);
-    await (await collections.tradingSettings()).updateOne({ userId }, { $set: { minOpportunityScore: 0, minLiquidityUsd: 0, minVolume24hUsd: 0, maxPriceImpactPct: 50, maxAllowedRisk: "HIGH" } });
+    await (await collections.tradingSettings()).updateOne({ userId }, { $set: { minOpportunityScore: 0, minLiquidityUsd: 0, minVolume24hUsd: 0, maxPriceImpactPct: 50, maxAllowedRisk: "HIGH", minTrust: "UNPROVEN" } });
     Object.assign(balances, { [OLD]: 0, [FUNDED]: 2.5, [NEWEST]: 0 }); // SOL held by each address
   });
 
@@ -84,7 +84,7 @@ describe("messages name the wallet they checked", () => {
     vi.spyOn(dex, "getQuote").mockImplementation(async (req) => ({ ...(await real(req)), effectivePriceUsd: token.priceUsd, priceImpactPct: 0.3 }));
     return vi.spyOn(dex, "buildSwapTransaction").mockImplementation(async (_q, user) => ({ unsignedTxBase64: `tx-for-${user}` }));
   }
-  const input = (wallet?: string) => ({ chain: "solana" as const, tokenAddress: token.address, amountUsd: 5, slippageBps: 300, environment: "LIVE" as const, wallet });
+  const input = (wallet?: string) => ({ chain: "solana" as const, tokenAddress: token.address, amountUsd: 5, slippageBps: 300, environment: "LIVE" as const, wallet, acknowledgeTrust: true });
 
   it("with nothing requested (background jobs) the most recently verified wallet is used; the connected one is used when named", async () => {
     const { resolveWallet } = await import("@/services/walletResolve");

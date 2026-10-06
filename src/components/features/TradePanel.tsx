@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Badge } from "@/components/ui/badges";
+import { Badge, TrustBadge } from "@/components/ui/badges";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { Dialog, DialogContent, Input, Label } from "@/components/ui/form";
@@ -33,6 +33,8 @@ interface QuoteResp {
   wallet?: { address: string; balanceUsd: number | null; spendableUsd: number | null; reserveUsd: number | null } | null;
   /** what suits how fast the token is moving right now, never above the user's own maximum */
   slippage?: { bps: number; wantedBps: number; cappedByMax: boolean; movePct: number };
+  /** how far the token has earned trust, and why */
+  trust?: { tier: string; summary: string };
   violations: string[];
   warnings?: string[];
   analysis: { riskLevel: string; warnings: string[]; criticalIssues: string[] };
@@ -54,6 +56,7 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [needsVerify, setNeedsVerify] = useState(false);
+  const [trustAck, setTrustAck] = useState(false);
   const wallet = signer.addressFor(chain);
 
   const body = useMemo(() => {
@@ -98,7 +101,7 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
     setBusy(true);
     try {
       if (!(await signer.ensureConnected(chain))) return;
-      const prep = await fetch("/api/trades/prepare", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const prep = await fetch("/api/trades/prepare", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, acknowledgeTrust: trustAck }) });
       const pj = await prep.json();
       if (!prep.ok) {
         // the server dry-runs the swap before the wallet opens; if only a looser slippage would work it says which, so apply it
@@ -127,7 +130,8 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
     }
   }
 
-  const blocked = !liveEnabled || !body || !q || q.violations.length > 0 || loading;
+  const needsAck = q?.trust?.tier === "UNPROVEN" || q?.trust?.tier === "RISKY";
+  const blocked = !liveEnabled || !body || !q || q.violations.length > 0 || loading || (needsAck && !trustAck);
   return (
     <Card>
       <CardHeader title={`Trade · ${meta.name}`} right={<Badge tone="red">LIVE — real funds</Badge>} />
@@ -184,6 +188,19 @@ export function TradePanel({ chain, address, symbol, signalId, defaults, liveEna
             </dl>
           )}
         </div>
+
+        {q?.trust && (
+          <div className={`space-y-2 rounded-md border p-3 text-xs ${q.trust.tier === "DANGEROUS" || q.trust.tier === "RISKY" ? "border-down/30 bg-down/10 text-down" : q.trust.tier === "UNPROVEN" ? "border-warn/30 bg-warn/10 text-warn" : "border-up/30 bg-up/10 text-up"}`}>
+            <div className="flex items-center gap-2"><TrustBadge tier={q.trust.tier} /><span className="font-medium">{q.trust.tier === "VERIFIED" || q.trust.tier === "TRUSTED" ? "This token passed independent checks" : "This token has not earned trust"}</span></div>
+            <p>{q.trust.summary}</p>
+            {needsAck && (
+              <label className="flex cursor-pointer items-start gap-2 text-foreground">
+                <input type="checkbox" className="mt-0.5" checked={trustAck} onChange={(e) => setTrustAck(e.target.checked)} />
+                <span>I understand this token is {q.trust.tier === "RISKY" ? "risky" : "unverified"} and I could lose everything I put in.</span>
+              </label>
+            )}
+          </div>
+        )}
 
         {q && q.violations.length === 0 && (q.warnings?.length ?? 0) > 0 && (
           <ul className="space-y-1 rounded-md border border-warn/30 bg-warn/10 p-3 text-xs text-warn">

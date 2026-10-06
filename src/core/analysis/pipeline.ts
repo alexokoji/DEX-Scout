@@ -4,6 +4,7 @@ import { analyzeMarket } from "./market";
 import { analyzeOnChain } from "./onchain";
 import { assessSafety } from "./safety";
 import { scoreOpportunity } from "./scoring";
+import { assessTrust } from "./trust";
 
 /** Pure composition of the analysis engines. I/O (candles, raw on-chain facts) is supplied by the caller. */
 export function buildAnalysis(
@@ -18,5 +19,6 @@ export function buildAnalysis(
   const market = analyzeMarket(snapshot, candles, timeframe);
   const onchain = analyzeOnChain(onchainRaw, snapshot);
   const opportunity = scoreOpportunity(snapshot, market, onchain, weights, now);
-  return { snapshot, onchainRaw, safety, market, onchain, opportunity, computedAt: now };
+  const trust = assessTrust(snapshot, onchainRaw, now);
+  return { snapshot, onchainRaw, safety, market, onchain, opportunity, trust, computedAt: now };
 }

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Change, RiskBadge, ScoreBar, SignalBadge } from "@/components/ui/badges";
+import { Change, RiskBadge, ScoreBar, SignalBadge, TrustBadge } from "@/components/ui/badges";
 import { EmptyState } from "@/components/ui/card";
 import { chainMeta } from "@/core/chains";
 import { age, compactUsd, int, price } from "@/lib/format";
@@ -26,6 +26,7 @@ export interface TokenRow {
   poolCreatedAt: Date | null;
   opportunityScore: number;
   riskLevel: string;
+  trustTier?: string | null;
   stage: string;
   passedFilters: boolean;
   signals: { id: string; type: string; score: number }[];
@@ -40,7 +41,7 @@ export function TokenTable({ rows, showStage = false }: { rows: TokenRow[]; show
   return (
     <>
       <div className="hidden overflow-x-auto md:block">
-        <table className="w-full min-w-[980px] text-sm">
+        <table className="w-full min-w-[1060px] text-sm">
           <thead className="border-b border-border">
             <tr>
               <th className={TH}>Token</th>
@@ -54,6 +55,7 @@ export function TokenTable({ rows, showStage = false }: { rows: TokenRow[]; show
               <th className={TH}>Holders</th>
               <th className={TH}>Age</th>
               <th className={TH}>Score</th>
+              <th className={TH}>Trust</th>
               <th className={TH}>Risk</th>
               <th className={TH}>{showStage ? "Stage" : "Signal"}</th>
             </tr>
@@ -77,6 +79,7 @@ export function TokenTable({ rows, showStage = false }: { rows: TokenRow[]; show
                 <td className="num px-3 py-2">{int(t.holders)} <span className={t.holderGrowth1h > 0 ? "text-up" : "text-muted"}>{t.holderGrowth1h ? `${t.holderGrowth1h > 0 ? "+" : ""}${t.holderGrowth1h.toFixed(1)}%` : ""}</span></td>
                 <td className="num px-3 py-2">{age(t.poolCreatedAt)}</td>
                 <td className="px-3 py-2"><ScoreBar score={t.opportunityScore} /></td>
+                <td className="px-3 py-2"><TrustBadge tier={t.trustTier} /></td>
                 <td className="px-3 py-2">{t.passedFilters ? <RiskBadge level={t.riskLevel} /> : <span className="text-muted">—</span>}</td>
                 <td className="px-3 py-2">{showStage ? <span className="text-[11px] text-muted">{t.stage.replace("_", " ")}</span> : <SignalBadge type={t.signals[0]?.type} />}</td>
               </tr>
@@ -100,7 +103,7 @@ export function TokenTable({ rows, showStage = false }: { rows: TokenRow[]; show
               <div><div className="text-muted">1h</div><Change value={t.change1h} /></div>
               <div><div className="text-muted">Score</div><ScoreBar score={t.opportunityScore} /></div>
             </div>
-            <div className="mt-2">{t.passedFilters && <RiskBadge level={t.riskLevel} />}</div>
+            <div className="mt-2 flex flex-wrap gap-1.5"><TrustBadge tier={t.trustTier} />{t.passedFilters && <RiskBadge level={t.riskLevel} />}</div>
           </Link>
         ))}
       </div>

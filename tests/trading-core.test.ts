@@ -135,10 +135,10 @@ describe("capital allocation", () => {
 });
 
 describe("trade validation & price impact", () => {
-  const limits = { maxPriceImpactPct: 2, maxSlippageBps: 300, minLiquidityUsd: 100_000, minVolume24hUsd: 50_000, minOpportunityScore: 70, maxAllowedRisk: "MODERATE" as const };
+  const limits = { maxPriceImpactPct: 2, maxSlippageBps: 300, minLiquidityUsd: 100_000, minVolume24hUsd: 50_000, minOpportunityScore: 70, maxAllowedRisk: "MODERATE" as const, minTrust: "TRUSTED" as const };
   const a = analysisFor(liveTokenIndices(NOW_MIN)[0]);
   const mkQuote = (impact: number) => quoteFromImpact({ chain: "solana", side: "BUY", tokenAddress: "x", priceUsd: 1, amountUsd: 10, impactPct: impact, slippageBps: 100, priorityFeeNative: 0.0001, route: ["r"], source: "MOCK" });
-  const cand = (impact: number) => ({ liquidityUsd: 500_000, volume24hUsd: 500_000, opportunityScore: 80, safety: { riskScore: 5, riskLevel: "LOWER" as const, passed: true, warnings: [], criticalIssues: [] }, quote: mkQuote(impact), sellSimulationOk: true });
+  const cand = (impact: number) => ({ liquidityUsd: 500_000, volume24hUsd: 500_000, opportunityScore: 80, safety: { riskScore: 5, riskLevel: "LOWER" as const, passed: true, warnings: [], criticalIssues: [] }, quote: mkQuote(impact), sellSimulationOk: true, trust: { tier: "TRUSTED" as const, summary: "", checks: [], missing: [], sources: [] } });
 
   it("computes constant-product price impact", () => {
     expect(constantProductImpactPct(1000, 200_000)).toBeCloseTo((1000 / 101_000) * 100, 6);

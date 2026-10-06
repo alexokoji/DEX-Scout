@@ -1,4 +1,5 @@
 import { buildAnalysis } from "@/core/analysis/pipeline";
+import { assessTrust } from "@/core/analysis/trust";
 import { SIGNAL_THRESHOLDS } from "@/core/config";
 import { withTimeout } from "@/core/providers/http";
 import { providers } from "@/core/providers/registry";
@@ -54,6 +55,8 @@ export async function persistAnalysis(tokenId: string, a: Analysis): Promise<voi
         riskLevel: a.safety.riskLevel,
         stage: qualified ? "QUALIFIED" : "ANALYZED",
         lastAnalysisAttemptAt: now,
+        trustTier: a.trust.tier,
+        trust: { ...a.trust, checkedAt: now },
         safety: {
           riskScore: a.safety.riskScore,
           riskLevel: a.safety.riskLevel,
@@ -98,6 +101,7 @@ export async function loadAnalysis(tokenId: string): Promise<Analysis | null> {
     market: t.analysis.market,
     onchain: t.analysis.onchain,
     opportunity: { score: t.analysis.opportunityScore, components: t.analysis.components },
+    trust: assessTrust(snapshot, t.analysis.raw, t.analysis.computedAt),
     computedAt: t.analysis.computedAt,
   };
 }

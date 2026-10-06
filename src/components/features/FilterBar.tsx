@@ -19,7 +19,7 @@ const SORTS = [
   ["updatedAt", "Updated"],
 ];
 
-export function FilterBar({ dexes, showSignal = true }: { dexes: string[]; showSignal?: boolean }) {
+export function FilterBar({ dexes, showSignal = true, defaultTrust = "ALL" }: { dexes: string[]; showSignal?: boolean; defaultTrust?: string }) {
   const router = useRouter();
   const path = usePathname();
   const sp = useSearchParams();
@@ -50,6 +50,12 @@ export function FilterBar({ dexes, showSignal = true }: { dexes: string[]; showS
       <Input name="minMcap" type="number" step="any" min="0" placeholder="Min mcap $M" defaultValue={m("minMcap")} />
       <Input name="maxMcap" type="number" step="any" min="0" placeholder="Max mcap $M" defaultValue={m("maxMcap")} />
       <Input name="minLiq" type="number" step="any" min="0" placeholder="Min liq $K" defaultValue={k("minLiq")} />
+      <Select name="trust" defaultValue={sp.get("trust") ?? defaultTrust}>
+        <option value="VERIFIED">Verified only</option>
+        <option value="TRUSTED">Trusted + verified</option>
+        <option value="UNPROVEN">Hide risky &amp; dangerous</option>
+        <option value="ALL">Any trust (incl. unchecked)</option>
+      </Select>
       <Select name="risk" defaultValue={sp.get("risk") ?? ""}>
         <option value="">Any risk</option>
         <option value="LOWER">Lower</option>

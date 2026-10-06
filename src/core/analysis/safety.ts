@@ -47,7 +47,19 @@ export function assessSafety(snap: TokenSnapshot, raw: OnChainRaw): SafetyResult
     if (!raw.mintAuthorityRevoked) warn("Mint authority is not revoked — supply can be inflated", 18);
     if (!raw.freezeAuthorityRevoked) warn("Freeze authority is not revoked — token accounts can be frozen", 12);
   }
-  if (!raw.verified) warn("Token is not verified by any tracked list", 4);
+  if (!raw.verified) warn("Token is not on any curated verified list", 4);
+
+  // What independent verification services found (see providers/trust.ts and analysis/trust.ts)
+  const t = raw.trust;
+  if (t) {
+    if (t.rugged === true) crit("Reported as rugged by a checking service", 60);
+    const tax = Math.max(t.buyTaxPct ?? 0, t.sellTaxPct ?? 0);
+    if (tax >= 15) crit(`Trading tax is ${tax.toFixed(0)}% (buy ${(t.buyTaxPct ?? 0).toFixed(0)}%, sell ${(t.sellTaxPct ?? 0).toFixed(0)}%)`, 40);
+    else if (tax >= 5) warn(`High trading tax (${tax.toFixed(0)}%)`, 12);
+    for (const d of t.dangers.slice(0, 3)) warn(d, 12);
+    if (t.creatorPct !== null && t.creatorPct >= 20) warn(`Creator wallet holds ${t.creatorPct.toFixed(0)}% of the supply`, 15);
+    if (t.lpLockedPct !== null && t.lpLockedPct < 50 && snap.liquidityUsd < 250_000) warn(`Only ${t.lpLockedPct.toFixed(0)}% of the liquidity is locked or burned: it can be pulled`, 12);
+  }
 
   if (!raw.poolActive) crit("Liquidity pool is inactive or removed", 60);
   if (!raw.sellSimulationOk) crit("Sell simulation failed — honeypot-like behaviour", 60);

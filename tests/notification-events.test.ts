@@ -131,7 +131,7 @@ describe("category switches are validated", () => {
       { _id: newId(), userId: otherUser, chain: "solana", address: "V".repeat(44), label: null, verifiedAt: now, createdAt: now },
     ]);
     await getSettings(userId);
-    await (await collections.tradingSettings()).updateOne({ userId }, { $set: { minOpportunityScore: 0, minLiquidityUsd: 0, minVolume24hUsd: 0, maxPriceImpactPct: 50, maxAllowedRisk: "HIGH" } });
+    await (await collections.tradingSettings()).updateOne({ userId }, { $set: { minOpportunityScore: 0, minLiquidityUsd: 0, minVolume24hUsd: 0, maxPriceImpactPct: 50, maxAllowedRisk: "HIGH", minTrust: "UNPROVEN" } });
   });
 
   afterEach(() => vi.restoreAllMocks());
@@ -151,7 +151,7 @@ describe("category switches are validated", () => {
     vi.spyOn(providers().dex, "getQuote").mockImplementation(async (req) => ({ ...(await real(req)), effectivePriceUsd: token.priceUsd, priceImpactPct: 0.3 }));
     vi.spyOn(providers().dex, "buildSwapTransaction").mockResolvedValue({ unsignedTxBase64: "unsigned" });
   }
-  const buyInput = () => ({ chain: "solana" as const, tokenAddress: token.address, amountUsd: 5, slippageBps: 100, environment: "LIVE" as const });
+  const buyInput = () => ({ chain: "solana" as const, tokenAddress: token.address, amountUsd: 5, slippageBps: 100, environment: "LIVE" as const, acknowledgeTrust: true });
 
   it("a buy the bot queues notifies; a buy you make by hand does not", async () => {
     const { prepareTrade } = await import("@/services/trading");

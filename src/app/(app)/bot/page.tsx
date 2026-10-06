@@ -54,7 +54,7 @@ export default async function BotPage() {
             {([
               ["Environment", s.environment], ["Max position", usd(s.maxPositionUsd)], ["Min position", usd(s.minPositionUsd)], ["Max open", String(s.maxOpenPositions)],
               ["Max deployed", s.maxDeployedUsd === null ? "wallet balance" : usd(s.maxDeployedUsd)], ["Min score", String(s.minOpportunityScore)], ["Min liquidity", usd(s.minLiquidityUsd, 0)], ["Min 24h volume", usd(s.minVolume24hUsd, 0)],
-              ["Max price impact", `${s.maxPriceImpactPct}%`], ["Max risk", s.maxAllowedRisk], ["Profit targets", s.targets.map((t) => `+${t.gainPct}%/${t.sellPct >= 100 ? "rest" : t.sellPct + "%"}`).join(", ")],
+              ["Max price impact", `${s.maxPriceImpactPct}%`], ["Max risk", s.maxAllowedRisk], ["Min trust", s.minTrust], ["Profit targets", s.targets.map((t) => `+${t.gainPct}%/${t.sellPct >= 100 ? "rest" : t.sellPct + "%"}`).join(", ")],
               ["Emergency protection", s.emergencyEnabled ? (s.emergencyAutoExit ? "ON · auto exit" : "ON · alert only") : "OFF"],
             ] as [string, string][]).map(([k, v]) => (
               <div key={k} className="flex justify-between gap-2"><span className="text-muted">{k}</span><span className="num text-right">{v}</span></div>

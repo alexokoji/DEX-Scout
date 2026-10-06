@@ -2,6 +2,7 @@ import type { Filter, Sort } from "mongodb";
 import { z } from "zod";
 import { capitalSnapshot } from "@/core/trading/capital";
 import { PRICE_MAX_AGE_MS } from "@/core/config";
+import { TRUST_RANK, TRUST_TIERS, type TrustTier } from "@/core/types";
 import { computeMetrics } from "@/core/trading/positions";
 import { collections, withId, withIds } from "@/lib/db";
 import type { Environment, RiskLevel, SignalDoc, TokenDoc } from "@/lib/models";
@@ -35,6 +36,11 @@ export const tokenQuerySchema = z.object({
   passing: z.enum(["true", "false"]).optional(),
   /** "true" also lists tokens whose price hasn't been refreshed within PRICE_MAX_AGE_MS (hidden by default: their price is not real) */
   stale: z.enum(["true"]).optional(),
+  /**
+   * The least-earned trust to list (see core/analysis/trust.ts). A token that hasn't been checked yet counts as below every
+   * tier. ALL (the default for a query that doesn't say) lists everything.
+   */
+  trust: z.enum(["VERIFIED", "TRUSTED", "UNPROVEN", "ALL"]).optional(),
 });
 export type TokenQuery = z.infer<typeof tokenQuerySchema>;
 
@@ -75,6 +81,8 @@ export async function listTokens(query: TokenQuery) {
   if (query.dex) where.dex = new RegExp(`^${escapeRegex(query.dex)}$`, "i");
   if (query.chain) where.chain = query.chain;
   if (query.passing === "true") where.passedFilters = true;
+  const trustTiers = query.trust && query.trust !== "ALL" ? TRUST_TIERS.filter((t) => TRUST_RANK[t] >= TRUST_RANK[query.trust as TrustTier]) : null;
+  if (trustTiers) where.trustTier = { $in: trustTiers };
   // A price that hasn't been refreshed recently isn't a price: keep those out of the lists unless asked.
   const staleCutoff = new Date(Date.now() - PRICE_MAX_AGE_MS);
   if (query.stale !== "true") where.lastScannedAt = { $gte: staleCutoff };
@@ -97,7 +105,10 @@ export async function listTokens(query: TokenQuery) {
   const withSignals = withIds(rows).map((t) => ({ ...t, signals: signalByToken.has(t.id) ? [signalByToken.get(t.id)!] : [] }));
   // how many matching tokens were left out for having an old price (for the "show them" link)
   const staleHidden = query.stale === "true" ? 0 : await tokensCol.countDocuments({ ...where, lastScannedAt: { $lt: staleCutoff } });
-  return { total, page: query.page, pageSize: query.pageSize, pages: Math.max(1, Math.ceil(total / query.pageSize)), staleHidden, rows: withSignals };
+  // how many (otherwise matching) tokens the trust floor left out, for the "show them" link
+  const { trustTier: _t, ...withoutTrust } = where;
+  const untrustedHidden = trustTiers ? await tokensCol.countDocuments(withoutTrust as Filter<TokenDoc>).then((n) => Math.max(0, n - total)) : 0;
+  return { total, page: query.page, pageSize: query.pageSize, pages: Math.max(1, Math.ceil(total / query.pageSize)), staleHidden, untrustedHidden, rows: withSignals };
 }
 
 export async function attachTokens<T extends { tokenId: string }>(rows: T[]): Promise<(T & { token: ReturnType<typeof withId<TokenDoc>> })[]> {

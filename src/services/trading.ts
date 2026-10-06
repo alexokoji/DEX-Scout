@@ -75,6 +75,8 @@ export const prepareTradeInput = z.object({
   signalId: z.string().optional(),
   /** the address the browser is connected with; used only if it is one of the user's verified wallets */
   wallet: z.string().min(20).max(64).optional(),
+  /** a hand-made buy of a token that hasn't earned trust needs the user to say they understand (see prepareTrade) */
+  acknowledgeTrust: z.boolean().optional(),
 });
 export type PrepareTradeInput = z.infer<typeof prepareTradeInput>;
 
@@ -192,7 +194,7 @@ export async function quoteTrade(userId: string, input: PrepareTradeInput, autom
       ];
   const walletInfo = wallet ? { address: wallet.address, balanceUsd: state.walletBalanceUsd ?? null, spendableUsd: state.walletUsd ?? null, reserveUsd: state.reserveUsd ?? null } : null;
   const slippage = suggestSlippage(analysis.snapshot.change5m, analysis.snapshot.change1h, settings.maxSlippageBps);
-  return { quote, pricing, wallet: walletInfo, slippage, violations, warnings, analysis: { riskLevel: analysis.safety.riskLevel, warnings: analysis.safety.warnings, criticalIssues: analysis.safety.criticalIssues }, source: p.mock ? ("MOCK" as const) : ("LIVE" as const) };
+  return { quote, pricing, wallet: walletInfo, slippage, trust: analysis.trust, violations, warnings, analysis: { riskLevel: analysis.safety.riskLevel, warnings: analysis.safety.warnings, criticalIssues: analysis.safety.criticalIssues }, source: p.mock ? ("MOCK" as const) : ("LIVE" as const) };
 }
 
 /** The bot won't buy more than this far above the price it saw; the rest of the move is not ours to chase. */
@@ -221,6 +223,7 @@ function toCandidate(analysis: Analysis, quote: SwapQuote, sellSimOk: boolean): 
     safety: analysis.safety,
     quote,
     sellSimulationOk: sellSimOk && analysis.onchainRaw.sellSimulationOk,
+    trust: analysis.trust,
   };
 }
 
@@ -242,8 +245,13 @@ function evaluateEntryRules(
 
 /** Create a PREPARED trade after full server-side validation. Nothing is executed or signed here. */
 export async function prepareTrade(userId: string, input: PrepareTradeInput, kind: TradeKind = "MANUAL_ENTRY") {
-  const { quote, violations, analysis } = await quoteTrade(userId, input, kind === "AUTO_ENTRY");
+  const { quote, violations, analysis, trust } = await quoteTrade(userId, input, kind === "AUTO_ENTRY");
   if (violations.length) throw new TradeError("Trade rejected by validation", 422, violations);
+  // The bot only buys what has earned trust (a validation rule above). A person may buy anything that isn't dangerous, but
+  // not by accident: for a token that hasn't earned trust they have to say they've seen why.
+  if (kind !== "AUTO_ENTRY" && (trust.tier === "UNPROVEN" || trust.tier === "RISKY") && !input.acknowledgeTrust) {
+    throw new TradeError(`This token hasn't earned trust. ${trust.summary} Tick the box to confirm you understand the risk.`, 409, [trust.summary], { needsTrustAck: 1 });
+  }
   const token = await findTokenOrThrow(input.chain, input.tokenAddress);
   const account = await getOrCreateAccount(userId, input.environment);
 

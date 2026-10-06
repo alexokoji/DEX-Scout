@@ -97,6 +97,68 @@ export interface OnChainRaw {
   dataAvailable?: boolean;
   /** false when authorities were read but the top-holder lookup was not possible (needs a capable RPC). Omitted/true = real data. */
   holderDataAvailable?: boolean;
+  /** What independent verification services said about this token (see providers/trust). Absent = none could be reached. */
+  trust?: TrustFacts;
+}
+
+/** How far a token has earned trust, worst to best. Order matters: see TRUST_RANK. */
+export type TrustTier = "DANGEROUS" | "RISKY" | "UNPROVEN" | "TRUSTED" | "VERIFIED";
+export const TRUST_TIERS: TrustTier[] = ["DANGEROUS", "RISKY", "UNPROVEN", "TRUSTED", "VERIFIED"];
+export const TRUST_RANK: Record<TrustTier, number> = { DANGEROUS: 0, RISKY: 1, UNPROVEN: 2, TRUSTED: 3, VERIFIED: 4 };
+export const TRUST_LABEL: Record<TrustTier, string> = { DANGEROUS: "Dangerous", RISKY: "Risky", UNPROVEN: "Unproven", TRUSTED: "Trusted", VERIFIED: "Verified" };
+
+/**
+ * Facts from independent verification services, each null when that service could not say. "Unknown" is never treated as
+ * "fine": a missing answer keeps a token from earning trust, it does not earn it.
+ */
+export interface TrustFacts {
+  /** the services that actually answered ("jupiter", "rugcheck", "goplus", "honeypot.is") */
+  sources: string[];
+  /** on an established, curated token list (Jupiter's verified list on Solana, GoPlus's trusted list on EVM chains) */
+  listed: boolean | null;
+  /** Jupiter's 0-100 measure of how much of the trading is real people rather than bots */
+  organicScore: number | null;
+  /** a real simulated sell failed / the token is flagged a honeypot */
+  honeypot: boolean | null;
+  /** a real buy-then-sell simulation ran (true) or could not be run (false/null) */
+  sellSimulated: boolean | null;
+  buyTaxPct: number | null;
+  sellTaxPct: number | null;
+  /** contract source code is published and verified (EVM) */
+  openSource: boolean | null;
+  mintable: boolean | null;
+  upgradeableProxy: boolean | null;
+  hiddenOwner: boolean | null;
+  canReclaimOwnership: boolean | null;
+  pausable: boolean | null;
+  blacklist: boolean | null;
+  /** % of the liquidity that is locked or burned, 0-100 */
+  lpLockedPct: number | null;
+  holders: number | null;
+  /** % of supply held by the creator/dev wallet */
+  creatorPct: number | null;
+  rugged: boolean | null;
+  /** named problems the services flagged ("danger" level) and softer cautions ("warn" level) */
+  dangers: string[];
+  cautions: string[];
+}
+
+export type TrustCheckStatus = "pass" | "fail" | "unknown";
+export interface TrustCheck {
+  id: string;
+  label: string;
+  status: TrustCheckStatus;
+  detail: string;
+}
+export interface TrustReport {
+  tier: TrustTier;
+  /** one line a person can read: why the token is at this tier */
+  summary: string;
+  checks: TrustCheck[];
+  /** what stands between this token and the next tier up (empty at VERIFIED, or when nothing more can be earned) */
+  missing: string[];
+  /** how many independent services contributed */
+  sources: string[];
 }
 
 export interface ScannerFilters {
@@ -203,6 +265,8 @@ export interface Analysis {
   market: MarketAnalysis;
   onchain: OnChainAnalysis;
   opportunity: OpportunityScore;
+  /** how far this token has earned trust (derived from the snapshot and the raw facts) */
+  trust: TrustReport;
   computedAt: Date;
 }
 

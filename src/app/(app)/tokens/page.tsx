@@ -9,7 +9,7 @@ export default async function TokensPage({ searchParams }: { searchParams: Promi
       basePath="/tokens"
       title="Tokens"
       subtitle="Browse and search all tracked tokens. Open one for charts, safety analysis and the trade panel."
-      defaults={{ passing: "true", sort: "marketCapUsd" }}
+      defaults={{ passing: "true", sort: "marketCapUsd", trust: "TRUSTED" }}
     />
   );
 }

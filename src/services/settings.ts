@@ -6,7 +6,8 @@ import {
   scannerFiltersSchema,
   scoreWeightsSchema,
 } from "@/core/config";
-import type { ProfitTargetConfig, ScannerFilters, ScoreWeights } from "@/core/types";
+import { TRUST_BAR } from "@/core/analysis/trust";
+import type { ProfitTargetConfig, ScannerFilters, ScoreWeights, TrustTier } from "@/core/types";
 import { validateTargets } from "@/core/trading/targets";
 import { collections, newId, withId } from "@/lib/db";
 import { logEvent } from "@/lib/events";
@@ -26,6 +27,7 @@ export const tradingSettingsInput = z
     maxPriceImpactPct: z.number().min(0.01).max(50),
     maxSlippageBps: z.number().int().min(1).max(5000),
     maxAllowedRisk: z.enum(["LOWER", "MODERATE", "HIGH"]),
+    minTrust: z.enum(["UNPROVEN", "TRUSTED", "VERIFIED"]),
     targetsMode: z.enum(["SINGLE", "MULTI"]),
     maxPositionAgeHours: z.number().int().min(1).nullable(),
     emergencyEnabled: z.boolean(),
@@ -63,6 +65,8 @@ export interface UserSettings {
   maxPriceImpactPct: number;
   maxSlippageBps: number;
   maxAllowedRisk: RiskLevel;
+  /** the least-earned trust the bot will buy */
+  minTrust: TrustTier;
   targetsMode: TargetsMode;
   maxPositionAgeHours: number | null;
   emergencyEnabled: boolean;
@@ -80,13 +84,17 @@ function hydrate(row: TradingSettingsDoc): UserSettings {
   return {
     id,
     ...rest,
+    minTrust: row.minTrust ?? DEFAULT_MIN_TRUST,
     filters: scannerFiltersSchema.parse(row.filters ?? {}),
     weights: scoreWeightsSchema.parse(row.weights ?? {}),
     targets: targets.length ? targets : row.targetsMode === "SINGLE" ? DEFAULT_TARGETS_SINGLE : DEFAULT_TARGETS_MULTI,
   };
 }
 
-export const SETTINGS_VERSION = 4;
+/** The bot buys nothing below this: no red flags AND depth, history and checks that cleared (see core/analysis/trust.ts). */
+export const DEFAULT_MIN_TRUST: TrustTier = "TRUSTED";
+
+export const SETTINGS_VERSION = 5;
 
 /** True when `chains` holds exactly the six chains this app originally scanned (any order). */
 export function isOriginalChainSet(chains: readonly string[] | undefined): boolean {
@@ -107,11 +115,12 @@ export function defaultSettingsDoc(userId: string, now = new Date()): TradingSet
     maxOpenPositions: 10,
     maxDeployedUsd: null,
     minOpportunityScore: 55,
-    minLiquidityUsd: 20_000,
-    minVolume24hUsd: 10_000,
+    minLiquidityUsd: TRUST_BAR.minLiquidityUsd,
+    minVolume24hUsd: TRUST_BAR.minVolume24hUsd,
     maxPriceImpactPct: 3,
     maxSlippageBps: 300,
     maxAllowedRisk: "MODERATE",
+    minTrust: DEFAULT_MIN_TRUST,
     targetsMode: "MULTI",
     maxPositionAgeHours: null,
     emergencyEnabled: true,
@@ -125,6 +134,10 @@ export function defaultSettingsDoc(userId: string, now = new Date()): TradingSet
     updatedAt: now,
   };
 }
+
+/** The v4 defaults for the liquidity and volume gates, replaced in v5. */
+const V4_LIQUIDITY = 20_000;
+const V4_VOLUME = 10_000;
 
 /** The v1 defaults that turned out to block nearly every token. Only values still equal to these get moved. */
 const V1_TOP = { minOpportunityScore: 70, minLiquidityUsd: 100_000, minVolume24hUsd: 50_000, maxPriceImpactPct: 2 } as const;
@@ -151,6 +164,15 @@ async function migrateSettings(row: TradingSettingsDoc): Promise<TradingSettings
   if (version < 3 && isOriginalChainSet(row.filters?.chains)) set["filters.chains"] = fresh.filters.chains;
   // v4: capital now comes from the connected wallet (the typed-in "trading capital" was a demo-trading leftover, and its
   // $100 default also capped deployment). Drop it, and lift the old $100 default cap; a cap the user chose is kept.
+  // v5: tokens must earn trust, and "real liquidity" now means $50K. A gate still sitting at its v4 default ($20K liquidity,
+  // $10K volume) moves up with it; one the user set on purpose is left alone. Everyone gets the trust floor.
+  if (version < 5) {
+    if (row.minLiquidityUsd === V4_LIQUIDITY) set.minLiquidityUsd = fresh.minLiquidityUsd;
+    if (row.minVolume24hUsd === V4_VOLUME) set.minVolume24hUsd = fresh.minVolume24hUsd;
+    if (row.filters?.minLiquidityUsd === V4_LIQUIDITY) set["filters.minLiquidityUsd"] = fresh.filters.minLiquidityUsd;
+    if (row.filters?.minVolume24hUsd === V4_VOLUME) set["filters.minVolume24hUsd"] = fresh.filters.minVolume24hUsd;
+    if (!row.minTrust) set.minTrust = DEFAULT_MIN_TRUST;
+  }
   const legacy = row as TradingSettingsDoc & { capitalUsd?: number };
   const unset: Record<string, ""> = {};
   if (version < 4) {

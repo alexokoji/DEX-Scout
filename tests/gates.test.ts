@@ -5,6 +5,8 @@ import { entryWarnings, validateEntry } from "@/core/trading/validation";
 import type { OnChainRaw } from "@/core/types";
 import { makeSnapshot } from "./helpers";
 
+const TRUSTED = { tier: "TRUSTED" as const, summary: "Passed every check.", checks: [], missing: [], sources: ["test"] };
+
 const cleanRaw: OnChainRaw = {
   mintAuthorityRevoked: true, freezeAuthorityRevoked: true, verified: true, topHolderPct: 5, top10HolderPct: 30, sellSimulationOk: true,
   metadataAnomalies: [], largeBuys1h: 0, largeSells1h: 0, largeBuyUsd1h: 0, largeSellUsd1h: 0, newHolders1h: 0, liquidityAddedUsd1h: 0,
@@ -48,11 +50,11 @@ describe("safety: unknown on-chain data is not treated as a finding", () => {
 });
 
 describe("buy-time gates: hard safety blocks, preferences warn on manual buys", () => {
-  const limits = { maxPriceImpactPct: 3, maxSlippageBps: 300, minLiquidityUsd: 20_000, minVolume24hUsd: 10_000, minOpportunityScore: 65, maxAllowedRisk: "MODERATE" as const };
+  const limits = { maxPriceImpactPct: 3, maxSlippageBps: 300, minLiquidityUsd: 20_000, minVolume24hUsd: 10_000, minOpportunityScore: 65, maxAllowedRisk: "MODERATE" as const, minTrust: "TRUSTED" as const };
   const safety = { riskScore: 5, riskLevel: "LOWER" as const, passed: true, warnings: [], criticalIssues: [] };
   const mkQuote = (impact: number) => quoteFromImpact({ chain: "solana", side: "BUY", tokenAddress: "x", priceUsd: 1, amountUsd: 10, impactPct: impact, slippageBps: 100, priorityFeeNative: 0.0001, route: ["r"], source: "MOCK" });
   // liquid enough to trade safely ($15k, 0.07% impact for $10) but under the user's $20k configured minimum
-  const thin = { liquidityUsd: 15_000, volume24hUsd: 5_000, opportunityScore: 50, safety, quote: mkQuote(0.07), sellSimulationOk: true };
+  const thin = { liquidityUsd: 15_000, volume24hUsd: 5_000, opportunityScore: 50, safety, quote: mkQuote(0.07), sellSimulationOk: true, trust: TRUSTED };
 
   it("a manual buy below the configured liquidity/volume/score minimums is NOT blocked, but is warned about", () => {
     expect(validateEntry(thin, limits, { automatic: false })).toEqual([]);

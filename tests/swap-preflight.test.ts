@@ -98,7 +98,7 @@ afterAll(async () => {
     await (await collections.tradingAccounts()).insertOne({ _id: newId(), userId, environment: "LIVE", realizedPnlUsd: 0, createdAt: now });
     await (await collections.wallets()).insertOne({ _id: newId(), userId, chain: "solana", address: "W".repeat(44), label: null, verifiedAt: now, createdAt: now });
     await getSettings(userId);
-    await (await collections.tradingSettings()).updateOne({ userId }, { $set: { minOpportunityScore: 0, minLiquidityUsd: 0, minVolume24hUsd: 0, maxPriceImpactPct: 50, maxAllowedRisk: "HIGH", maxSlippageBps: 300 } });
+    await (await collections.tradingSettings()).updateOne({ userId }, { $set: { minOpportunityScore: 0, minLiquidityUsd: 0, minVolume24hUsd: 0, maxPriceImpactPct: 50, maxAllowedRisk: "HIGH", maxSlippageBps: 300, minTrust: "UNPROVEN" } });
   });
 
   afterEach(async () => {
@@ -125,7 +125,7 @@ afterAll(async () => {
     (dex as unknown as { preflight: typeof pf }).preflight = pf;
     return pf;
   }
-  const input = (slippageBps: number) => ({ chain: "solana" as const, tokenAddress: token.address, amountUsd: 5, slippageBps, environment: "LIVE" as const });
+  const input = (slippageBps: number) => ({ chain: "solana" as const, tokenAddress: token.address, amountUsd: 5, slippageBps, environment: "LIVE" as const, acknowledgeTrust: true });
   const slip = (tx: string) => Number(tx.replace("tx-", ""));
   const trades = async () => (await collections.trades()).countDocuments({ userId });
 

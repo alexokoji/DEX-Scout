@@ -72,7 +72,7 @@ d("wallet approval queue", () => {
     await (await collections.wallets()).insertOne({ _id: newId(), userId, chain: "solana", address: "W".repeat(44), label: null, verifiedAt: now, createdAt: now });
     await getSettings(userId);
     // the bot's own preference gates aren't what these tests are about
-    await (await collections.tradingSettings()).updateOne({ userId }, { $set: { minOpportunityScore: 0, minLiquidityUsd: 0, minVolume24hUsd: 0, maxPriceImpactPct: 50, maxAllowedRisk: "HIGH" } });
+    await (await collections.tradingSettings()).updateOne({ userId }, { $set: { minOpportunityScore: 0, minLiquidityUsd: 0, minVolume24hUsd: 0, maxPriceImpactPct: 50, maxAllowedRisk: "HIGH", minTrust: "UNPROVEN" } });
   });
 
   afterEach(() => vi.restoreAllMocks());
@@ -189,7 +189,7 @@ d("wallet approval queue", () => {
   it("bot entries wait for approval much longer than a hand-made trade's 60s quote", async () => {
     const { prepareTrade } = await import("@/services/trading");
     await mockBuild();
-    const input = { chain: "solana" as const, tokenAddress: token.address, amountUsd: 5, slippageBps: 100, environment: "LIVE" as const };
+    const input = { chain: "solana" as const, tokenAddress: token.address, amountUsd: 5, slippageBps: 100, environment: "LIVE" as const, acknowledgeTrust: true };
     const auto = await prepareTrade(userId, input, "AUTO_ENTRY");
     const manual = await prepareTrade(userId, input, "MANUAL_ENTRY");
     created.push(auto.trade.id, manual.trade.id);

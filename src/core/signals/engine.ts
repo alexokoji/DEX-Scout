@@ -1,5 +1,6 @@
-import { SIGNAL_THRESHOLDS, SIGNAL_TTL_MINUTES } from "../config";
+import { SIGNAL_MIN_TRUST, SIGNAL_THRESHOLDS, SIGNAL_TTL_MINUTES } from "../config";
 import type { Analysis, SignalDraft } from "../types";
+import { TRUST_RANK } from "../types";
 
 export interface SignalThresholds {
   buy: number;
@@ -17,6 +18,9 @@ export function generateSignal(
 ): SignalDraft | null {
   const { safety, market, opportunity, snapshot: s } = a;
   if (safety.criticalIssues.length > 0 || safety.riskLevel === "CRITICAL") return null;
+  // A signal is the app saying "look at this one": it only says so about tokens that have earned trust. Everything else is
+  // still on the Scanner, labelled, for anyone who wants to look for themselves.
+  if (TRUST_RANK[a.trust.tier] < TRUST_RANK[SIGNAL_MIN_TRUST]) return null;
 
   // Risk drags the ranking score down slightly so equal opportunities rank lower-risk first.
   const score = Math.max(0, Math.round((opportunity.score - safety.riskScore * 0.15) * 10) / 10);

@@ -45,6 +45,7 @@ export async function evmRpc<T>(chain: ChainId, method: string, params: unknown[
 }
 
 import { looksLikeHoneypotFlow } from "../../analysis/honeypot";
+import { fetchTrustFacts } from "../trust";
 import { sellCheckInconclusive } from "../simFailure";
 import { nativeUsdFromPairs, type DsNativePair } from "./nativePrice";
 
@@ -145,6 +146,7 @@ export async function evmOnChain(chain: ChainId, address: string, snapshot: Toke
   const anomalies: string[] = [];
   let ownerRenounced = false;
   let dataAvailable = true;
+  const trustPromise = fetchTrustFacts(chain, address); // independent services, asked while the RPC calls run
   try {
     // owner() -> address; a revert means the contract has no owner concept (treated as renounced)
     const res = await evmRpc<string>(chain, "eth_call", [{ to: address, data: "0x8da5cb5b" }, "latest"], EVM_RPC_TIMEOUT_MS).catch(() => "0x");
@@ -156,13 +158,16 @@ export async function evmOnChain(chain: ChainId, address: string, snapshot: Toke
     dataAvailable = false; // unknown, not "owner active" — assessSafety scores this separately
   }
   const buyShare = snapshot.buys1h / Math.max(1, snapshot.buys1h + snapshot.sells1h);
+  const trust = await trustPromise;
   return {
     mintAuthorityRevoked: ownerRenounced,
     freezeAuthorityRevoked: ownerRenounced, // blacklist/pause functions are owner-gated on most tokens
-    verified: false,
+    verified: trust.listed === true,
     topHolderPct: 0,
     top10HolderPct: 0,
-    sellSimulationOk: !looksLikeHoneypotFlow(snapshot),
+    // a real simulated sell outranks the buy/sell-flow guess, in both directions
+    sellSimulationOk: trust.honeypot === true ? false : trust.sellSimulated ? true : !looksLikeHoneypotFlow(snapshot),
+    trust,
     metadataAnomalies: anomalies,
     largeBuys1h: 0,
     largeSells1h: 0,

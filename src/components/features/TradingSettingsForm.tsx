@@ -97,11 +97,20 @@ export function TradingSettingsForm({ initial, liveEnabled }: { initial: S; live
               <option value="HIGH">Up to high</option>
             </Select>
           </div>
+          <div className="sm:col-span-2 lg:col-span-3">
+            <Label hint="the bot buys nothing below this">Minimum trust</Label>
+            <Select value={s.minTrust} onChange={(e) => set("minTrust", e.target.value as S["minTrust"])}>
+              <option value="VERIFIED">Verified: on a curated list and passed every check</option>
+              <option value="TRUSTED">Trusted: passed every check, with real liquidity, volume and history (recommended)</option>
+              <option value="UNPROVEN">Unproven: no red flags found, but not yet trusted (riskier)</option>
+            </Select>
+            <p className="mt-1 text-[11px] text-muted">Trusted needs $50K liquidity, $20K daily volume, 24h of history, a real sell test, locked or burned liquidity, and no creator powers or taxes. Risky and dangerous tokens are never bought.</p>
+          </div>
         </CardBody>
       </Card>
 
       <Card>
-        <CardHeader title="Scanner filters" sub="Defaults: $250K–$25M market cap, $20K liquidity, $10K 24h volume. All configurable." />
+        <CardHeader title="Scanner filters" sub="Defaults: $250K–$25M market cap, $50K liquidity, $20K 24h volume. All configurable." />
         <CardBody className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <Num label="Min market cap" hint="USD" value={s.filters.minMarketCapUsd} onChange={(v) => setF("minMarketCapUsd", v)} err={errors["filters.minMarketCapUsd"]} />
           <Num label="Max market cap" hint="USD" value={s.filters.maxMarketCapUsd} onChange={(v) => setF("maxMarketCapUsd", v)} />

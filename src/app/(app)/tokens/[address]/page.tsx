@@ -2,7 +2,8 @@ import { notFound } from "next/navigation";
 import { PageHeader } from "@/components/features/PageHeader";
 import { TokenChart } from "@/components/features/TokenChart";
 import { TradePanel } from "@/components/features/TradePanel";
-import { Badge, Change, EnvBadge, RiskBadge, SignalBadge } from "@/components/ui/badges";
+import { TrustCard } from "@/components/features/TrustCard";
+import { Badge, Change, EnvBadge, RiskBadge, SignalBadge, TrustBadge } from "@/components/ui/badges";
 import { Card, CardBody, CardHeader, Stat } from "@/components/ui/card";
 import type { AiAnalysis } from "@/core/ai/schema";
 import { CHAINS } from "@/core/chains";
@@ -42,6 +43,7 @@ export default async function TokenPage({ params, searchParams }: { params: Prom
             <span>{token.dex}</span>
             <span>{CHAINS[token.chain as ChainId]?.name ?? token.chain}</span>
             <EnvBadge source={token.dataSource} />
+            <TrustBadge tier={token.trustTier} />
             {token.riskLevel && token.passedFilters && <RiskBadge level={token.riskLevel} />}
             <SignalBadge type={signal?.type} />
           </span>
@@ -86,6 +88,8 @@ export default async function TokenPage({ params, searchParams }: { params: Prom
               </CardBody>
             </Card>
           )}
+
+          <TrustCard trust={token.trust} />
 
           <TradePanel
             chain={token.chain as ChainId}

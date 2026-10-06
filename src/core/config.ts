@@ -1,6 +1,7 @@
 import { z } from "zod";
+import { TRUST_BAR } from "./analysis/trust";
 import { CHAIN_IDS } from "./chains";
-import type { ProfitTargetConfig, ScannerFilters, ScoreWeights } from "./types";
+import type { ProfitTargetConfig, ScannerFilters, ScoreWeights, TrustTier } from "./types";
 
 export const scannerFiltersSchema = z.object({
   // Defaults were $1M-$10M cap / $100k liquidity / $50k volume / 300 holders / 50 tx per hour / 30-day age
@@ -9,8 +10,10 @@ export const scannerFiltersSchema = z.object({
   // trade's own price-impact check (not an absolute pool-size floor) is what protects a given position size.
   minMarketCapUsd: z.number().min(0).default(250_000),
   maxMarketCapUsd: z.number().min(0).default(25_000_000),
-  minLiquidityUsd: z.number().min(0).default(20_000),
-  minVolume24hUsd: z.number().min(0).default(10_000),
+  // $50K / $20K: the depth below which a token can't earn trust (see TRUST_BAR). Tokens thinner than this are mostly
+  // brand-new launches whose liquidity one wallet can pull; they were the bulk of what the scanner used to list.
+  minLiquidityUsd: z.number().min(0).default(TRUST_BAR.minLiquidityUsd),
+  minVolume24hUsd: z.number().min(0).default(TRUST_BAR.minVolume24hUsd),
   minHolders: z.number().int().min(0).default(50),
   maxTokenAgeHours: z.number().min(0).nullable().default(null),
   minTxCount1h: z.number().int().min(0).default(15),
@@ -52,6 +55,9 @@ export const PRICE_MAX_AGE_MS = 30 * 60_000;
 export const PRICE_WARN_AGE_MS = 5 * 60_000;
 
 export const SIGNAL_THRESHOLDS = { buy: 56, watch: 50 } as const;
+
+/** The least-earned trust a token needs before a BUY or WATCH signal is raised for it (see core/analysis/trust.ts). */
+export const SIGNAL_MIN_TRUST: TrustTier = "TRUSTED";
 
 /** How long a generated signal stays actionable. */
 export const SIGNAL_TTL_MINUTES = 90;

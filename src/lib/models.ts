@@ -19,6 +19,8 @@ import type {
   ScoreComponent,
   ScoreWeights,
   TokenSnapshot,
+  TrustReport,
+  TrustTier,
 } from "@/core/types";
 import type { AiAnalysis } from "@/core/ai/schema";
 
@@ -82,6 +84,8 @@ export interface TradingSettingsDoc {
   maxPriceImpactPct: number;
   maxSlippageBps: number;
   maxAllowedRisk: RiskLevel;
+  /** the least-earned trust the bot will buy (manual buys are warned, never blocked, below it); see core/analysis/trust.ts */
+  minTrust?: TrustTier;
   targetsMode: TargetsMode;
   maxPositionAgeHours: number | null;
   emergencyEnabled: boolean;
@@ -169,6 +173,9 @@ export interface TokenDoc {
 
   safety: TokenSafetyEmbed | null;
   analysis: TokenAnalysisEmbed | null;
+  /** How far the token has earned trust (see core/analysis/trust.ts). Absent until the token is first analysed. */
+  trustTier?: TrustTier | null;
+  trust?: (TrustReport & { checkedAt: Date }) | null;
 }
 
 export interface TokenMetricDoc {

@@ -144,8 +144,9 @@ d("settings migration to v2 gate defaults", () => {
     try {
       await col.insertOne(legacy);
       const migrated = await getSettings(userId);
-      expect(migrated.minLiquidityUsd).toBe(20_000);
-      expect(migrated.minVolume24hUsd).toBe(10_000);
+      expect(migrated.minLiquidityUsd).toBe(50_000); // v1 -> current default ($50K, v5)
+      expect(migrated.minVolume24hUsd).toBe(20_000);
+      expect(migrated.minTrust).toBe("TRUSTED");
       expect(migrated.filters.minMarketCapUsd).toBe(250_000);
       expect(migrated.filters.maxMarketCapUsd).toBe(25_000_000);
       expect(migrated.filters.maxTokenAgeHours).toBeNull();
@@ -156,6 +157,36 @@ d("settings migration to v2 gate defaults", () => {
       expect((await getSettings(userId)).minLiquidityUsd).toBe(100_000);
     } finally {
       await col.deleteMany({ userId });
+    }
+  });
+});
+
+d("settings migration to v5 (trust floor, real-liquidity defaults)", () => {
+  it("moves a $20K/$10K gate (the v4 default) up to $50K/$20K, keeps a deliberate value, and gives everyone the trust floor", async () => {
+    const { getSettings, defaultSettingsDoc, SETTINGS_VERSION } = await import("@/services/settings");
+    const col = await collections.tradingSettings();
+    const a = newId();
+    const b = newId();
+    const v4 = (userId: string, top: { minLiquidityUsd: number; minVolume24hUsd: number }, filters: { minLiquidityUsd: number; minVolume24hUsd: number }) => {
+      const d = defaultSettingsDoc(userId) as unknown as Record<string, unknown>;
+      delete d.minTrust; // accounts from before v5 have no trust setting
+      Object.assign(d, top, { settingsVersion: 4 });
+      d.filters = { ...(d.filters as object), ...filters };
+      return d as unknown as ReturnType<typeof defaultSettingsDoc>;
+    };
+    try {
+      await col.insertMany([v4(a, { minLiquidityUsd: 20_000, minVolume24hUsd: 10_000 }, { minLiquidityUsd: 20_000, minVolume24hUsd: 10_000 }), v4(b, { minLiquidityUsd: 35_000, minVolume24hUsd: 10_000 }, { minLiquidityUsd: 80_000, minVolume24hUsd: 10_000 })]);
+      const sa = await getSettings(a);
+      expect(sa).toMatchObject({ minLiquidityUsd: 50_000, minVolume24hUsd: 20_000, minTrust: "TRUSTED" });
+      expect(sa.filters).toMatchObject({ minLiquidityUsd: 50_000, minVolume24hUsd: 20_000 });
+      expect((await col.findOne({ userId: a }))?.settingsVersion).toBe(SETTINGS_VERSION);
+      const sb = await getSettings(b);
+      expect(sb.minLiquidityUsd).toBe(35_000); // chosen on purpose: left alone
+      expect(sb.filters.minLiquidityUsd).toBe(80_000);
+      expect(sb.minVolume24hUsd).toBe(20_000); // still the old default, so it moved
+      expect(sb.minTrust).toBe("TRUSTED");
+    } finally {
+      await col.deleteMany({ userId: { $in: [a, b] } });
     }
   });
 });
