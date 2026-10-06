@@ -57,6 +57,11 @@ export interface ChainAdapter extends WalletProvider {
   readonly nativeUsdPrice: () => Promise<number>;
   /** Optional: the live on-chain cost of a swap for `owner` (and, when known, `tokenAddress`). null = could not be read. */
   estimateSwapReserve?(owner: string, tokenAddress?: string): Promise<SwapReserve | null>;
+  /**
+   * Optional: how much of a token `owner` holds right now, in whole tokens. 0 is a real answer (the chain says none); null means
+   * it could not be read (an unreachable node must never read as "none left").
+   */
+  getTokenBalance?(owner: string, tokenAddress: string): Promise<number | null>;
   isValidAddress(address: string): boolean;
   explorerTxUrl(signature: string): string;
   explorerTokenUrl(address: string): string;

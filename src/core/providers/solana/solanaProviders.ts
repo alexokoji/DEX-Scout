@@ -184,6 +184,15 @@ export class SolanaChainAdapter implements ChainAdapter {
     const fees = costs.baseFeeLamports + costs.priorityFeeLamports;
     return { peakNative: r.peakLamports / 1e9, feesNative: fees / 1e9, depositNative: (r.needsTokenAccount ? costs.rentLamports : 0) / 1e9 };
   }
+  async getTokenBalance(owner: string, tokenAddress: string): Promise<number | null> {
+    try {
+      // every token account the owner has for this mint (a wallet can hold more than one); an empty list is a real "none"
+      const r = await solanaTry((c) => c.getParsedTokenAccountsByOwner(new PublicKey(owner), { mint: new PublicKey(tokenAddress) }), 8_000);
+      return r.value.reduce((sum, a) => sum + (((a.account.data as { parsed?: { info?: { tokenAmount?: { uiAmount?: number | null } } } }).parsed?.info?.tokenAmount?.uiAmount) ?? 0), 0);
+    } catch {
+      return null;
+    }
+  }
   verifyMessageSignature(address: string, message: string, signatureBase64: string): boolean {
     try {
       return nacl.sign.detached.verify(new TextEncoder().encode(message), Buffer.from(signatureBase64, "base64"), new PublicKey(address).toBytes());

@@ -13,6 +13,7 @@
         "test": "vitest run",
         "db:start": "tsx scripts/embedded-db.ts",
         "db:index": "tsx scripts/ensure-indexes.ts",
+    "positions:close-stale": "tsx scripts/close-stale-positions.ts",
         "workers": "tsx src/workers/main.ts",
         "worker:scanner": "tsx src/workers/main.ts scanner",
         "worker:analysis": "tsx src/workers/main.ts analysis",

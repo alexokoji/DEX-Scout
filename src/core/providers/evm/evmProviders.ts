@@ -123,6 +123,17 @@ export class EvmChainAdapter implements ChainAdapter {
     const hex = await evmRpc<string>(this.chain, "eth_getBalance", [address, "latest"]);
     return Number(BigInt(hex)) / 1e18;
   }
+  async getTokenBalance(owner: string, tokenAddress: string): Promise<number | null> {
+    try {
+      // ERC-20 balanceOf(owner)
+      const data = "0x70a08231" + owner.toLowerCase().replace("0x", "").padStart(64, "0");
+      const res = await evmRpc<string>(this.chain, "eth_call", [{ to: tokenAddress, data }, "latest"]);
+      if (!res || res === "0x") return null; // not a token contract on this chain: unknown, not "none"
+      return Number(BigInt(res)) / 10 ** (await tokenDecimals(this.chain, tokenAddress));
+    } catch {
+      return null;
+    }
+  }
   async verifyMessageSignature(address: string, message: string, signature: string): Promise<boolean> {
     try {
       return await verifyMessage({ address: getAddress(address), message, signature: signature as Hex });
