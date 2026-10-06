@@ -6,7 +6,7 @@ import { PageHeader } from "@/components/features/PageHeader";
 import { Badge, EnvBadge } from "@/components/ui/badges";
 import { Card, CardBody, CardHeader, Stat } from "@/components/ui/card";
 import { requireUser } from "@/lib/auth";
-import { clockTime, timeAgo, usd } from "@/lib/format";
+import { clockTime, timeAgo, usd, usdPnl } from "@/lib/format";
 import { botOverview } from "@/services/queries";
 import { workerStatuses } from "@/services/workerState";
 
@@ -41,8 +41,8 @@ export default async function BotPage() {
         <Stat label="Available" value={o.pf.capital.availableUsd !== null ? usd(o.pf.capital.availableUsd) : "—"} />
         <Stat label="Open positions" value={`${o.pf.positions} / ${s.maxOpenPositions}`} />
         <Stat label="Trades today" value={String(o.tradesToday)} />
-        <Stat label="Realized P/L" value={usd(o.pf.realizedPnlUsd)} tone={o.pf.realizedPnlUsd >= 0 ? "up" : "down"} />
-        <Stat label="Unrealized P/L" value={usd(o.pf.unrealizedPnlUsd, Math.abs(o.pf.unrealizedPnlUsd) < 0.1 ? 4 : 2)} tone={o.pf.unrealizedPnlUsd >= 0 ? "up" : "down"} />
+        <Stat label="Realized P/L" value={usdPnl(o.pf.realizedPnlUsd)} tone={o.pf.realizedPnlUsd >= 0 ? "up" : "down"} />
+        <Stat label="Unrealized P/L" value={usdPnl(o.pf.unrealizedPnlUsd)} tone={o.pf.unrealizedPnlUsd >= 0 ? "up" : "down"} />
         <Stat label="Signals evaluated" value={String(o.totals.signalsEvaluated ?? 0)} sub="all-time" />
         <Stat label="Trades executed" value={String(o.totals.tradesExecuted ?? 0)} sub="all-time" />
       </div>

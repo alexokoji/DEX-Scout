@@ -130,6 +130,8 @@ export interface TransactionInspection {
   tokenDelta: number;
   /** change in the owner's native balance (SOL/ETH/BNB, fee included); 0 when unknown */
   nativeDelta: number;
+  /** the network fee the transaction paid, in the native coin (already inside nativeDelta); undefined when unknown */
+  feeNative?: number;
 }
 
 export interface AiProvider {

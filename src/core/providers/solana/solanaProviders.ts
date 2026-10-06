@@ -397,7 +397,7 @@ export class JupiterDexAdapter implements DexAdapter {
       (arr ?? []).filter((b) => b.owner === owner && b.mint === mint).reduce((s, b) => s + (b.uiTokenAmount.uiAmount ?? 0), 0);
     const idx = keys.findIndex((k) => k.pubkey.toBase58() === owner);
     const nativeDelta = idx >= 0 ? (tx.meta.postBalances[idx] - tx.meta.preBalances[idx]) / 1e9 : 0;
-    return { signer, tokenDelta: bal(tx.meta.postTokenBalances) - bal(tx.meta.preTokenBalances), nativeDelta };
+    return { signer, tokenDelta: bal(tx.meta.postTokenBalances) - bal(tx.meta.preTokenBalances), nativeDelta, feeNative: (tx.meta.fee ?? 0) / 1e9 };
   }
 
   async getTransactionStatus(_chain: ChainId, signature: string): Promise<TransactionStatus> {

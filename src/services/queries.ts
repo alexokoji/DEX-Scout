@@ -7,7 +7,7 @@ import { computeMetrics } from "@/core/trading/positions";
 import { collections, withId, withIds } from "@/lib/db";
 import type { Environment, RiskLevel, SignalDoc, TokenDoc } from "@/lib/models";
 import { getSettings } from "./settings";
-import { capitalState } from "./trading";
+import { capitalState, reconcileUserPending } from "./trading";
 import { autoSellsFor } from "./autoSell";
 import { refreshTokenIfStale } from "./tokenPrice";
 import { walletBalances } from "./walletBalance";
@@ -154,6 +154,7 @@ export async function listSignals(opts: { page: number; pageSize: number; type?:
 }
 
 export async function positionViews(userId: string, environment?: Environment, includeClosed = false) {
+  await reconcileUserPending(userId); // a sale that has confirmed since the last look is booked before positions are listed
   const positionsCol = await collections.positions();
   const signalsCol = await collections.signals();
   const rows = withIds(

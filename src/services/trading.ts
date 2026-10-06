@@ -510,7 +510,10 @@ export async function reconcileLiveTrade(tradeId: string) {
   // trading cost). The cost basis, the entry price and the profit targets all measure the same thing: the swap.
   const swapUsd = trade.inputUsd;
   const buyCostUsd = swapUsd;
-  const sellProceedsUsd = insp && nativeUsdNow > 0 ? Math.max(0, insp.nativeDelta) * nativeUsdNow : trade.inputUsd - trade.feesUsd - trade.networkFeeUsd;
+  // What a sell returned = what the swap paid out. The wallet's native balance change already has the network fee taken out of it,
+  // so it is added back: the fee is paid either way and has no bearing on whether the position made money (on a $0.10 position a
+  // one-cent fee turned a +12% sale into +2%). Falls back to the quote, less the swap's own fee, when the chain can't be read.
+  const sellProceedsUsd = insp && nativeUsdNow > 0 ? Math.max(0, insp.nativeDelta + (insp.feeNative ?? 0)) * nativeUsdNow : trade.inputUsd - trade.feesUsd;
 
   const positions = await collections.positions();
   const positionEvents = await collections.positionEvents();
@@ -522,7 +525,13 @@ export async function reconcileLiveTrade(tradeId: string) {
   let confirmed: Message | null = null;
   let openedPositionId: string | null = null;
   const chainName = CHAINS[tChain]?.name ?? token.chain;
+  let booked = false;
   await withUserLock(trade.userId, async (session) => {
+    // Settling can be asked for from several places at once (the wallet's own confirmation, a page load, the scheduled job).
+    // The lock makes them take turns; whoever comes second finds it already booked and must not book it again.
+    const current = await trades.findOne({ _id: tradeId }, { session });
+    if (!current || current.status !== "PENDING") return;
+    booked = true;
     const settings = await getSettings(trade.userId);
     const now = new Date();
     await trades.updateOne({ _id: tradeId }, { $set: { "transaction.status": "CONFIRMED", "transaction.confirmedAt": now, "transaction.slot": st.slot ?? null } }, { session });
@@ -554,9 +563,12 @@ export async function reconcileLiveTrade(tradeId: string) {
     } else if (trade.positionId) {
       const pos = await positions.findOne({ _id: trade.positionId }, { session });
       if (!pos) throw new Error(`Position ${trade.positionId} not found while confirming LIVE sell`);
+      // The chain reports the tokens that left as a float, so selling "everything" can come back a hair under the position's amount
+      // and leave dust that keeps a sold position listed as open. Within a millionth, it was all sold.
+      const soldTokens = tokenAmountActual >= pos.amount * (1 - 1e-6) ? pos.amount : tokenAmountActual;
       const res = applySell(
         { entryPriceUsd: pos.entryPriceUsd, initialAmount: pos.initialAmount, amount: pos.amount, costBasisUsd: pos.costBasisUsd, targetsHit: pos.targetsHit, realizedPnlUsd: pos.realizedPnlUsd },
-        tokenAmountActual,
+        soldTokens,
         sellProceedsUsd,
       );
       const level = (trade.quote as { targetLevel?: number } | null)?.targetLevel;
@@ -575,14 +587,26 @@ export async function reconcileLiveTrade(tradeId: string) {
       await tradingAccounts.updateOne({ _id: trade.accountId }, { $inc: { realizedPnlUsd: res.realizedDeltaUsd } }, { session });
       await positionEvents.insertOne({ _id: newId(), positionId: pos._id, type: "LIVE_SELL", message: "LIVE sell confirmed on-chain", data: { tradeId }, createdAt: now }, { session });
       if (res.closed) await logEvent({ type: "POSITION_CLOSED", source: "live", userId: trade.userId, message: `LIVE position closed: ${token.symbol}`, data: { positionId: pos._id } });
-      confirmed = tradeConfirmed({ side: "SELL", symbol: token.symbol, chainName, usd: sellProceedsUsd, tokens: tokenAmountActual, tradeId, realizedDeltaUsd: res.realizedDeltaUsd, closed: res.closed, totalPnlUsd: res.realizedPnlUsd, totalPnlPct: pos.investedUsd > 0 ? (res.realizedPnlUsd / pos.investedUsd) * 100 : undefined });
+      confirmed = tradeConfirmed({ side: "SELL", symbol: token.symbol, chainName, usd: sellProceedsUsd, tokens: soldTokens, tradeId, realizedDeltaUsd: res.realizedDeltaUsd, closed: res.closed, totalPnlUsd: res.realizedPnlUsd, totalPnlPct: pos.investedUsd > 0 ? (res.realizedPnlUsd / pos.investedUsd) * 100 : undefined });
     }
   });
+  if (!booked) return { ok: true as const, status: "CONFIRMED" as const };
   await logEvent({ type: "TRADE_EXECUTED", source: "live", userId: trade.userId, message: `LIVE ${trade.side} ${token.symbol} confirmed`, data: { tradeId } });
   if (confirmed) await notifyUser(trade.userId, confirmed);
   // a position just opened: prepare the sell orders the user can arm with one signature (dynamic import: autoSell imports this module)
   if (openedPositionId) await (await import("./autoSell")).suggestAutoSells(openedPositionId);
   return { ok: true as const, status: "CONFIRMED" as const };
+}
+
+/**
+ * Settle this user's submitted trades that have confirmed on-chain by now. A sale is signed and sent in seconds, but the first
+ * check right after sending usually still sees it pending, so without this a sold position stayed listed as open until the next
+ * scheduled run. Called when positions are shown, so what is on screen is what the chain says. Cheap: one status lookup per trade.
+ */
+export async function reconcileUserPending(userId: string): Promise<void> {
+  const trades = await collections.trades();
+  const pending = await trades.find({ userId, status: "PENDING", "transaction.signature": { $ne: null } }, { projection: { _id: 1 } }).limit(10).toArray();
+  await Promise.all(pending.map((t) => reconcileLiveTrade(t._id).catch(() => {})));
 }
 
 /** Prepare an unsigned LIVE sell that waits in the user's approval queue (no keys are held server-side). */

@@ -3,6 +3,14 @@ export function usd(n: number | null | undefined, digits = 2): string {
   return n.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
 
+/** Decimal places for a profit or loss: small amounts need many to show anything (a $0.10 position moves in fractions of a cent). */
+export const pnlDigits = (n: number) => (Math.abs(n) < 0.01 && n !== 0 ? 6 : Math.abs(n) < 1000 ? 4 : 2);
+/** A profit or loss in dollars with enough decimals to read: +$0.001730, $0.0831, $1,234.56. */
+export function usdPnl(n: number | null | undefined): string {
+  if (n === null || n === undefined || !Number.isFinite(n)) return "—";
+  return usd(n, pnlDigits(n));
+}
+
 /** Dollars for a wallet balance: real cents, and "<$0.01" instead of a long run of zeros for dust. */
 export function usdBalance(n: number | null | undefined): string {
   if (n === null || n === undefined || !Number.isFinite(n)) return "—";

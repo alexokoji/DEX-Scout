@@ -4,7 +4,7 @@ import { PageHeader } from "@/components/features/PageHeader";
 import { Badge, Change, EnvBadge, PnL, RiskBadge, ScoreBar, SignalBadge } from "@/components/ui/badges";
 import { Card, CardBody, CardHeader, EmptyState, Stat } from "@/components/ui/card";
 import { requireUser } from "@/lib/auth";
-import { clockTime, compactUsd, price, timeAgo, usd } from "@/lib/format";
+import { clockTime, compactUsd, price, timeAgo, usd, usdPnl } from "@/lib/format";
 import { dashboard } from "@/services/queries";
 
 export default async function DashboardPage() {
@@ -22,8 +22,8 @@ export default async function DashboardPage() {
         <Stat label="Wallet balance" value={pf.wallet?.balanceUsd != null ? usd(pf.wallet.balanceUsd) : "—"} sub={pf.wallet ? pf.wallet.summary || "no balance" : <Link href="/wallet" className="text-accent">Connect wallet</Link>} />
         <Stat label="Available to trade" value={pf.capital.availableUsd !== null ? usd(pf.capital.availableUsd) : "—"} sub={pf.wallet ? `${usd(pf.capital.deployedUsd)} deployed` : "connect a wallet"} />
         <Stat label="Open positions" value={String(pf.positions)} sub={`${pf.capital.slotsLeft} slots left`} />
-        <Stat label="Realized P/L" value={usd(pf.realizedPnlUsd)} tone={pf.realizedPnlUsd > 0 ? "up" : pf.realizedPnlUsd < 0 ? "down" : undefined} />
-        <Stat label="Unrealized P/L" value={usd(pf.unrealizedPnlUsd, Math.abs(pf.unrealizedPnlUsd) < 0.1 ? 4 : 2)} tone={pf.unrealizedPnlUsd > 0 ? "up" : pf.unrealizedPnlUsd < 0 ? "down" : undefined} />
+        <Stat label="Realized P/L" value={usdPnl(pf.realizedPnlUsd)} tone={pf.realizedPnlUsd > 0 ? "up" : pf.realizedPnlUsd < 0 ? "down" : undefined} />
+        <Stat label="Unrealized P/L" value={usdPnl(pf.unrealizedPnlUsd)} tone={pf.unrealizedPnlUsd > 0 ? "up" : pf.unrealizedPnlUsd < 0 ? "down" : undefined} />
         <Stat label="Signals today" value={String(d.todaySignals)} sub={`${d.activeSignals} active now`} />
         <Stat label="Trades today" value={String(d.tradesToday)} />
         <Stat label="Bot" value={botStatus} tone={botStatus === "ACTIVE" ? "up" : botStatus === "DISABLED" ? "down" : "warn"} sub={d.settings.autoTradingEnabled ? "Auto trading ON" : "Manual mode"} />

@@ -49,12 +49,14 @@ export function deriveStatus(p: { closed: boolean; emergency: boolean; targetsHi
 /** Apply a sell of `sellAmount` tokens at `price` and return the updated position numbers (pure). */
 export function applySell(pos: PositionState & { realizedPnlUsd: number }, sellAmount: number, netProceedsUsd: number) {
   const sold = Math.min(sellAmount, pos.amount);
-  const fraction = pos.amount > 0 ? sold / pos.amount : 0;
-  const costRemoved = pos.costBasisUsd * fraction;
   const remaining = pos.amount - sold;
+  // What the sold tokens cost = tokens x the price paid (the swap), not a share of a cost basis that, for a position opened before
+  // fees were left out of it, also carries the buy fee. Falls back to the cost basis share when there is no entry price.
+  const unitCost = pos.entryPriceUsd > 0 ? pos.entryPriceUsd : pos.amount > 0 ? pos.costBasisUsd / pos.amount : 0;
+  const costRemoved = sold * unitCost;
   return {
     amount: remaining <= 1e-12 ? 0 : remaining,
-    costBasisUsd: remaining <= 1e-12 ? 0 : pos.costBasisUsd - costRemoved,
+    costBasisUsd: remaining <= 1e-12 ? 0 : remaining * unitCost,
     realizedDeltaUsd: netProceedsUsd - costRemoved,
     realizedPnlUsd: pos.realizedPnlUsd + (netProceedsUsd - costRemoved),
     closed: remaining <= 1e-12,

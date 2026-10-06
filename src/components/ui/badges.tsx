@@ -1,3 +1,4 @@
+import { pnlDigits } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const TONES = {
@@ -56,7 +57,7 @@ export function PnL({ value, pct, className }: { value?: number; pct?: number; c
   const v = value ?? pct ?? 0;
   return (
     <span className={cn("num", v > 0 ? "text-up" : v < 0 ? "text-down" : "text-muted", className)}>
-      {value !== undefined && `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(Math.abs(value) < 0.1 ? 4 : Math.abs(value) < 1 ? 3 : 2)}`}
+      {value !== undefined && `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(pnlDigits(value))}`}
       {value !== undefined && pct !== undefined && " "}
       {pct !== undefined && `(${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%)`}
     </span>

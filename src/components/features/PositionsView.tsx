@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { EnvBadge, HealthBadge, PnL, SignalBadge, Badge } from "@/components/ui/badges";
 import { EmptyState } from "@/components/ui/card";
-import { age, price, tokens, usd } from "@/lib/format";
+import { age, price, tokens, usd, usdPnl } from "@/lib/format";
 import { ClosePositionButton } from "./ClosePositionButton";
 import { AutoSellPanel, type AutoSellView } from "./AutoSellPanel";
 import { LivePositionPnL, LivePositionPrice } from "./LivePrice";
@@ -73,7 +73,7 @@ export function PositionsView({ positions, actions = true }: { positions: PV[]; 
               <Cell k="Amount" v={tokens(p.amount)} />
               <Cell k="Invested" v={usd(p.investedUsd, p.investedUsd < 1 ? 4 : 2)} />
               <Cell k="Value" v={usd(p.metrics.currentValueUsd, p.metrics.currentValueUsd < 1 ? 4 : 2)} />
-              <Cell k="Realized" v={usd(p.realizedPnlUsd)} />
+              <Cell k="Realized" v={usdPnl(p.realizedPnlUsd)} />
               <div>
                 <div className="text-muted">{p.metrics.nextTargetLevel ? `Target ${p.metrics.nextTargetLevel} (+${p.metrics.nextTargetGainPct}%)` : "All targets hit"}</div>
                 <div className="mt-1.5 h-1.5 rounded bg-surface2"><div className="h-1.5 rounded bg-up" style={{ width: `${p.metrics.targetProgress * 100}%` }} /></div>

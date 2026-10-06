@@ -33,8 +33,10 @@ export interface Message {
   priority?: "urgent" | "high" | "default";
 }
 
-const money = (n: number) => `${n < 0 ? "-" : ""}$${Math.abs(n).toFixed(2)}`;
-const signed = (n: number) => `${n >= 0 ? "+" : "-"}$${Math.abs(n).toFixed(2)}`;
+// under a dollar, cents hide the answer (a $0.10 position makes or loses fractions of a cent)
+const dp = (n: number) => (Math.abs(n) < 1 ? 4 : 2);
+const money = (n: number) => `${n < 0 ? "-" : ""}$${Math.abs(n).toFixed(dp(n))}`;
+const signed = (n: number) => `${n >= 0 ? "+" : "-"}$${Math.abs(n).toFixed(dp(n))}`;
 
 export function sellQueued(kind: TradeKind, symbol: string, chainName: string, reason: string, fraction: number, usdValue: number, tradeId: string, positionId = ""): Message {
   const pct = Math.round(Math.min(1, Math.max(0, fraction)) * 100);

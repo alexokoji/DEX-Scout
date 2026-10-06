@@ -36,6 +36,9 @@ export function useApproveTrade() {
       }
       toast.success("Submitted — awaiting confirmation");
       router.refresh();
+      // The chain confirms within seconds; the server books the trade the next time positions are loaded, so look again a few times
+      // instead of leaving a sold position on screen until the page is reloaded.
+      for (const ms of [3_000, 7_000, 15_000, 30_000, 60_000]) setTimeout(() => router.refresh(), ms);
       return true;
     } catch (e) {
       console.error("[approval] wallet error", e);
