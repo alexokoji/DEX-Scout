@@ -102,11 +102,11 @@ export async function getOrCreateAccount(userId: string, environment: Environmen
 }
 
 /** Open exposure, plus — when `chain` is given — what the user's wallet can spend on that chain (null if unknown). */
-export async function capitalState(userId: string, environment: Environment, session?: ClientSession, chain?: ChainId, walletAddress?: string | null, tokenAddress?: string): Promise<CapitalState> {
+export async function capitalState(userId: string, environment: Environment, session?: ClientSession, chain?: ChainId, walletAddress?: string | null): Promise<CapitalState> {
   const positions = await collections.positions();
   const open = await positions.find({ userId, environment, status: { $ne: "CLOSED" } }, { projection: { costBasisUsd: 1 }, session }).toArray();
-  const detail = chain ? await spendableDetail(userId, chain, walletAddress, tokenAddress).catch(() => null) : undefined;
-  return { deployedUsd: open.reduce((s, p) => s + p.costBasisUsd, 0), openPositions: open.length, walletUsd: chain ? (detail?.spendableUsd ?? null) : undefined, walletBalanceUsd: detail?.balanceUsd ?? null, reserveUsd: detail?.reserveUsd ?? null, reserveNote: detail?.reserveNote ?? null, walletLabel: detail?.address ? `${detail.address.slice(0, 6)}…${detail.address.slice(-4)}` : null };
+  const detail = chain ? await spendableDetail(userId, chain, walletAddress).catch(() => null) : undefined;
+  return { deployedUsd: open.reduce((s, p) => s + p.costBasisUsd, 0), openPositions: open.length, walletUsd: chain ? (detail?.balanceUsd ?? null) : undefined, walletLabel: detail?.address ? `${detail.address.slice(0, 6)}…${detail.address.slice(-4)}` : null };
 }
 
 function quoteJson(q: SwapQuote): Json {
@@ -163,16 +163,17 @@ export async function quoteTrade(userId: string, input: PrepareTradeInput, autom
   const settings = await getSettings(userId);
   const token = await findTokenOrThrow(input.chain, input.tokenAddress);
   const p = providers();
+  // the wallet first: the quote needs it (Solana prices the priority fee from the compute units of this wallet's own swap)
+  const wallet = await resolveWallet(userId, input.chain, input.wallet); // throws a clear 409 if the connected wallet isn't verified
   let quote: SwapQuote;
   try {
-    quote = await p.dex.getQuote({ chain: input.chain, side: "BUY", tokenAddress: token.address, amountUsd: input.amountUsd, slippageBps: input.slippageBps, priorityFeeNative: input.priorityFeeNative });
+    quote = await p.dex.getQuote({ chain: input.chain, side: "BUY", tokenAddress: token.address, amountUsd: input.amountUsd, slippageBps: input.slippageBps, priorityFeeNative: input.priorityFeeNative, wallet: wallet?.address });
   } catch (err) {
     throw new TradeError(`Quote failed: ${safeMessage(err)}`, 502);
   }
   const analysis = await ensureAnalysis(withId(token));
   const sim = await p.dex.simulateSwap({ chain: input.chain, side: "SELL", tokenAddress: token.address, amountUsd: input.amountUsd, slippageBps: input.slippageBps });
-  const wallet = await resolveWallet(userId, input.chain, input.wallet); // throws a clear 409 if the connected wallet isn't verified
-  const state = await capitalState(userId, input.environment, undefined, input.chain, wallet?.address, token.address);
+  const state = await capitalState(userId, input.environment, undefined, input.chain, wallet?.address);
   // A sell check that FAILED to run (a rate-limited or slow provider) is not the same as "this token can't be sold": only the
   // latter blocks. The former is flagged, and the swap itself is dry-run again before the wallet is ever opened.
   const sellUnverified = !sim.ok && !!sim.unknown;
@@ -192,7 +193,7 @@ export async function quoteTrade(userId: string, input: PrepareTradeInput, autom
         ...(pricing.warning ? [pricing.warning] : []),
         ...(sellUnverified ? ["Couldn't double-check that this token can be sold back right now (the price service was busy). The swap itself is checked again before your wallet opens."] : []),
       ];
-  const walletInfo = wallet ? { address: wallet.address, balanceUsd: state.walletBalanceUsd ?? null, spendableUsd: state.walletUsd ?? null, reserveUsd: state.reserveUsd ?? null } : null;
+  const walletInfo = wallet ? { address: wallet.address, balanceUsd: state.walletUsd ?? null } : null;
   const slippage = suggestSlippage(analysis.snapshot.change5m, analysis.snapshot.change1h, settings.maxSlippageBps);
   return { quote, pricing, wallet: walletInfo, slippage, trust: analysis.trust, violations, warnings, analysis: { riskLevel: analysis.safety.riskLevel, warnings: analysis.safety.warnings, criticalIssues: analysis.safety.criticalIssues }, source: p.mock ? ("MOCK" as const) : ("LIVE" as const) };
 }
@@ -265,7 +266,7 @@ export async function prepareTrade(userId: string, input: PrepareTradeInput, kin
       quote,
       wallet: wallet.address,
       maxSlippageBps,
-      again: (slippageBps) => providers().dex.getQuote({ chain: input.chain, side: "BUY", tokenAddress: token.address, amountUsd: input.amountUsd, slippageBps, priorityFeeNative: input.priorityFeeNative }),
+      again: (slippageBps) => providers().dex.getQuote({ chain: input.chain, side: "BUY", tokenAddress: token.address, amountUsd: input.amountUsd, slippageBps, priorityFeeNative: input.priorityFeeNative, wallet: wallet.address }),
     });
   }
 
@@ -358,7 +359,7 @@ export async function refreshPreparedTrade(userId: string, tradeId: string, conn
     quote = q.quote;
   } else {
     try {
-      quote = await p.dex.getQuote({ chain, side: "SELL", tokenAddress: token.address, amountUsd: trade.inputUsd, tokenAmount: trade.tokenAmount, slippageBps: trade.slippageBps });
+      quote = await p.dex.getQuote({ chain, side: "SELL", tokenAddress: token.address, amountUsd: trade.inputUsd, tokenAmount: trade.tokenAmount, slippageBps: trade.slippageBps, wallet: wallet.address });
     } catch (err) {
       throw new TradeError(`Quote failed: ${safeMessage(err)}`, 502);
     }
@@ -367,7 +368,7 @@ export async function refreshPreparedTrade(userId: string, tradeId: string, conn
     quote,
     wallet: wallet.address,
     maxSlippageBps: (await getSettings(userId)).maxSlippageBps,
-    again: (slippageBps) => p.dex.getQuote({ chain, side: trade.side, tokenAddress: token.address, amountUsd: trade.inputUsd, tokenAmount: trade.side === "SELL" ? trade.tokenAmount : undefined, slippageBps }),
+    again: (slippageBps) => p.dex.getQuote({ chain, side: trade.side, tokenAddress: token.address, amountUsd: trade.inputUsd, tokenAmount: trade.side === "SELL" ? trade.tokenAmount : undefined, slippageBps, wallet: wallet.address }),
   });
 
   const prev = (trade.quote ?? {}) as { signalId?: string | null; reason?: string; targetLevel?: number | null };
@@ -627,7 +628,7 @@ export async function prepareLiveSell(userId: string, positionId: string, sellAm
   const settings = await getSettings(userId);
   const amount = Math.min(sellAmount, pos.amount);
   const p = providers();
-  const quote = await p.dex.getQuote({ chain: token.chain as ChainId, side: "SELL", tokenAddress: token.address, amountUsd: amount * token.priceUsd, tokenAmount: amount, slippageBps: kind === "EMERGENCY_EXIT" ? 2000 : settings.maxSlippageBps });
+  const quote = await p.dex.getQuote({ chain: token.chain as ChainId, side: "SELL", tokenAddress: token.address, amountUsd: amount * token.priceUsd, tokenAmount: amount, slippageBps: kind === "EMERGENCY_EXIT" ? 2000 : settings.maxSlippageBps, wallet: wallet.address });
   const { unsignedTxBase64 } = await p.dex.buildSwapTransaction(quote, wallet.address);
   const tradeId = newId();
   const now = new Date();

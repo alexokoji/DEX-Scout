@@ -1,7 +1,8 @@
 import { autoSellVenue, CHAINS } from "@/core/chains";
 import { fillDelta, mergeForMinimum, minProceedsRaw, planAutoSells, toRaw, type PlannedOrder } from "@/core/trading/autoSell";
 import { cancelCowOrders, cowAllowance, cowApprovalTx, cowCancelTypedData, cowTypedData, buildCowOrder, getCowOrder, getCowTradeHashes, submitCowOrder, COW_RELAYER } from "@/core/providers/limitOrders/cow";
-import { cancelJupiterOrder, createJupiterOrder, getJupiterOrder, jupiterFills, JUP_FEE_FRACTION, JUP_MIN_ORDER_USD } from "@/core/providers/limitOrders/jupiter";
+import { cancelJupiterOrder, createJupiterOrder, getJupiterOrder, jupiterFills, jupiterMinimumFromRefusal } from "@/core/providers/limitOrders/jupiter";
+import { approvalAffordable } from "@/core/providers/evm/affordability";
 import { evmTxFeeUsd, tokenDecimals } from "@/core/providers/evm/evmProviders";
 import { cancelKyberOrders, erc20Allowance, erc20ApprovalTx, kyberCancelSign, kyberContract, kyberFills, kyberFindOrder, kyberSignMessage, submitKyberOrder, type KyberOrder, type KyberOrderRequest } from "@/core/providers/limitOrders/kyber";
 import { providers } from "@/core/providers/registry";
@@ -55,7 +56,7 @@ async function loadOpenPosition(userId: string, positionId: string): Promise<{ p
 }
 
 /** The sell plan for a position as it stands now, as order documents (not yet signed or placed). */
-export async function buildPlan(pos: PositionDoc, token: TokenDoc): Promise<{ venue: Venue; orders: PlannedOrder[]; note: string | null } | null> {
+export async function buildPlan(pos: PositionDoc, token: TokenDoc, maker: string | null = null): Promise<{ venue: Venue; orders: PlannedOrder[]; note: string | null } | null> {
   const venue = venueFor(token.chain);
   if (!venue) return null;
   const planned = planAutoSells({ entryPriceUsd: pos.entryPriceUsd, initialAmount: pos.initialAmount, amount: pos.amount, costBasisUsd: pos.costBasisUsd, targetsHit: pos.targetsHit }, pos.targetsSnapshot ?? []);
@@ -66,13 +67,54 @@ export async function buildPlan(pos: PositionDoc, token: TokenDoc): Promise<{ ve
     const note = token.chain === "ethereum" && pos.amount * token.priceUsd < 100 ? "On Ethereum mainnet, small orders may not fill because the network fee can exceed the order's value." : null;
     return { venue, orders: planned, note };
   }
-  const merged = mergeForMinimum(planned, token.priceUsd, JUP_MIN_ORDER_USD);
+  const merged = await jupiterOrders(planned, pos, token, maker ?? pos.walletAddress ?? null);
+  const min = learnedJupiterMinUsd;
+  const minText = min > 0 ? `$${min.toFixed(2).replace(/\.?0+$/, "")}` : "its minimum";
   const note = !merged.length
-    ? "This position is too small for Jupiter's limit orders: Jupiter's service refuses any order worth under $5 (counted at the order's target price), and that rule is Jupiter's, not this app's. You'll get a notification to sign target sells instead."
+    ? `This position is too small for Jupiter's limit orders: Jupiter's service refuses any order worth under ${minText} (counted at the order's target price), and that rule is Jupiter's, not this app's. You'll get a notification to sign target sells instead.`
     : merged.length < planned.length
-      ? "Jupiter's limit orders must be worth at least $5 each (counted at the order's target price), so some small targets were merged into fewer, larger sells at the earlier target."
+      ? `Jupiter's limit orders must be worth at least ${minText} each (counted at the order's target price), so some small targets were merged into fewer, larger sells at the earlier target.`
       : null;
   return { venue, orders: merged, note };
+}
+
+/**
+ * Jupiter's smallest order is Jupiter's to say, so it is asked, not remembered: each planned order is offered to Jupiter's order
+ * builder (which only returns an unsigned transaction, nothing is placed), and if it refuses one for size its message says what the
+ * minimum is and how it measured ours. That is turned into the minimum in our own measure and the plan is merged again. What was
+ * learned is kept for the life of the process so later plans start there. If the position has no wallet recorded or the builder
+ * can't be reached, the plan is left as it is and the order's own build says no if it must.
+ */
+let learnedJupiterMinUsd = 0;
+async function jupiterOrders(planned: PlannedOrder[], pos: PositionDoc, token: TokenDoc, maker: string | null): Promise<PlannedOrder[]> {
+  const dec = await decimalsOf(token.chain, token.address);
+  const nat = await providers().chains[token.chain as ChainId].nativeUsdPrice();
+  let merged = mergeForMinimum(planned, token.priceUsd, learnedJupiterMinUsd);
+  if (!maker) return merged;
+  for (let attempt = 0; attempt < 4 && merged.length; attempt++) {
+    let refusedMin = 0; // the largest minimum any refusal named this round (0: none refused for size)
+    for (const o of merged) {
+      const raw = orderRaw(o, dec, nat, "jupiter");
+      try {
+        await createJupiterOrder({ maker, inputMint: token.address, makingRaw: BigInt(raw.sellAmountRaw), takingRaw: BigInt(raw.minBuyRaw) });
+      } catch (err) {
+        const learned = jupiterMinimumFromRefusal(err instanceof Error ? err.message : String(err), Math.max(o.tokenAmount * token.priceUsd, o.tokenAmount * o.targetPriceUsd));
+        if (learned) refusedMin = Math.max(refusedMin, learned);
+      }
+    }
+    if (!(refusedMin > learnedJupiterMinUsd)) return merged;
+    learnedJupiterMinUsd = refusedMin;
+    merged = mergeForMinimum(planned, token.priceUsd, learnedJupiterMinUsd);
+  }
+  return merged;
+}
+
+/** The raw amounts an order is placed with: the tokens (shaved by 1e-9 so rounding never asks to sell more than the wallet holds) and the least it will accept in return, at the target price. */
+function orderRaw(o: PlannedOrder, dec: number, nat: number, venue: Venue) {
+  return {
+    sellAmountRaw: ((toRaw(o.tokenAmount, dec) * BigInt(999_999_999)) / BigInt(1_000_000_000)).toString(),
+    minBuyRaw: minProceedsRaw(o.tokenAmount, o.targetPriceUsd, nat, nativeDecimals(venue)).toString(),
+  };
 }
 
 async function toDocs(userId: string, pos: PositionDoc, token: TokenDoc, venue: Venue, orders: PlannedOrder[], maker: string | null): Promise<AutoSellOrderDoc[]> {
@@ -81,9 +123,8 @@ async function toDocs(userId: string, pos: PositionDoc, token: TokenDoc, venue: 
   const now = new Date();
   const docs = orders.map((o): AutoSellOrderDoc => ({
     _id: newId(), userId, positionId: pos._id, tokenId: token._id, chain: token.chain, venue, levels: o.levels, gainPct: o.gainPct, targetPriceUsd: o.targetPriceUsd,
-    // a position's amount is a float built from on-chain deltas; shave 1e-9 so rounding can never ask to sell more than the wallet holds
-    sellAmount: o.tokenAmount, sellAmountRaw: ((toRaw(o.tokenAmount, dec) * BigInt(999_999_999)) / BigInt(1_000_000_000)).toString(),
-    minBuyRaw: minProceedsRaw(o.tokenAmount, o.targetPriceUsd, nat, nativeDecimals(venue), venue === "jupiter" ? JUP_FEE_FRACTION : 0).toString(),
+    // a position's amount is a float built from on-chain deltas; orderRaw shaves 1e-9 so rounding can never ask to sell more than the wallet holds
+    sellAmount: o.tokenAmount, ...orderRaw(o, dec, nat, venue),
     status: "SUGGESTED", maker, orderRef: null, validTo: venue !== "jupiter" ? new Date(now.getTime() + ORDER_LIFETIME_MS) : null, bookedSellRaw: "0", bookedBuyRaw: "0", txHashes: [], error: null,
     createdAt: now, activatedAt: null, updatedAt: now, lastSyncAt: null,
   }));
@@ -95,7 +136,7 @@ async function replan(userId: string, pos: PositionDoc, token: TokenDoc, maker: 
   const col = await collections.autoSellOrders();
   const placed = await col.countDocuments({ positionId: pos._id, status: "ACTIVE" });
   if (placed) throw new TradeError("Auto-sell is already armed for this position. Cancel it first to change it.", 409);
-  const plan = await buildPlan(pos, token);
+  const plan = await buildPlan(pos, token, maker);
   if (!plan) throw new TradeError(`Auto-sell isn't available on ${CHAINS[token.chain as ChainId].name} yet; target sells will be queued for you to sign instead.`, 422);
   await col.deleteMany({ positionId: pos._id, status: "SUGGESTED" });
   const docs = await toDocs(userId, pos, token, plan.venue, plan.orders, maker);
@@ -132,6 +173,12 @@ function friendlyOrderError(msg: string): string {
   return msg;
 }
 
+/** The chain's own answer to "can this wallet pay for this approval": its gas estimate against the wallet's balance. */
+async function requireAffordable(chain: ChainId, wallet: string, approval: { to: string; data: string; value?: string }) {
+  const r = await approvalAffordable(chain, wallet, approval);
+  if (!r.ok) throw new TradeError(r.error, 422);
+}
+
 /** Everything the wallet needs to arm an EVM position: an exact-amount approval (if short) and one typed order per target. */
 export async function prepareArmEvm(userId: string, positionId: string, connected?: string | null) {
   const { pos, token } = await loadOpenPosition(userId, positionId);
@@ -156,11 +203,13 @@ export async function prepareArmEvm(userId: string, positionId: string, connecte
       orders.push({ id: d._id, levels: d.levels, gainPct: d.gainPct, targetPriceUsd: d.targetPriceUsd, sellAmount: d.sellAmount, typedData: typed });
     }
     const approval = allowance >= total ? null : erc20ApprovalTx(token.address, contract, total);
+    if (approval) await requireAffordable(chain, wallet.address, approval);
     return { venue: "kyber" as const, chain: token.chain, chainId, note: plan.note, approval, approvalFeeUsd: approval ? await evmTxFeeUsd(chain, { from: wallet.address, ...approval }).catch(() => null) : null, orders };
   }
 
   const allowance = await cowAllowance(chain, token.address, wallet.address).catch(() => BigInt(0));
   const approval = allowance >= total ? null : cowApprovalTx(token.address, total);
+  if (approval) await requireAffordable(chain, wallet.address, approval);
   return {
     venue: "cow" as const,
     chain: token.chain,
@@ -240,6 +289,9 @@ export async function prepareSolanaOrder(userId: string, orderId: string) {
   if (!token) throw new TradeError("Token not found", 404);
   const wallet = await ownerWallet(userId, d.chain, d.maker);
   const o = await createJupiterOrder({ maker: wallet.address, inputMint: token.address, makingRaw: BigInt(d.sellAmountRaw), takingRaw: BigInt(d.minBuyRaw) });
+  // the chain simulates the order as the wallet will send it: an unaffordable one is explained here, with the real figures
+  const pf = await providers().dex.preflight?.(d.chain as ChainId, o.transaction, wallet.address);
+  if (pf && !pf.ok) throw new TradeError(pf.error, 422);
   await col.updateOne({ _id: d._id }, { $set: { orderRef: o.order, updatedAt: new Date(), error: null } });
   return { orderId: d._id, unsignedTxBase64: o.transaction };
 }

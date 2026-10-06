@@ -9,15 +9,20 @@
  */
 const BASE = "https://lite-api.jup.ag/trigger/v1";
 /**
- * Jupiter's own rule, from its API ("Order size must be at least 5 USD"), tested live: the order's size is the larger of what
- * the tokens are worth now and what it pays at its target price, and in practice the edge sat a little under $5 (an order
- * measured $4.90 was accepted, $4.84 refused). 3% above $5 keeps clear of that edge and of price moves between our check and
- * the order being created.
+ * Jupiter's smallest order is Jupiter's rule and is not kept here: when its order builder refuses one for size, the message says
+ * the minimum and what it measured ("Order size must be at least 5 USD, received: 4.84"). Turn that into the minimum in OUR
+ * measure of the same order (its measure of a given order is a little different from ours, so the stated figure is scaled by how
+ * they compared), or null if the refusal wasn't about size. Tested live: an order is measured at the larger of what the tokens are
+ * worth now and what it pays out at its target price.
  */
-export const JUP_MIN_ORDER_USD = 5.15;
-export const WSOL = "So11111111111111111111111111111111111111112";
-/** Jupiter keeps about 0.8% of the output on fills (seen on real fills); grossed into the limit so the user nets the target. */
-export const JUP_FEE_FRACTION = 0.01;
+export function jupiterMinimumFromRefusal(message: string, ourValueUsd: number): number | null {
+  const m = message.match(/at least ([\d.]+) USD,? received:? ([\d.]+)/i);
+  if (!m) return null;
+  const stated = Number(m[1]);
+  const received = Number(m[2]);
+  if (!(stated > 0) || !(received > 0) || !(ourValueUsd > 0)) return null;
+  return stated * (ourValueUsd / received);
+}export const WSOL = "So11111111111111111111111111111111111111112";
 
 async function jup<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, { ...init, signal: AbortSignal.timeout(15_000) });

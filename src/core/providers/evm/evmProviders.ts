@@ -10,7 +10,7 @@ import { env } from "../../../lib/env";
 import { DexScreenerDataProvider } from "../dexscreener";
 import { getJson, rpcCall } from "../http";
 import { markRpcBad, markRpcGood, orderedRpcs } from "../rpcHealth";
-import type { ChainAdapter, DexAdapter, QuoteRequest, SwapReserve, SwapSimulation, TransactionStatus } from "../interfaces";
+import type { ChainAdapter, DexAdapter, QuoteRequest, SwapSimulation, TransactionStatus } from "../interfaces";
 
 /** A contract-level answer ("execution reverted", nonce errors...) — another endpoint would say the same, so don't fail over. */
 const DEFINITIVE_RPC_ERROR = /revert|execution|out of gas|nonce|insufficient funds|already known|underpriced|invalid (sender|opcode|signature)/i;
@@ -46,7 +46,6 @@ export async function evmRpc<T>(chain: ChainId, method: string, params: unknown[
 
 import { looksLikeHoneypotFlow } from "../../analysis/honeypot";
 import { fetchTrustFacts } from "../trust";
-import { referenceSwapGasUsd } from "./swapGas";
 import { sellCheckInconclusive } from "../simFailure";
 import { nativeUsdFromPairs, type DsNativePair } from "./nativePrice";
 
@@ -74,8 +73,7 @@ export async function nativeUsd(chain: ChainId): Promise<number> {
   return known.usd;
 }
 
-/** Headroom kept over the gas cost read now, since the gas price can move between reading it and the transaction being mined. */
-const GAS_PRICE_MARGIN = 1.25;
+
 
 const gasCache = new Map<ChainId, { at: number; wei: bigint }>();
 /** The chain's CURRENT gas price in wei (eth_gasPrice), cached for a few seconds. null = couldn't be read. */
@@ -110,23 +108,6 @@ export class EvmChainAdapter implements ChainAdapter {
     this.nativeSymbol = CHAINS[chain].nativeSymbol;
   }
   nativeUsdPrice = () => nativeUsd(this.chain);
-  /**
-   * What a swap into this token costs in gas right now, as the swap aggregators measure it for a real route on this chain at its
-   * current gas price (no gas figure is kept here: see swapGas.ts). null when nothing could say, or no token was named, which
-   * callers treat as unknown (nothing held back; the wallet shows the exact fee).
-   */
-  async estimateSwapReserve(_owner?: string, tokenAddress?: string): Promise<SwapReserve | null> {
-    if (!tokenAddress) return null;
-    try {
-      const [usd, nat] = await Promise.all([referenceSwapGasUsd(this.chain, tokenAddress, await tokenDecimals(this.chain, tokenAddress).catch(() => 18)), nativeUsd(this.chain)]);
-      if (usd === null || !(nat > 0)) return null;
-      const fee = usd / nat;
-      return { peakNative: fee * GAS_PRICE_MARGIN, feesNative: fee, depositNative: 0 };
-    } catch {
-      return null;
-    }
-  }
-
   isValidAddress(address: string) {
     return isAddress(address, { strict: false });
   }

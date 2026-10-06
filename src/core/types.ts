@@ -316,6 +316,8 @@ export interface SwapQuote {
   /** false when the chain's fee could not be worked out (networkFeeUsd is then 0, not an estimate); the wallet shows the exact fee */
   networkFeeKnown?: boolean;
   priorityFeeUsd: number;
+  /** Solana: the fee-market price per compute unit (micro-lamports) this quote was priced at, already held to the user's own cap; the build prices the units it gets with it */
+  priorityMicroLamportsPerCu?: number;
   platformFeeUsd: number;
   route: string[];
   expiresAt: Date;

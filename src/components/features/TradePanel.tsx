@@ -32,7 +32,7 @@ interface Quote {
 interface QuoteResp {
   quote: Quote;
   /** the wallet the server checked, with what it holds on this chain */
-  wallet?: { address: string; balanceUsd: number | null; spendableUsd: number | null; reserveUsd: number | null } | null;
+  wallet?: { address: string; balanceUsd: number | null } | null;
   /** what suits how fast the token is moving right now, never above the user's own maximum */
   slippage?: { bps: number; wantedBps: number; cappedByMax: boolean; movePct: number };
   /** how far the token has earned trust, and why */

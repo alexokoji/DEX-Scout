@@ -35,7 +35,12 @@ vi.mock("@/core/providers/limitOrders/kyber", async (importOriginal) => ({
 }));
 vi.mock("@/core/providers/limitOrders/jupiter", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/core/providers/limitOrders/jupiter")>()),
-  createJupiterOrder: vi.fn(async () => ({ order: "OrderPubkey1111111111111111111111111111111111", requestId: "r", transaction: "dHg=" })),
+  // behaves like Jupiter's order builder (measured live): it refuses an order that pays out under 5 USD, in these words, and says what it measured
+  createJupiterOrder: vi.fn(async (a: { takingRaw: bigint }) => {
+    const usd = (Number(a.takingRaw) / 1e9) * 150; // the mock market's SOL price
+    if (usd < 5) throw new Error(`Invalid create order request: Order size must be at least 5 USD, received: ${usd}`);
+    return { order: "OrderPubkey1111111111111111111111111111111111", requestId: "r", transaction: "dHg=" };
+  }),
   getJupiterOrder: vi.fn(),
   cancelJupiterOrder: vi.fn(async () => "Y2FuY2Vs"),
 }));
@@ -313,7 +318,7 @@ const E18 = BigInt("1000000000000000000");
     expect((await orders(sp._id)).find((d) => d._id === active[0]._id)?.status).toBe("CANCELLED");
   });
 
-  it("Solana: small positions merge targets into fewer orders (Jupiter's minimum), and one too small gets none", async () => {
+  it("Solana: small positions merge targets into fewer orders; the minimum is learned from Jupiter's own refusal, not kept here, and one too small gets none", async () => {
     const { prepareArmSolanaPlan } = await import("@/services/autoSell");
     const sol = await makeToken("solana", 0.0005); // 10,000 tokens = $5 now, $5.40 at the first target: one order (Jupiter counts the payout at the target price), not four
     const pos = await makePosition(sol, { entryPriceUsd: 0.0005, currentPriceUsd: 0.0005 }); // bought at today's price
@@ -322,9 +327,10 @@ const E18 = BigInt("1000000000000000000");
     expect(plan.orders[0].levels).toEqual([1, 2, 3, 4]);
     expect(plan.orders[0].gainPct).toBe(8);
     expect(plan.note).toMatch(/merged/);
+    expect(plan.note).toMatch(/at least \$5 each/); // the figure came from Jupiter's message, not from the code
     const tiny = await makePosition(await makeToken("solana", 0.0001), { entryPriceUsd: 0.0001, currentPriceUsd: 0.0001 }); // $1
     await expect(prepareArmSolanaPlan(userId, tiny._id)).rejects.toMatchObject({ status: 422 });
-    // the position from before this was measured at today's value alone ($10 -> one order) now splits into two, since each pair pays out over $5 at its target
+    // a $10 position: each pair of targets pays out over $5 at its first target, so two orders
     const ten = await prepareArmSolanaPlan(userId, (await makePosition(await makeToken("solana", 0.001), { entryPriceUsd: 0.001, currentPriceUsd: 0.001 }))._id);
     expect(ten.orders.map((o) => o.levels)).toEqual([[1, 2], [3, 4]]);
     // and a refusal says whose rule it is

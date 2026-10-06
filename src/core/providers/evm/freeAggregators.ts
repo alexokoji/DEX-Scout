@@ -11,7 +11,8 @@ import type { ChainId, SwapQuote } from "../../types";
 import { DexScreenerDataProvider } from "../dexscreener";
 import { sellCheckInconclusive } from "../simFailure";
 import { getJson } from "../http";
-import type { DexAdapter, QuoteRequest, SwapSimulation, TransactionStatus } from "../interfaces";
+import type { DexAdapter, PreflightResult, QuoteRequest, SwapSimulation, TransactionStatus } from "../interfaces";
+import { preflightEvm } from "./affordability";
 import { evmOnChain, nativeUsd, tokenDecimals, ZeroXDexAdapter } from "./evmProviders";
 
 interface RouteInput {
@@ -228,8 +229,15 @@ export class MultiEvmDexAdapter implements DexAdapter {
       // gas deliberately omitted: aggregators return it as a decimal string and wallets require hex (they rejected it
       // outright), and the wallet's own estimate is what the user sees and approves anyway.
       tx: { to: tx.to, data: tx.data, value: "0x" + BigInt(tx.value || "0").toString(16) },
+      // the aggregator's own gas figure, kept only so the affordability check can count the swap's gas next to an approval's
+      ...(tx.gas && /^\d+$/.test(tx.gas) ? { swapGasUnits: tx.gas } : {}),
     };
     return { unsignedTxBase64: JSON.stringify(payload) };
+  }
+
+  /** Whether the chain says this wallet can run this swap: its own gas estimate for the real transaction against the wallet's balance (see affordability.ts). */
+  preflight(chain: ChainId, unsignedTx: string, userAddress: string): Promise<PreflightResult> {
+    return preflightEvm(chain, unsignedTx, userAddress);
   }
 
   async estimatePriceImpact(req: QuoteRequest): Promise<number> {

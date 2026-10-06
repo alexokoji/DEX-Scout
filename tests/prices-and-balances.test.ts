@@ -69,22 +69,20 @@ describe("balance formatting", () => {
 
 describe("low-balance messages say what is actually wrong", () => {
   const s = { maxPositionUsd: 1000, minPositionUsd: 1, maxOpenPositions: 5, maxDeployedUsd: null };
-  it("a balance below the fee reserve is not reported as 'no balance'", () => {
-    const r = allocate(s, { deployedUsd: 0, openPositions: 0, walletUsd: 0, walletBalanceUsd: 4.2, reserveUsd: 6 }, 10);
-    expect(r).toMatchObject({ ok: false, reason: expect.stringContaining("Your wallet holds $4.20 on this chain") });
-    expect((r as { reason: string }).reason).toContain("below the ~$6.00 a swap needs for fees");
-    // and, when the reserve's make-up is known, it says what it is
-    const withNote = allocate(s, { deployedUsd: 0, openPositions: 0, walletUsd: 0, walletBalanceUsd: 0.2, reserveUsd: 0.36, reserveNote: "network fee ~<$0.01, plus a one-time ~$0.18 deposit for the new token account" }, 10) as { reason: string };
-    expect(withNote.reason).toContain("(network fee ~<$0.01, plus a one-time ~$0.18 deposit for the new token account)");
+  it("an empty wallet says so, and which wallet was looked at", () => {
+    expect(allocate(s, { deployedUsd: 0, openPositions: 0, walletUsd: 0 }, 10)).toMatchObject({ ok: false, reason: expect.stringMatching(/holds none of this chain's coin/) });
+    expect((allocate(s, { deployedUsd: 0, openPositions: 0, walletUsd: 0, walletLabel: "0xAbCd…1234" }, 10) as { reason: string }).reason).toContain("Wallet 0xAbCd…1234 holds none");
   });
-  it("a truly empty wallet still says so", () => {
-    expect(allocate(s, { deployedUsd: 0, openPositions: 0, walletUsd: 0, walletBalanceUsd: 0, reserveUsd: 6 }, 10)).toMatchObject({ ok: false, reason: expect.stringMatching(/holds none of this chain's coin/) });
+  it("a small balance is not refused up front for 'fees': nothing is held back, the chain says whether a swap fits when it is prepared", () => {
+    // $4.20 in the wallet and a $4 buy: it fits the wallet, so it is allowed here (the chain's own check follows)
+    expect(allocate(s, { deployedUsd: 0, openPositions: 0, walletUsd: 4.2 }, 4)).toMatchObject({ ok: true, amountUsd: 4 });
+    expect(checkManualAmount(s, { deployedUsd: 0, openPositions: 0, walletUsd: 4.2 }, 4.2)).toBeNull();
   });
-  it("a too-large manual buy shows the holding, the reserve and what is left", () => {
-    expect(checkManualAmount(s, { deployedUsd: 0, openPositions: 0, walletUsd: 14, walletBalanceUsd: 20, reserveUsd: 6 }, 18)).toBe("Amount exceeds what you can spend on this chain: you hold $20.00, ~$6.00 is kept back for fees, leaving $14.00");
+  it("a manual buy bigger than the balance says what the wallet holds", () => {
+    expect(checkManualAmount(s, { deployedUsd: 0, openPositions: 0, walletUsd: 20 }, 25)).toBe("Amount exceeds the balance: your wallet holds $20.00 on this chain");
+    expect(checkManualAmount(s, { deployedUsd: 0, openPositions: 0, walletUsd: 20, walletLabel: "0xAbCd…1234" }, 25)).toBe("Amount exceeds the balance: wallet 0xAbCd…1234 holds $20.00 on this chain");
   });
 });
-
 describe("live price requests", () => {
   it("keeps only valid chain:address pairs, de-duplicates, lower-cases EVM addresses and caps the count", () => {
     const evm = "0x" + "AB".repeat(20);

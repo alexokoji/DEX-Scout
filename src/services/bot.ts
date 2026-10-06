@@ -65,7 +65,7 @@ export async function runBotCycle(): Promise<{ bots: number; executed: number; s
           const own = rescore(analysis.opportunity.components, settings.weights);
           if (own.score < settings.minOpportunityScore) { skip(`score ${own.score.toFixed(0)} < ${settings.minOpportunityScore}`); continue; }
 
-          const state = await capitalState(bot.userId, env, undefined, token.chain as ChainId, undefined, token.address);
+          const state = await capitalState(bot.userId, env, undefined, token.chain as ChainId);
           const alloc = allocate(settings, state, settings.maxPositionUsd);
           if (!alloc.ok) { skip(alloc.reason); continue; }
 

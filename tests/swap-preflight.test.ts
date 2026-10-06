@@ -1,7 +1,7 @@
 /**
  * "Simulation failed" when buying Solana tokens. Covers: classifying real simulation failures, explaining wallet errors,
- * the server-side dry run that stops a doomed swap before the wallet opens (and finds a slippage that works), and keeping
- * fee/rent headroom out of what counts as spendable.
+ * the server-side dry run that stops a doomed swap before the wallet opens (and finds a slippage that works), and leaving
+ * "can this wallet afford it" to the chain rather than a reserve.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -55,15 +55,15 @@ describe("explainWalletError", () => {
   });
 });
 
-describe("spendable amounts keep fee headroom", () => {
-  it("a manual buy of the whole balance is refused with a clear reason, a buy that leaves headroom is fine", () => {
+describe("the whole balance counts; whether a swap fits is the chain's answer", () => {
+  it("a manual buy bigger than the balance is refused with the balance named; one that fits the balance is not refused here", () => {
     const s = { maxPositionUsd: 1000, minPositionUsd: 1, maxOpenPositions: 5, maxDeployedUsd: null };
-    const st = { deployedUsd: 0, openPositions: 0, walletUsd: 20 }; // what spendableUsd returns: balance already net of the reserve
-    expect(checkManualAmount(s, st, 25)).toMatch(/wallet balance on this chain \(\$20.00 after keeping a little back for network fees\)/);
+    const st = { deployedUsd: 0, openPositions: 0, walletUsd: 20 }; // the wallet's whole balance: no fee reserve is taken out of it
+    expect(checkManualAmount(s, st, 25)).toMatch(/Amount exceeds the balance: your wallet holds \$20.00 on this chain/);
     expect(checkManualAmount(s, st, 19)).toBeNull();
+    expect(checkManualAmount(s, st, 20)).toBeNull(); // the chain's simulation, not a guessed reserve, says whether the fee fits on top
   });
 });
-
 let dbUp = false;
 try {
   await (await collections.users()).findOne({});

@@ -6,12 +6,12 @@ import { Connection, PublicKey, SystemProgram, TransactionMessage, VersionedTran
 import nacl from "tweetnacl";
 import { CHAINS, rpcCandidates } from "../../chains";
 import { nativeUsdFromPairs, type DsNativePair } from "../evm/nativePrice";
-import { priorityLamports, swapReserveLamports, TOKEN_ACCOUNT_BYTES, type FeeConnection, type SolanaCosts } from "./fees";
+import { capMicroLamportsPerCu, priorityLamports, priorityMicroLamportsPerCu, type FeeConnection, type SolanaCosts } from "./fees";
 import type { ChainId, OnChainRaw, SwapQuote, TokenSnapshot } from "../../types";
 import { env } from "../../../lib/env";
 import { DexScreenerDataProvider } from "../dexscreener";
 import { getJson, withTimeout } from "../http";
-import type { ChainAdapter, DexAdapter, PreflightResult, QuoteRequest, SwapReserve, SwapSimulation, TransactionStatus } from "../interfaces";
+import type { ChainAdapter, DexAdapter, PreflightResult, QuoteRequest, SwapSimulation, TransactionStatus } from "../interfaces";
 import { explainSolanaSimulation } from "./errors";
 import { looksLikeHoneypotFlow } from "../../analysis/honeypot";
 import { fetchTrustFacts } from "../trust";
@@ -39,7 +39,6 @@ export async function solUsd(): Promise<number> {
 /** @solana/web3.js's Connection as the fee estimator needs it; the base fee is asked of the chain for a real one-signature message. */
 function feeConnection(c: Connection): FeeConnection {
   return {
-    getMinimumBalanceForRentExemption: (n) => c.getMinimumBalanceForRentExemption(n),
     getRecentPrioritizationFees: () => c.getRecentPrioritizationFees(),
     baseFeePerSignature: async () => {
       // any one-signature message costs the same base fee; two distinct ordinary addresses make a valid one (the fee doesn't depend on who)
@@ -56,10 +55,10 @@ function feeConnection(c: Connection): FeeConnection {
 
 const poolFeeCache = new Map<string, { at: number; fees: number[] }>();
 /**
- * The priority fee a swap through these pools should bid, from the chain's fee market for THOSE accounts (not the network-wide
- * list: that one read 0 while the pools of active tokens were paying 50,000-800,000 micro-lamports/CU). Cached for a few seconds.
+ * The going price per compute unit (micro-lamports) in the fee market of THESE accounts (the pools a route trades through), not the
+ * network-wide list: measured live, that one read 0 while the pools of active tokens were paying 50,000-800,000. Cached for seconds.
  */
-export async function poolPriorityLamports(pools: string[], capLamports?: number): Promise<number> {
+export async function poolMicroPerCu(pools: string[]): Promise<number> {
   const key = [...new Set(pools)].sort().join(",");
   const hit = poolFeeCache.get(key);
   let fees = hit && Date.now() - hit.at < 10_000 ? hit.fees : null;
@@ -69,32 +68,25 @@ export async function poolPriorityLamports(pools: string[], capLamports?: number
     if (poolFeeCache.size > 200) poolFeeCache.clear();
     poolFeeCache.set(key, { at: Date.now(), fees });
   }
-  return priorityLamports(fees, capLamports);
+  return priorityMicroLamportsPerCu(fees);
 }
 
-/**
- * What the chain says a swap costs right now. The rent and base fee barely change (cached for a while); the priority fee
- * moves with congestion (cached for seconds). A user-set priority cap (lamports) limits the automatic one.
- */
-let slowCache: { at: number; rent: number; base: number } | null = null;
+/** What the chain charges right now: the base fee (barely moves: cached a while) and the network-wide priority price (moves with congestion: cached seconds). */
+let slowCache: { at: number; base: number } | null = null;
 let fastCache: { at: number; fees: { prioritizationFee: number }[] } | null = null;
-export async function solanaCosts(capLamports?: number): Promise<SolanaCosts> {
+export async function solanaCosts(): Promise<SolanaCosts> {
   const now = Date.now();
   if (!slowCache || now - slowCache.at > 10 * 60_000) {
-    const [rent, base] = await solanaTry(async (c) => {
-      const f = feeConnection(c);
-      return Promise.all([f.getMinimumBalanceForRentExemption(TOKEN_ACCOUNT_BYTES), f.baseFeePerSignature()]);
-    }, 8_000);
-    slowCache = { at: now, rent, base };
+    const base = await solanaTry((c) => feeConnection(c).baseFeePerSignature(), 8_000);
+    slowCache = { at: now, base };
   }
   if (!fastCache || now - fastCache.at > 15_000) {
     // if this fails (no recent data from any node) we can't tell what the network charges: use none rather than a guess
     const fees = await solanaTry((c) => c.getRecentPrioritizationFees(), 6_000).catch(() => []);
     fastCache = { at: now, fees };
   }
-  return { baseFeeLamports: slowCache.base, rentLamports: slowCache.rent, priorityFeeLamports: priorityLamports(fastCache.fees.map((f) => f.prioritizationFee), capLamports) };
+  return { baseFeeLamports: slowCache.base, microLamportsPerCu: priorityMicroLamportsPerCu(fastCache.fees.map((f) => f.prioritizationFee)) };
 }
-
 const conns = new Map<string, Connection>();
 function connectionFor(url: string): Connection {
   let c = conns.get(url);
@@ -164,25 +156,6 @@ export class SolanaChainAdapter implements ChainAdapter {
   }
   async getNativeBalance(address: string): Promise<number> {
     return (await solanaTry((c) => c.getBalance(new PublicKey(address)))) / 1e9;
-  }
-  /**
-   * What a buy needs beyond its own amount, from the chain: the base fee, the going priority fee, and the token-account
-   * deposit (the temporary wrapped-SOL account needs the same, returned in the same transaction). If the wallet already
-   * has a token account for this mint, that deposit isn't needed. Uses the real, current rent figure.
-   */
-  async estimateSwapReserve(owner: string, tokenAddress?: string): Promise<SwapReserve | null> {
-    let costs: SolanaCosts;
-    try {
-      costs = await solanaCosts();
-    } catch {
-      return null; // couldn't read the chain's fees: say so rather than guess
-    }
-    const has = tokenAddress
-      ? await solanaTry((c) => c.getTokenAccountsByOwner(new PublicKey(owner), { mint: new PublicKey(tokenAddress) }), 6_000).then((r) => r.value.length > 0, () => null)
-      : null;
-    const r = swapReserveLamports(costs, has);
-    const fees = costs.baseFeeLamports + costs.priorityFeeLamports;
-    return { peakNative: r.peakLamports / 1e9, feesNative: fees / 1e9, depositNative: (r.needsTokenAccount ? costs.rentLamports : 0) / 1e9 };
   }
   async getTokenBalance(owner: string, tokenAddress: string): Promise<number | null> {
     try {
@@ -314,16 +287,21 @@ export class JupiterDexAdapter implements DexAdapter {
     );
     const out = Number(q.outAmount);
     const outputAmount = req.side === "BUY" ? out / 10 ** decimals : (out / 1e9) * sol;
-    // Fees as the chain currently charges them. The priority fee the user may type is a CAP on the automatic one, not a
-    // fixed price (a fixed 0.0001 SOL was twenty times the base fee when the network wasn't charging any priority at all).
+    // Fees as the chain charges them. The priority fee the user may type is a CAP (their own limit) on the automatic one, not a price.
     const cap = req.priorityFeeNative && req.priorityFeeNative > 0 ? Math.floor(req.priorityFeeNative * 1e9) : undefined;
-    const costs = await solanaCosts(cap).catch(() => null);
-    // bid against the fee market of the pools this route actually trades through; the network-wide figure is the fallback
+    const costs = await solanaCosts().catch(() => null);
+    // bid against the fee market of the pools this route actually trades through; the network-wide price is the fallback
     const pools = (q.routePlan ?? []).map((r) => r.swapInfo?.ammKey).filter((k): k is string => !!k);
-    const poolPriority = pools.length ? await poolPriorityLamports(pools, cap).catch(() => null) : null;
-    // the base fee as the chain reports it (getFeeForMessage); if it can't be read the fee is unknown, not a remembered 5,000 lamports
+    const poolMicro = pools.length ? await poolMicroPerCu(pools).catch(() => null) : null;
+    const micro = poolMicro ?? costs?.microLamportsPerCu ?? null;
+    // the fee is that price x the compute units this swap will use, which Jupiter sizes by simulating this exact route for this wallet:
+    // so it needs the wallet. Without one (a pre-buy "can it be sold" check) the fee is simply not worked out.
+    const units = req.wallet ? await this.computeUnitLimit(q, req.wallet).catch(() => null) : null;
+    const appliedMicro = micro !== null && units !== null ? capMicroLamportsPerCu(micro, units, cap) : undefined;
+    const priorityKnown = appliedMicro !== undefined && units !== null;
+    // the base fee as the chain reports it (getFeeForMessage); if it can't be read the fee is unknown, not a remembered figure
     const networkFeeUsd = costs ? (costs.baseFeeLamports / 1e9) * sol : 0;
-    const priorityFeeUsd = ((poolPriority ?? costs?.priorityFeeLamports ?? 0) / 1e9) * sol;
+    const priorityFeeUsd = priorityKnown ? (priorityLamports(appliedMicro, units) / 1e9) * sol : 0;
     return {
       chain: "solana",
       inputMint,
@@ -336,8 +314,9 @@ export class JupiterDexAdapter implements DexAdapter {
       slippageBps: req.slippageBps,
       minReceived: outputAmount * (1 - req.slippageBps / 10_000),
       networkFeeUsd,
-      networkFeeKnown: !!costs,
+      networkFeeKnown: !!costs && priorityKnown,
       priorityFeeUsd,
+      priorityMicroLamportsPerCu: appliedMicro,
       platformFeeUsd: 0,
       route: (q.routePlan ?? []).map((r) => r.swapInfo?.label ?? "?"),
       expiresAt: new Date(Date.now() + 20_000),
@@ -346,21 +325,38 @@ export class JupiterDexAdapter implements DexAdapter {
     };
   }
 
-  async buildSwapTransaction(quote: SwapQuote, userAddress: string) {
-    const j = await getJson<{ swapTransaction: string }>(`${env().DEX_PROVIDER_URL}/swap`, {
+  private swapCall(quoteResponse: unknown, userPublicKey: string, extra: object = {}) {
+    return getJson<{ swapTransaction: string; computeUnitLimit?: number }>(`${env().DEX_PROVIDER_URL}/swap`, {
       method: "POST",
       headers: this.headers(),
-      body: JSON.stringify({
-        quoteResponse: quote.raw,
-        userPublicKey: userAddress,
-        dynamicComputeUnitLimit: true,
-        // the on-chain priority fee the quote was built with (none when the network isn't charging any)
-        ...(quote.priorityFeeUsd > 0 ? { prioritizationFeeLamports: Math.ceil((quote.priorityFeeUsd / (await solUsd())) * 1e9) } : {}),
-      }),
+      body: JSON.stringify({ quoteResponse, userPublicKey, dynamicComputeUnitLimit: true, ...extra }),
     });
-    return { unsignedTxBase64: j.swapTransaction };
   }
 
+  private unitsCache = new Map<string, { at: number; units: number }>();
+  /** The compute units Jupiter sizes for this exact route and wallet (it simulates the transaction to get them). */
+  private async computeUnitLimit(q: JupQuote, wallet: string): Promise<number | null> {
+    const key = `${q.inputMint}:${q.outputMint}:${wallet}`;
+    const hit = this.unitsCache.get(key);
+    if (hit && Date.now() - hit.at < 30_000) return hit.units;
+    const j = await this.swapCall(q, wallet);
+    if (!(typeof j.computeUnitLimit === "number" && j.computeUnitLimit > 0)) return null;
+    if (this.unitsCache.size > 200) this.unitsCache.clear();
+    this.unitsCache.set(key, { at: Date.now(), units: j.computeUnitLimit });
+    return j.computeUnitLimit;
+  }
+
+  async buildSwapTransaction(quote: SwapQuote, userAddress: string) {
+    // First build with no explicit priority to learn how many compute units Jupiter sizes for THIS transaction, then price those
+    // units at the fee market's going rate (the one the quote was made with, already held to the user's own cap, if any).
+    const first = await this.swapCall(quote.raw, userAddress);
+    const micro = quote.priorityMicroLamportsPerCu;
+    const units = first.computeUnitLimit;
+    if (micro === undefined || !(typeof units === "number" && units > 0)) return { unsignedTxBase64: first.swapTransaction };
+    const lamports = priorityLamports(micro, units);
+    if (lamports <= 0) return { unsignedTxBase64: first.swapTransaction }; // nobody is paying any priority: neither do we
+    return { unsignedTxBase64: (await this.swapCall(quote.raw, userAddress, { prioritizationFeeLamports: lamports })).swapTransaction };
+  }
   /** Simulate the built swap exactly as the wallet will (signatures not checked, fresh blockhash), and explain a failure. */
   async preflight(_chain: ChainId, unsignedTx: string): Promise<PreflightResult> {
     try {

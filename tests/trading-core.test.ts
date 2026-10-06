@@ -143,7 +143,7 @@ describe("capital allocation", () => {
   it("manual amounts are checked without silent shrinking", () => {
     expect(checkManualAmount(s, st(0, 0, 1_000), 11)).toMatch(/maximum position/);
     expect(checkManualAmount(s, st(0, 0, 1_000), 8)).toBeNull();
-    expect(checkManualAmount(s, st(0, 0, 6), 8)).toMatch(/wallet balance/);
+    expect(checkManualAmount(s, st(0, 0, 6), 8)).toMatch(/exceeds the balance/);
     expect(checkManualAmount(s, st(95, 3, 1_000), 8)).toMatch(/available capital/);
     expect(checkManualAmount(s, st(0, 0, null), 8)).toBeNull();
   });

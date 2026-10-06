@@ -31,7 +31,7 @@ const NOT_LINKED = "U".repeat(44);
 describe("messages name the wallet they checked", () => {
   const s = { maxPositionUsd: 1000, minPositionUsd: 1, maxOpenPositions: 5, maxDeployedUsd: null };
   it("a zero balance says which wallet was empty and what to do about it", () => {
-    const r = allocate(s, { deployedUsd: 0, openPositions: 0, walletUsd: 0, walletBalanceUsd: 0, reserveUsd: 0.2, walletLabel: "NNNNNN…NNNN" }, 10) as { reason: string };
+    const r = allocate(s, { deployedUsd: 0, openPositions: 0, walletUsd: 0, walletLabel: "NNNNNN…NNNN" }, 10) as { reason: string };
     expect(r.reason).toContain("Wallet NNNNNN…NNNN holds none of this chain's coin");
     expect(r.reason).toContain("switch to it in your wallet");
   });
@@ -117,7 +117,6 @@ describe("messages name the wallet they checked", () => {
     await fundedAccountsOnly();
     const r = await quoteTrade(userId, input(FUNDED));
     expect(r.wallet).toMatchObject({ address: FUNDED, balanceUsd: 375 }); // 2.5 SOL at $150
-    expect(r.wallet!.spendableUsd).toBeGreaterThan(300);
     expect(r.violations.join(" ")).not.toMatch(/balance|spend/i);
   });
 

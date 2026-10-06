@@ -41,22 +41,10 @@ export interface WalletProvider {
   verifyMessageSignature(address: string, message: string, signature: string): boolean | Promise<boolean>;
 }
 
-/** What a swap costs the wallet beyond the amount swapped, in the chain's native coin, as measured on-chain right now. */
-export interface SwapReserve {
-  /** the most needed available at the instant the swap runs (what to keep back) */
-  peakNative: number;
-  /** network fees (and any priority fee): the part that is simply spent */
-  feesNative: number;
-  /** one-off deposits (e.g. Solana's token account) that are recoverable, not spent */
-  depositNative: number;
-}
-
 export interface ChainAdapter extends WalletProvider {
   readonly chain: ChainId;
   readonly nativeSymbol: string;
   readonly nativeUsdPrice: () => Promise<number>;
-  /** Optional: the live on-chain cost of a swap for `owner` (and, when known, `tokenAddress`). null = could not be read. */
-  estimateSwapReserve?(owner: string, tokenAddress?: string): Promise<SwapReserve | null>;
   /**
    * Optional: how much of a token `owner` holds right now, in whole tokens. 0 is a real answer (the chain says none); null means
    * it could not be read (an unreachable node must never read as "none left").
@@ -78,6 +66,8 @@ export interface QuoteRequest {
   slippageBps: number;
   /** priority fee / gas tip in the chain's native unit (SOL, ETH, BNB...) */
   priorityFeeNative?: number;
+  /** the wallet that will sign: Solana needs it to know the swap's real compute units (and so its priority fee); without it that fee is left unknown */
+  wallet?: string;
 }
 
 export interface SwapSimulation {
