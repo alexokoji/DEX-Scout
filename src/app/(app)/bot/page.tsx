@@ -42,7 +42,7 @@ export default async function BotPage() {
         <Stat label="Open positions" value={`${o.pf.positions} / ${s.maxOpenPositions}`} />
         <Stat label="Trades today" value={String(o.tradesToday)} />
         <Stat label="Realized P/L" value={usd(o.pf.realizedPnlUsd)} tone={o.pf.realizedPnlUsd >= 0 ? "up" : "down"} />
-        <Stat label="Unrealized P/L" value={usd(o.pf.unrealizedPnlUsd)} tone={o.pf.unrealizedPnlUsd >= 0 ? "up" : "down"} />
+        <Stat label="Unrealized P/L" value={usd(o.pf.unrealizedPnlUsd, Math.abs(o.pf.unrealizedPnlUsd) < 0.1 ? 4 : 2)} tone={o.pf.unrealizedPnlUsd >= 0 ? "up" : "down"} sub="on price" />
         <Stat label="Signals evaluated" value={String(o.totals.signalsEvaluated ?? 0)} sub="all-time" />
         <Stat label="Trades executed" value={String(o.totals.tradesExecuted ?? 0)} sub="all-time" />
       </div>

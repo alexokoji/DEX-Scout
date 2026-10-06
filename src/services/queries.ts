@@ -191,12 +191,16 @@ export async function portfolio(userId: string, environment: Environment) {
   // capital is the connected wallet's balance, not a typed-in number
   const cap = capitalSnapshot(settings, { ...state, walletUsd: wb.wallets.length ? wb.totalUsd : null });
   const openValue = views.reduce((s, v) => s + v.metrics.currentValueUsd, 0);
-  const unrealized = views.reduce((s, v) => s + v.metrics.unrealizedPnlUsd, 0);
+  // headline unrealized P/L is on price (as the positions page and the targets see it); the fees still held in the cost come separately
+  const unrealized = views.reduce((s, v) => s + v.metrics.pricePnlUsd, 0);
+  const openFees = views.reduce((s, v) => s + v.metrics.feesUsd, 0);
   return {
     environment,
     capital: cap,
     openPositionValueUsd: openValue,
     unrealizedPnlUsd: unrealized,
+    openFeesUsd: openFees,
+    unrealizedAfterFeesUsd: unrealized - openFees,
     realizedPnlUsd: account?.realizedPnlUsd ?? 0,
     wallet: wb.wallets.length ? { address: wb.wallets.map((w) => w.address).join(", "), summary: wb.summary, balanceUsd: wb.totalUsd } : null,
     positions: views.length,

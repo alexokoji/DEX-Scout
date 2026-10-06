@@ -565,7 +565,7 @@ export async function reconcileLiveTrade(tradeId: string) {
         {
           $set: {
             amount: res.amount, costBasisUsd: res.costBasisUsd, realizedPnlUsd: res.realizedPnlUsd, targetsHit, updatedAt: now, closedAt: res.closed ? now : null,
-            status: deriveStatus({ closed: res.closed, emergency: trade.kind === "EMERGENCY_EXIT" && !res.closed, targetsHit, unrealizedPnlUsd: res.amount * pos.currentPriceUsd - res.costBasisUsd }),
+            status: deriveStatus({ closed: res.closed, emergency: trade.kind === "EMERGENCY_EXIT" && !res.closed, targetsHit, unrealizedPnlUsd: res.amount * (pos.currentPriceUsd - pos.entryPriceUsd) }),
           },
         },
         { session },
@@ -663,7 +663,7 @@ export async function recordExternalSell(a: {
       {
         $set: {
           amount: res.amount, costBasisUsd: res.costBasisUsd, realizedPnlUsd: res.realizedPnlUsd, targetsHit, updatedAt: now, closedAt: res.closed ? now : null,
-          status: deriveStatus({ closed: res.closed, emergency: false, targetsHit, unrealizedPnlUsd: res.amount * pos.currentPriceUsd - res.costBasisUsd }),
+          status: deriveStatus({ closed: res.closed, emergency: false, targetsHit, unrealizedPnlUsd: res.amount * (pos.currentPriceUsd - pos.entryPriceUsd) }),
         },
       },
       { session },

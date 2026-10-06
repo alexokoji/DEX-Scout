@@ -55,7 +55,8 @@ export async function monitorPosition(pos: PositionDoc, token: TokenDoc): Promis
   );
 
   const unrealized = pos.amount * price - pos.costBasisUsd;
-  const status = deriveStatus({ closed: false, emergency: assessment.health === "EMERGENCY", targetsHit: pos.targetsHit, unrealizedPnlUsd: unrealized });
+  // "profitable" is judged on price, the way the targets and the headline P&L are; `unrealized` (after buy fees) is what a sale would net
+  const status = deriveStatus({ closed: false, emergency: assessment.health === "EMERGENCY", targetsHit: pos.targetsHit, unrealizedPnlUsd: pos.amount * (price - pos.entryPriceUsd) });
 
   await positions.updateOne(
     { _id: pos._id },

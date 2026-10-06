@@ -1,7 +1,8 @@
 "use client";
 
 import { useLivePrice } from "@/lib/livePrices";
-import { price } from "@/lib/format";
+import { PnL } from "@/components/ui/badges";
+import { price, usd } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const secondsAgo = (ms: number) => Math.max(0, Math.round((Date.now() - ms) / 1000));
@@ -24,17 +25,43 @@ export function LiveTokenPrice({ chain, address, fallbackUsd, fallbackAt }: { ch
   );
 }
 
-/** A position's current price and return, live. The return is against what the position actually cost (swap plus fees). */
-export function LivePositionPrice({ chain, address, fallbackUsd, amount, costBasisUsd }: { chain: string; address: string; fallbackUsd: number; amount: number; costBasisUsd: number }) {
+/** A position's current price and how far it has moved from the price paid, live (the same move the profit targets track). */
+export function LivePositionPrice({ chain, address, fallbackUsd, entryPriceUsd }: { chain: string; address: string; fallbackUsd: number; entryPriceUsd: number }) {
   const live = useLivePrice(chain, address);
   const usd = live?.priceUsd ?? fallbackUsd;
-  const value = usd * amount;
-  const pct = costBasisUsd > 0 ? (value / costBasisUsd - 1) * 100 : 0;
+  const pct = entryPriceUsd > 0 ? (usd / entryPriceUsd - 1) * 100 : 0;
   return (
     <div>
       <div className="text-muted">Current {live && <span className="ml-1 text-[10px] text-up">● live</span>}</div>
       <div className="num">{price(usd)}</div>
       <div className={cn("num text-[11px]", pct > 0.05 ? "text-up" : pct < -0.05 ? "text-down" : "text-muted")}>{pct >= 0 ? "+" : ""}{pct.toFixed(2)}%</div>
+    </div>
+  );
+}
+
+/**
+ * A position's profit, live. The headline is what it has made on price (worth now, against the tokens at the price paid),
+ * the same move the targets track. The fees paid to buy are shown beside it with the figure after them, because on a small
+ * position they are a large share of the cost: up 2% on price can still be down 7% after a $0.01 fee on a $0.10 buy.
+ */
+export function LivePositionPnL({ chain, address, fallbackUsd, amount, entryPriceUsd, costBasisUsd, className }: { chain: string; address: string; fallbackUsd: number; amount: number; entryPriceUsd: number; costBasisUsd: number; className?: string }) {
+  const live = useLivePrice(chain, address);
+  const px = live?.priceUsd ?? fallbackUsd;
+  const value = px * amount;
+  const swapCost = amount * entryPriceUsd;
+  const priceUsd = value - swapCost;
+  const pricePct = entryPriceUsd > 0 ? (px / entryPriceUsd - 1) * 100 : 0;
+  const fees = Math.max(0, costBasisUsd - swapCost);
+  const net = value - costBasisUsd;
+  const netPct = costBasisUsd > 0 ? (net / costBasisUsd) * 100 : 0;
+  return (
+    <div className="text-right">
+      <PnL value={priceUsd} pct={pricePct} className={className} />
+      {fees >= 0.0001 && (
+        <div className="text-[11px] text-muted" title="Fees paid to buy (network and priority) are part of what the position cost. This is the result if the position were sold at this price.">
+          {usd(fees, fees < 0.1 ? 4 : 2)} fees paid · <span className={cn("num", net > 0 ? "text-up" : net < 0 ? "text-down" : "")}>after fees {net >= 0 ? "+" : "-"}{usd(Math.abs(net), Math.abs(net) < 0.1 ? 4 : 2)} ({netPct >= 0 ? "+" : ""}{netPct.toFixed(1)}%)</span>
+        </div>
+      )}
     </div>
   );
 }
