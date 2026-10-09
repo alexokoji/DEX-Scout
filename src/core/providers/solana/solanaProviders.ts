@@ -13,6 +13,7 @@ import { DexScreenerDataProvider } from "../dexscreener";
 import { getJson, withTimeout } from "../http";
 import type { ChainAdapter, DexAdapter, PreflightResult, QuoteRequest, SwapSimulation, TransactionStatus } from "../interfaces";
 import { explainSolanaSimulation } from "./errors";
+import { sellRaw } from "../../trading/sellAmount";
 import { ACCOUNT_SIZE, associatedTokenAddress, depositChange, TOKEN_PROGRAM } from "./tokenAccounts";
 import { looksLikeHoneypotFlow } from "../../analysis/honeypot";
 import { fetchTrustFacts } from "../trust";
@@ -122,6 +123,16 @@ export async function solanaTry<T>(fn: (c: Connection) => Promise<T>, budgetMs =
     }
   }
   throw last;
+}
+
+/** What the wallet really holds of a token, in the token's own integer units; null when the nodes can't say. */
+export async function splBalanceRaw(owner: string, mint: string): Promise<bigint | null> {
+  try {
+    const r = await solanaTry((c) => c.getParsedTokenAccountsByOwner(new PublicKey(owner), { mint: new PublicKey(mint) }), 8_000);
+    return r.value.reduce((s, a) => s + BigInt((a.account.data as { parsed: { info: { tokenAmount: { amount: string } } } }).parsed.info.tokenAmount.amount), BigInt(0));
+  } catch {
+    return null;
+  }
 }
 
 const decimalsCache = new Map<string, number>();
@@ -278,10 +289,12 @@ export class JupiterDexAdapter implements DexAdapter {
     const decimals = await mintDecimals(req.tokenAddress);
     const inputMint = req.side === "BUY" ? SOL_MINT : req.tokenAddress;
     const outputMint = req.side === "BUY" ? req.tokenAddress : SOL_MINT;
+    // a sell never asks for more than the wallet holds (see sellRaw): a position's float amount can come out a unit or two above it
     const inAmount =
       req.side === "BUY"
-        ? Math.floor((req.amountUsd / sol) * 1e9)
-        : Math.floor((req.tokenAmount ?? req.amountUsd / snap.priceUsd) * 10 ** decimals);
+        ? BigInt(Math.floor((req.amountUsd / sol) * 1e9))
+        : sellRaw(req.tokenAmount ?? req.amountUsd / snap.priceUsd, decimals, req.tokenAmount !== undefined && req.wallet ? await splBalanceRaw(req.wallet, req.tokenAddress) : null);
+    if (inAmount <= BigInt(0)) throw new Error(req.side === "SELL" && req.wallet ? "The wallet holds none of this token, so there is nothing to sell" : "Amount is too small to swap");
     const q = await getJson<JupQuote>(
       `${env().DEX_PROVIDER_URL}/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${inAmount}&slippageBps=${req.slippageBps}`,
       { headers: this.headers() },
@@ -317,7 +330,7 @@ export class JupiterDexAdapter implements DexAdapter {
       inputAmountUsd: req.amountUsd,
       outputAmount,
       // per-token price; a sell with no explicit token amount sold inAmount raw units (the pre-buy dry run)
-      effectivePriceUsd: req.side === "BUY" ? req.amountUsd / outputAmount : outputAmount / (req.tokenAmount ?? inAmount / 10 ** decimals),
+      effectivePriceUsd: req.side === "BUY" ? req.amountUsd / outputAmount : outputAmount / (req.tokenAmount ?? Number(inAmount) / 10 ** decimals),
       priceImpactPct: Math.abs(Number(q.priceImpactPct)) * 100,
       slippageBps: req.slippageBps,
       minReceived: outputAmount * (1 - req.slippageBps / 10_000),

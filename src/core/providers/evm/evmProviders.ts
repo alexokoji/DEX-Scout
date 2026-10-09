@@ -45,6 +45,7 @@ export async function evmRpc<T>(chain: ChainId, method: string, params: unknown[
 }
 
 import { looksLikeHoneypotFlow } from "../../analysis/honeypot";
+import { sellRaw } from "../../trading/sellAmount";
 import { fetchTrustFacts } from "../trust";
 import { sellCheckInconclusive } from "../simFailure";
 import { nativeUsdFromPairs, type DsNativePair } from "./nativePrice";
@@ -192,6 +193,23 @@ export async function evmOnChain(chain: ChainId, address: string, snapshot: Toke
 }
 
 const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+/** What the wallet really holds of a token, in the token's own integer units; null when the node can't say. */
+export async function tokenBalanceRaw(chain: ChainId, token: string, owner: string): Promise<bigint | null> {
+  try {
+    const res = await evmRpc<string>(chain, "eth_call", [{ to: token, data: "0x70a08231" + owner.slice(2).toLowerCase().padStart(64, "0") }, "latest"], 6_000);
+    return BigInt(res);
+  } catch {
+    return null;
+  }
+}
+
+/** The integer amount of a token a sell quote asks for: what was asked, but never more than the wallet holds (see sellRaw). */
+export async function sellAmountRaw(chain: ChainId, token: string, tokenAmount: number, decimals: number, wallet?: string): Promise<bigint> {
+  const raw = sellRaw(tokenAmount, decimals, wallet ? await tokenBalanceRaw(chain, token, wallet) : null);
+  if (raw <= BigInt(0)) throw new Error("The wallet holds none of this token, so there is nothing to sell");
+  return raw;
+}
+
 const decimalsCache = new Map<string, number>();
 export async function tokenDecimals(chain: ChainId, token: string): Promise<number> {
   const k = `${chain}:${token}`;
@@ -235,7 +253,7 @@ export class ZeroXDexAdapter implements DexAdapter {
     const nat = await nativeUsd(req.chain);
     const sellAmount = req.side === "BUY"
       ? BigInt(Math.floor((req.amountUsd / nat) * 1e18))
-      : BigInt(Math.floor((req.tokenAmount ?? req.amountUsd / snapPrice) * 10 ** dec));
+      : await sellAmountRaw(req.chain, req.tokenAddress, req.tokenAmount ?? req.amountUsd / snapPrice, dec, req.tokenAmount !== undefined ? req.wallet : undefined);
     return { dec, nat, sellAmount };
   }
 

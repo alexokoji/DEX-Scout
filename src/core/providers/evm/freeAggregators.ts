@@ -13,7 +13,7 @@ import { sellCheckInconclusive } from "../simFailure";
 import { getJson } from "../http";
 import type { DexAdapter, PreflightResult, QuoteRequest, SwapSimulation, TransactionStatus } from "../interfaces";
 import { preflightEvm } from "./affordability";
-import { evmOnChain, nativeUsd, tokenDecimals, ZeroXDexAdapter } from "./evmProviders";
+import { evmOnChain, nativeUsd, sellAmountRaw, tokenDecimals, ZeroXDexAdapter } from "./evmProviders";
 
 interface RouteInput {
   chain: ChainId;
@@ -153,7 +153,7 @@ export class MultiEvmDexAdapter implements DexAdapter {
     const dec = await tokenDecimals(req.chain, req.tokenAddress);
     const nat = await nativeUsd(req.chain);
     const buying = req.side === "BUY";
-    const sellAmount = buying ? BigInt(Math.floor((req.amountUsd / nat) * 1e18)) : BigInt(Math.floor((req.tokenAmount ?? req.amountUsd / snap.priceUsd) * 10 ** dec));
+    const sellAmount = buying ? BigInt(Math.floor((req.amountUsd / nat) * 1e18)) : await sellAmountRaw(req.chain, req.tokenAddress, req.tokenAmount ?? req.amountUsd / snap.priceUsd, dec, req.tokenAmount !== undefined ? req.wallet : undefined);
     const input: RouteInput = {
       chain: req.chain,
       sellToken: buying ? NATIVE_EVM : req.tokenAddress,
