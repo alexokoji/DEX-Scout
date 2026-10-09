@@ -21,7 +21,7 @@ export default async function WalletPage() {
   ]);
   return (
     <div className="space-y-4">
-      <PageHeader title="Wallets" subtitle="Non-custodial and multi-chain (Solana + EVM). Your wallet signs every live transaction; DEX Scout never sees keys or seed phrases." />
+      <PageHeader title="Wallets" subtitle="Non-custodial and multi-chain (Solana + EVM). Your wallet signs every transaction you make; DEX Scout never sees its keys or seed phrase. (Unattended trading uses a separate bot wallet: see Unattended.)" />
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
         <Stat label="Connected wallet balance" value={pf.wallet?.balanceUsd != null ? usd(pf.wallet.balanceUsd) : "—"} sub={pf.wallet ? pf.wallet.summary || "empty" : "no linked wallet"} />
         <Stat label="Open position value" value={usd(pf.openPositionValueUsd)} />

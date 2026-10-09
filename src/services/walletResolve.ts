@@ -35,6 +35,9 @@ export async function resolveWallet(userId: string, chain: string, requested?: s
   if (requested) {
     const hit = docs.find((w) => same(family, w.address, requested));
     if (hit) return hit;
+    // the user's own bot wallet (the one the server holds the key of) is a wallet they own, when it is asked for by address
+    const bot = await (await collections.botWallets()).findOne({ userId, family });
+    if (bot && same(family, bot.address, requested)) return { _id: bot._id, userId, chain: family, address: bot.address, label: "bot wallet", verifiedAt: bot.createdAt, createdAt: bot.createdAt };
     throw new TradeError(
       docs.length
         ? `The wallet you are connected with (${shortAddress(requested)}) isn't verified yet — you have ${docs.map((d) => shortAddress(d.address)).join(", ")} linked. Open Wallet and press "Verify & link" for the connected one, or switch to a linked account.`

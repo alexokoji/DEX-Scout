@@ -7,10 +7,22 @@ import { liveTradingAllowed } from "@/lib/env";
 import { logEvent, safeMessage } from "@/lib/events";
 import { capitalState, ensureAnalysis, expirePreparedTrades, prepareTrade, reconcileLiveTrade, TradeError } from "./trading";
 import { getSettings } from "./settings";
+import { announceDay, autonomousStatus, botAddresses, executeBotTrade, resumeBotTrades, type AutonomousStatus } from "./autonomous";
+import { botAddressFor, botWalletsConfigured } from "./botWallet";
 import { touchWorker } from "./workerState";
 
 /** Trade-executor worker: evaluates active BUY signals for every ACTIVE bot and executes eligible ones. */
+/** Unattended trades are started only while there is time left in the cycle to finish them (the scheduler gives a run about a minute). */
+const ENTRY_BUDGET_MS = 35_000;
+
+/** Buys the bot has started on this chain that haven't landed yet: money that is committed even though the wallet and the positions don't show it. */
+async function pendingBuys(userId: string, addrs: string[], chain: string) {
+  const rows = await (await collections.trades()).find({ userId, side: "BUY", status: { $in: ["PREPARED", "PENDING"] }, "quote.wallet": { $in: addrs }, "transaction.chain": chain }, { projection: { inputUsd: 1 } }).toArray();
+  return { count: rows.length, usd: rows.reduce((s, r) => s + r.inputUsd, 0) };
+}
+
 export async function runBotCycle(): Promise<{ bots: number; executed: number; skipped: number }> {
+  const cycleStart = Date.now();
   const botsCol = await collections.bots();
   const botRuns = await collections.botRuns();
   const signalsCol = await collections.signals();
@@ -39,8 +51,17 @@ export async function runBotCycle(): Promise<{ bots: number; executed: number; s
     let error: string | null = null;
     const reasons: Record<string, string> = {};
 
+    // Unattended trading: the daily governor decides first whether the bot may open anything today.
+    const auto = settings.autonomous.enabled && env === "LIVE" && botWalletsConfigured();
+    let day: AutonomousStatus | null = null;
+    if (auto) {
+      day = await autonomousStatus(bot.userId, settings).catch(() => null);
+      if (day) await announceDay(bot.userId, day.decision, day.dayStartedAt);
+      if (day && !day.decision.canOpen) reasons["(today)"] = day.decision.reason;
+    }
+
     try {
-      const signals = await signalsCol.find({ status: "ACTIVE", type: "BUY", expiresAt: { $gt: new Date() } }).sort({ score: -1 }).toArray();
+      const signals = auto && (!day || !day.decision.canOpen) ? [] : await signalsCol.find({ status: "ACTIVE", type: "BUY", expiresAt: { $gt: new Date() } }).sort({ score: -1 }).toArray();
       const tokens = await tokensCol.find({ _id: { $in: [...new Set(signals.map((s) => s.tokenId))] } }).toArray();
       const tokenById = new Map(tokens.map((t) => [t._id, t]));
 
@@ -65,6 +86,30 @@ export async function runBotCycle(): Promise<{ bots: number; executed: number; s
           const own = rescore(analysis.opportunity.components, settings.weights);
           if (own.score < settings.minOpportunityScore) { skip(`score ${own.score.toFixed(0)} < ${settings.minOpportunityScore}`); continue; }
 
+          if (auto) {
+            // signed by the server with the user's bot wallet: no approval queue
+            if (Date.now() - cycleStart > ENTRY_BUDGET_MS) { skip("out of time this cycle; next one"); break; }
+            const addr = await botAddressFor(bot.userId, token.chain);
+            if (!addr) { skip("no bot wallet for this chain's address family"); continue; }
+            const addrs = await botAddresses(bot.userId);
+            const state = await capitalState(bot.userId, env, undefined, token.chain as ChainId, addr, addrs);
+            const pend = await pendingBuys(bot.userId, addrs, token.chain);
+            state.deployedUsd += pend.usd;
+            state.openPositions += pend.count;
+            if (state.walletUsd != null) state.walletUsd = Math.max(0, state.walletUsd - pend.usd);
+            const alloc = allocate(settings, state, settings.maxPositionUsd);
+            if (!alloc.ok) { skip(alloc.reason); continue; }
+            const { trade } = await prepareTrade(
+              bot.userId,
+              { chain: token.chain as ChainId, tokenAddress: token.address, amountUsd: alloc.amountUsd, slippageBps: Math.min(settings.maxSlippageBps, 300), environment: env, signalId: sig._id, wallet: addr },
+              "AUTO_ENTRY",
+              { autonomous: true },
+            );
+            const r = await executeBotTrade(bot.userId, trade.id);
+            if (r.ok) { runExecuted++; executed++; } else skip(r.reason ?? r.status);
+            await logEvent({ type: "TRADE_EXECUTED", source: "bot", userId: bot.userId, message: `Bot entry for ${token.symbol}: ${r.status}${r.reason ? ` (${r.reason})` : ""}`, data: { tradeId: trade.id } });
+            continue;
+          }
           const state = await capitalState(bot.userId, env, undefined, token.chain as ChainId);
           const alloc = allocate(settings, state, settings.maxPositionUsd);
           if (!alloc.ok) { skip(alloc.reason); continue; }
@@ -95,6 +140,7 @@ export async function runBotCycle(): Promise<{ bots: number; executed: number; s
   }
 
   // follow up on LIVE trades awaiting on-chain confirmation, and expire stale prepared trades
+  await resumeBotTrades().catch(() => {});
   await expirePreparedTrades();
   const pending = await tradesCol.find({ status: "PENDING", environment: "LIVE" }, { projection: { _id: 1 } }).toArray();
   for (const t of pending) await reconcileLiveTrade(t._id).catch(() => {});

@@ -35,6 +35,7 @@ second one just reports `"skipped: another run is still in progress"` instead of
 | `MONGODB_DB` | only needed if you want to override the database name baked into `MONGODB_URI` |
 | Real-data mode | `SOLANA_RPC_URL`, `NEXT_PUBLIC_SOLANA_RPC_URL`, EVM `<CHAIN>_RPC_URL`s, `DEX_PROVIDER_API_KEY`, `ZEROX_API_KEY` (only to trade on Ink/Mantle/Scroll/Blast/World/Abstract/Monad), `SCAN_CHAINS_PER_TICK`, `BIRDEYE_API_KEY`, `AI_API_KEY` (all optional; see `.env.example`) |
 | Live trading | `LIVE_TRADING_ENABLED=true` (only with `MOCK_PROVIDER=false`; read SECURITY.md first) |
+| Unattended trading | `BOT_WALLET_KEY` — 32 random bytes, base64 (`node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`). It seals the bot wallets' keys in the database. **Keep a copy: without it a bot wallet can't be opened, and anyone who has both it and the database can.** Without it the Unattended page says it isn't set up |
 
 `NEXT_PUBLIC_*` values are exposed to the browser — never put secrets in them.
 

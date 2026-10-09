@@ -7,12 +7,14 @@ import { Badge, EnvBadge } from "@/components/ui/badges";
 import { Card, CardBody, CardHeader, Stat } from "@/components/ui/card";
 import { requireUser } from "@/lib/auth";
 import { clockTime, timeAgo, usd, usdPnl } from "@/lib/format";
+import { autonomousStatus } from "@/services/autonomous";
 import { botOverview } from "@/services/queries";
 import { workerStatuses } from "@/services/workerState";
 
 export default async function BotPage() {
   const user = await requireUser();
   const [o, workers] = await Promise.all([botOverview(user.id), workerStatuses()]);
+  const auto = o.settings.autonomous.enabled ? await autonomousStatus(user.id, o.settings).catch(() => null) : null;
   const status = o.bot?.status ?? "PAUSED";
   const s = o.settings;
   const alive = workers.find((w) => w.name === "trade-executor-worker")?.alive;
@@ -20,6 +22,15 @@ export default async function BotPage() {
     <div className="space-y-4">
       <PageHeader title="Bot" subtitle="Automated trading engine. The bot only trades deterministic-rule-approved BUY signals within your limits." right={<LiveRefresh seconds={10} />} />
       <NoStopLossNotice />
+      <Card>
+        <CardBody className="flex flex-wrap items-center justify-between gap-3 text-sm">
+          <div>
+            <div className="flex items-center gap-2 font-medium">Unattended trading {auto ? <Badge tone={auto.decision.canOpen ? "green" : "amber"}>{auto.decision.state.replace("_", " ").toLowerCase()}</Badge> : <Badge>off</Badge>}</div>
+            <div className="mt-0.5 text-xs text-muted">{auto ? auto.decision.reason : "The bot asks you to sign each trade. Turn this on to let it trade with its own wallet toward a daily profit target, inside a daily loss limit."}</div>
+          </div>
+          <Link href="/settings/autonomous" className="text-xs text-accent">{auto ? "Open" : "Set up"}</Link>
+        </CardBody>
+      </Card>
       <Card>
         <CardBody className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">

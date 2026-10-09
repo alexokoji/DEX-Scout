@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, Bot, Briefcase, Gauge, LineChart, ListChecks, LogOut, Menu, Radar, Settings, Wallet, X, Zap, Layers, Plug, BellRing } from "lucide-react";
+import { Activity, Bot, Briefcase, Gauge, LineChart, ListChecks, LogOut, Menu, Radar, Settings, Wallet, X, Zap, Layers, Plug, BellRing, Cpu } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
@@ -20,6 +20,7 @@ const NAV = [
   { href: "/bot", label: "Bot", icon: Bot },
   { href: "/strategies", label: "Strategies", icon: LineChart },
   { href: "/activity", label: "Activity", icon: Activity },
+  { href: "/settings/autonomous", label: "Unattended", icon: Cpu },
   { href: "/settings/trading", label: "Settings", icon: Settings },
   { href: "/settings/notifications", label: "Notifications", icon: BellRing },
   { href: "/settings/integrations", label: "Integrations", icon: Plug },

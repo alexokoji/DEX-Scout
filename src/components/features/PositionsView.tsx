@@ -32,6 +32,8 @@ interface PV {
   signal: { id: string; type: string; score: number } | null;
   targets: { level: number; gainPct: number; sellPct: number }[];
   autoSells?: AutoSellView[];
+  /** held in the bot wallet: the server signs its sales (at the targets, or when you press Sell) */
+  botManaged?: boolean;
   /** what the wallet itself did over this position's transactions (see core/trading/walletResult.ts); null when not all of them were read from the chain */
   wallet?: { changeUsd: number; feesUsd: number; depositHeldUsd: number; swapNetUsd: number } | null;
   metrics: { currentValueUsd: number; pricePnlUsd: number; pricePnlPct: number; unrealizedPnlUsd: number; pnlPct: number; nextTargetLevel: number | null; nextTargetGainPct: number | null; targetProgress: number };
@@ -51,6 +53,7 @@ export function PositionsView({ positions, actions = true }: { positions: PV[]; 
                 <div className="flex flex-wrap items-center gap-2">
                   <Link href={`/tokens/${p.token.address}?chain=${p.token.chain}`} className="text-base font-semibold hover:text-accent">{p.token.symbol}</Link>
                   <Badge tone="blue">{CHAINS[p.token.chain as ChainId]?.name ?? p.token.chain}</Badge>
+                  {p.botManaged && <Badge tone="amber">bot wallet</Badge>}
                   <EnvBadge env={p.environment} source={p.token.dataSource} />
                   <Badge tone={p.status === "EMERGENCY" ? "red" : p.status.startsWith("TARGET") || p.status === "PROFITABLE" ? "green" : "gray"}>{p.status.replace("_", " ")}</Badge>
                   {!closed && <HealthBadge health={p.health} />}
@@ -91,7 +94,7 @@ export function PositionsView({ positions, actions = true }: { positions: PV[]; 
 
             {p.environment === "LIVE" && p.wallet && (closed || p.wallet.depositHeldUsd > 0) && <WalletLine closed={closed} w={p.wallet} />}
 
-            {!closed && actions && p.environment === "LIVE" && <AutoSellPanel positionId={p.id} chain={p.token.chain} orders={p.autoSells ?? []} />}
+            {!closed && actions && p.environment === "LIVE" && !p.botManaged && <AutoSellPanel positionId={p.id} chain={p.token.chain} orders={p.autoSells ?? []} />}
 
             {!closed && (notes.positives?.length || notes.negatives?.length || notes.emergencyReasons?.length) ? (
               <div className="mt-3 space-y-0.5 text-[11px]">

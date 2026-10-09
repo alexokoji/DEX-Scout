@@ -152,6 +152,8 @@ export async function suggestAutoSells(positionId: string): Promise<number> {
     if (!pos || pos.status === "CLOSED") return 0;
     const token = await (await collections.tokens()).findOne({ _id: pos.tokenId });
     if (!token) return 0;
+    // a position in the bot wallet is sold by the bot itself at its targets: limit orders signed by the user's wallet don't apply
+    if (pos.walletAddress && (await (await collections.botWallets()).countDocuments({ userId: pos.userId, address: pos.walletAddress }))) return 0;
     const col = await collections.autoSellOrders();
     if (await col.countDocuments({ positionId, status: { $in: ACTIVE_OR_PENDING } })) return 0;
     const { docs } = await replan(pos.userId, pos, token).catch(() => ({ docs: [] as AutoSellOrderDoc[] }));

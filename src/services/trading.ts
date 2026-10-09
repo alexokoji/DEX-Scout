@@ -18,7 +18,8 @@ import { notifyUser } from "./notifications";
 import { buyQueued, profitTaken, sellQueued, tradeConfirmed, tradeExpired, tradeFailed, type Message } from "./notificationMessages";
 import { applyLiveSnapshot } from "./tokenPrice";
 import { TradeError } from "./errors";
-import { projectedTargets } from "./projection";
+import { projectedTargets, scalpTargets } from "./projection";
+import { scalpEconomics } from "@/core/trading/scalp";
 import { targetsInput, toLadder } from "./positionTargets";
 import { spendableDetail } from "./walletBalance";
 import { linkedWallets, resolveWallet, walletFamilyOf } from "./walletResolve";
@@ -106,9 +107,10 @@ export async function getOrCreateAccount(userId: string, environment: Environmen
 }
 
 /** Open exposure, plus — when `chain` is given — what the user's wallet can spend on that chain (null if unknown). */
-export async function capitalState(userId: string, environment: Environment, session?: ClientSession, chain?: ChainId, walletAddress?: string | null): Promise<CapitalState> {
+export async function capitalState(userId: string, environment: Environment, session?: ClientSession, chain?: ChainId, walletAddress?: string | null, onlyWallets?: string[]): Promise<CapitalState> {
   const positions = await collections.positions();
-  const open = await positions.find({ userId, environment, status: { $ne: "CLOSED" } }, { projection: { costBasisUsd: 1 }, session }).toArray();
+  // `onlyWallets`: count just the positions held in these wallets (the bot wallet's own exposure, not the user's hand-made ones)
+  const open = await positions.find({ userId, environment, status: { $ne: "CLOSED" }, ...(onlyWallets ? { walletAddress: { $in: onlyWallets } } : {}) }, { projection: { costBasisUsd: 1 }, session }).toArray();
   const detail = chain ? await spendableDetail(userId, chain, walletAddress).catch(() => null) : undefined;
   return { deployedUsd: open.reduce((s, p) => s + p.costBasisUsd, 0), openPositions: open.length, walletUsd: chain ? (detail?.balanceUsd ?? null) : undefined, walletLabel: detail?.address ? `${detail.address.slice(0, 6)}…${detail.address.slice(-4)}` : null };
 }
@@ -177,7 +179,9 @@ export async function quoteTrade(userId: string, input: PrepareTradeInput, autom
   }
   const analysis = await ensureAnalysis(withId(token));
   const sim = await p.dex.simulateSwap({ chain: input.chain, side: "SELL", tokenAddress: token.address, amountUsd: input.amountUsd, slippageBps: input.slippageBps });
-  const state = await capitalState(userId, input.environment, undefined, input.chain, wallet?.address);
+  // the bot wallet is judged on its own exposure (its positions and its balance), not on the user's hand-made positions
+  const botOnly = wallet?.label === "bot wallet" ? (await (await collections.botWallets()).find({ userId }, { projection: { address: 1 } }).toArray()).map((w) => w.address) : undefined;
+  const state = await capitalState(userId, input.environment, undefined, input.chain, wallet?.address, botOnly);
   // A sell check that FAILED to run (a rate-limited or slow provider) is not the same as "this token can't be sold": only the
   // latter blocks. The former is flagged, and the swap itself is dry-run again before the wallet is ever opened.
   const sellUnverified = !sim.ok && !!sim.unknown;
@@ -249,7 +253,7 @@ function evaluateEntryRules(
 }
 
 /** Create a PREPARED trade after full server-side validation. Nothing is executed or signed here. */
-export async function prepareTrade(userId: string, input: PrepareTradeInput, kind: TradeKind = "MANUAL_ENTRY") {
+export async function prepareTrade(userId: string, input: PrepareTradeInput, kind: TradeKind = "MANUAL_ENTRY", opts: { autonomous?: boolean } = {}) {
   const { quote, violations, analysis, trust } = await quoteTrade(userId, input, kind === "AUTO_ENTRY");
   if (violations.length) throw new TradeError("Trade rejected by validation", 422, violations);
   // The bot only buys what has earned trust (a validation rule above). A person may buy anything that isn't dangerous, but
@@ -259,6 +263,24 @@ export async function prepareTrade(userId: string, input: PrepareTradeInput, kin
   }
   const token = await findTokenOrThrow(input.chain, input.tokenAddress);
   const account = await getOrCreateAccount(userId, input.environment);
+
+  // This position's own targets: the ones typed for it; else, for the bot, drawn from the token's own history (for unattended trading,
+  // scalp-sized: the shortest window at the cautious preset) if that applies; else none, which means the user's default ladder is used.
+  let ladder: ProfitTargetConfig[] | null = input.targets ? toLadder(input.targets) : null;
+  if (!ladder && kind === "AUTO_ENTRY") {
+    const settings = await getSettings(userId);
+    if (opts.autonomous) ladder = await scalpTargets(input.chain, token.address, settings.targets).catch(() => null);
+    else if (settings.targetsSource === "PROJECTED") ladder = await projectedTargets(input.chain, token.address, settings.targets).catch(() => null);
+  }
+  // Unattended trading only opens a position whose first target still makes money after the fees and price impact of getting in and out.
+  if (opts.autonomous) {
+    const first = (ladder ?? (await getSettings(userId)).targets)[0];
+    const econ = scalpEconomics({ amountUsd: input.amountUsd, firstTargetGainPct: first.gainPct, firstTargetSellPct: first.sellPct, quote });
+    if (!econ.pays) {
+      const why = `The first target (+${first.gainPct}%) would make about $${econ.firstTargetProfitUsd.toFixed(4)} and getting in and out costs about $${econ.roundTripCostUsd.toFixed(4)} (it would need +${Number.isFinite(econ.breakEvenGainPct) ? econ.breakEvenGainPct.toFixed(1) : "?"}% to cover it)`;
+      throw new TradeError("Fees would eat the first profit target", 422, [why]);
+    }
+  }
 
   let unsigned: string | null = null;
   let walletAddress: string | null = null;
@@ -274,13 +296,6 @@ export async function prepareTrade(userId: string, input: PrepareTradeInput, kin
     });
   }
 
-  // This position's own targets: the ones typed for it; else, for the bot, drawn from the token's own history if the user chose that;
-  // else none, which means the user's default ladder is used when the position opens.
-  let ladder: ProfitTargetConfig[] | null = input.targets ? toLadder(input.targets) : null;
-  if (!ladder && kind === "AUTO_ENTRY") {
-    const settings = await getSettings(userId);
-    if (settings.targetsSource === "PROJECTED") ladder = await projectedTargets(input.chain, token.address, settings.targets).catch(() => null);
-  }
   const tradeId = newId();
   const trades = await collections.trades();
   const doc: TradeDoc = {
@@ -312,7 +327,7 @@ export async function prepareTrade(userId: string, input: PrepareTradeInput, kin
   await trades.insertOne(doc);
   await logEvent({ type: "TRADE_REQUESTED", source: "trading", userId, message: `${input.environment} buy of $${input.amountUsd} ${token.symbol} prepared`, data: { tradeId } });
   // A buy the bot queued does nothing until the user signs it. (A hand-made buy is signed right away in front of them.)
-  if (kind === "AUTO_ENTRY") await notifyUser(userId, buyQueued(token.symbol, CHAINS[input.chain].name, input.amountUsd, quote.priceImpactPct, tradeId, token._id));
+  if (kind === "AUTO_ENTRY" && !opts.autonomous) await notifyUser(userId, buyQueued(token.symbol, CHAINS[input.chain].name, input.amountUsd, quote.priceImpactPct, tradeId, token._id));
   return { trade: withId(doc), quote, analysis, unsignedTxBase64: unsigned };
 }
 
@@ -646,7 +661,7 @@ export async function healClosedPositions(userId?: string): Promise<number> {
 /** Wording for the "a sell is waiting for your signature" notification (kept here as an export for existing callers/tests). */
 export const sellQueuedNotification = sellQueued;
 
-export async function prepareLiveSell(userId: string, positionId: string, sellAmount: number, kind: TradeKind, reason: string, targetLevel?: number, connectedWallet?: string) {
+export async function prepareLiveSell(userId: string, positionId: string, sellAmount: number, kind: TradeKind, reason: string, targetLevel?: number, connectedWallet?: string, opts: { autonomous?: boolean } = {}) {
   assertEnvironment("LIVE");
   const positions = await collections.positions();
   const trades = await collections.trades();
@@ -668,14 +683,14 @@ export async function prepareLiveSell(userId: string, positionId: string, sellAm
     _id: tradeId, userId, accountId: pos.accountId, tokenId: pos.tokenId, positionId: pos._id, side: "SELL", kind, environment: "LIVE", dataSource: quote.source, status: "PREPARED",
     inputUsd: amount * token.priceUsd, tokenAmount: amount, priceUsd: quote.effectivePriceUsd, priceImpactPct: quote.priceImpactPct, slippageBps: quote.slippageBps,
     feesUsd: quote.platformFeeUsd, networkFeeUsd: quote.networkFeeUsd + quote.priorityFeeUsd, realizedPnlUsd: null,
-    quote: { ...(quoteJson(quote) as object), reason, targetLevel: targetLevel ?? null } as Json,
+    quote: { ...(quoteJson(quote) as object), reason, targetLevel: targetLevel ?? null, wallet: wallet.address } as Json,
     failureReason: null, expiresAt: new Date(Date.now() + 10 * 60_000), createdAt: now, executedAt: null,
     transaction: { chain: token.chain, signature: null, status: "PENDING", unsignedTx: unsignedTxBase64, error: null, slot: null, submittedAt: null, confirmedAt: null, createdAt: now },
   };
   await trades.insertOne(doc);
   await logEvent({ type: "TRADE_REQUESTED", source: "live", userId, message: `LIVE ${kind} for ${token.symbol} awaiting wallet approval: ${reason}`, data: { tradeId } });
   // The bot can't sign, so a queued sell does nothing until the user approves it: tell them it's waiting.
-  await notifyUser(userId, sellQueuedNotification(kind, token.symbol, CHAINS[token.chain as ChainId]?.name ?? token.chain, reason, amount / pos.amount, doc.inputUsd, tradeId, pos._id));
+  if (!opts.autonomous) await notifyUser(userId, sellQueuedNotification(kind, token.symbol, CHAINS[token.chain as ChainId]?.name ?? token.chain, reason, amount / pos.amount, doc.inputUsd, tradeId, pos._id));
   return { trade: withId(doc), created: true as const };
 }
 

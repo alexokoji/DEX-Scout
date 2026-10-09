@@ -6,13 +6,15 @@ import type { ChainId } from "@/core/types";
 import { collections, newId } from "@/lib/db";
 import { liveTradingAllowed } from "@/lib/env";
 import { logEvent, safeMessage } from "@/lib/events";
-import type { PositionDoc, TokenDoc } from "@/lib/models";
+import type { PositionDoc, TokenDoc, TradeKind } from "@/lib/models";
 import { analyzeSnapshot } from "./analysis";
 import { getSettings } from "./settings";
 import { checkScannerHealth, notifyUser } from "./notifications";
 import { positionAlert } from "./notificationMessages";
 import { activeAutoSellLevels, syncAutoSells, unfilledPastTarget } from "./autoSell";
 import { healClosedPositions, prepareLiveSell } from "./trading";
+import { botSell, isBotPosition } from "./autonomous";
+import { botWalletsConfigured, sweepBotDeposits } from "./botWallet";
 import { touchWorker } from "./workerState";
 
 interface HealthNotes {
@@ -35,6 +37,10 @@ export async function monitorPosition(pos: PositionDoc, token: TokenDoc): Promis
   const notes = (pos.healthNotes ?? {}) as HealthNotes;
   const positions = await collections.positions();
   const positionEvents = await collections.positionEvents();
+
+  // A position held in the bot wallet is sold by the bot itself (the server signs); any other waits for the user's wallet to sign.
+  const botManaged = await isBotPosition(pos.userId, pos);
+  const queueSell = (amount: number, kind: TradeKind, reason: string, level?: number) => (botManaged ? botSell(pos.userId, pos._id, amount, kind, reason, level) : prepareLiveSell(pos.userId, pos._id, amount, kind, reason, level));
 
   const snap = await p.data.getSnapshot(token.chain as ChainId, token.address).catch(() => null);
   const raw = snap ? await p.data.getOnChain(token.chain as ChainId, token.address, snap).catch(() => null) : null;
@@ -86,7 +92,7 @@ export async function monitorPosition(pos: PositionDoc, token: TokenDoc): Promis
   // ── Emergency exit (separate from profit-taking; opt-in) ──
   if (assessment.emergency && pos.emergencyAutoExit) {
     const reason = `Emergency exit: ${assessment.emergencyReasons.join("; ")}`;
-    if (liveTradingAllowed()) await prepareLiveSell(pos.userId, pos._id, pos.amount, "EMERGENCY_EXIT", reason);
+    if (liveTradingAllowed()) await queueSell(pos.amount, "EMERGENCY_EXIT", reason);
     return;
   }
 
@@ -105,7 +111,7 @@ export async function monitorPosition(pos: PositionDoc, token: TokenDoc): Promis
     await logEvent({ type: "TARGET_REACHED", source: "monitor", userId: pos.userId, message: `${token.symbol} reached target ${actions.map((a) => a.level).join(",")}`, data: { positionId: pos._id } });
     if (liveTradingAllowed()) {
       const total = actions.reduce((s, a) => s + a.sellAmount, 0);
-      await prepareLiveSell(pos.userId, pos._id, total, "TARGET_EXIT", `Target ${actions[actions.length - 1].level} reached`, actions[actions.length - 1].level);
+      await queueSell(total, "TARGET_EXIT", `Target ${actions[actions.length - 1].level} reached`, actions[actions.length - 1].level);
     }
     return;
   }
@@ -118,7 +124,7 @@ export async function monitorPosition(pos: PositionDoc, token: TokenDoc): Promis
     const level = Math.max(...stuck.flatMap((o) => o.levels));
     await logEvent({ type: "TARGET_REACHED", source: "monitor", userId: pos.userId, message: `${token.symbol} is at its target but the auto-sell order for target ${level} hasn't filled`, data: { positionId: pos._id } });
     if (liveTradingAllowed()) {
-      await prepareLiveSell(pos.userId, pos._id, stuck.reduce((s, o) => s + o.sellAmount, 0), "TARGET_EXIT", `Target ${level} reached, but its auto-sell order hasn't filled (a limit order only fills when a buyer takes it)`, level);
+      await queueSell(stuck.reduce((s, o) => s + o.sellAmount, 0), "TARGET_EXIT", `Target ${level} reached, but its auto-sell order hasn't filled (a limit order only fills when a buyer takes it)`, level);
     }
     return;
   }
@@ -126,7 +132,7 @@ export async function monitorPosition(pos: PositionDoc, token: TokenDoc): Promis
   // ── Max position age: only ever closes a position that is in profit; losers are held (no stop loss) ──
   if (covered.size === 0 && settings.maxPositionAgeHours && Date.now() - pos.openedAt.getTime() > settings.maxPositionAgeHours * 3_600_000) {
     if (unrealized > 0) {
-      if (liveTradingAllowed()) await prepareLiveSell(pos.userId, pos._id, pos.amount, "TARGET_EXIT", "Maximum position age reached while in profit");
+      if (liveTradingAllowed()) await queueSell(pos.amount, "TARGET_EXIT", "Maximum position age reached while in profit");
     } else if (!notes.maxAgeNoted) {
       await positionEvents.insertOne({ _id: newId(), positionId: pos._id, type: "MAX_AGE", message: "Maximum age reached but position is not in profit — holding (no automatic stop loss)", data: null, createdAt: new Date() });
       await positions.updateOne(
@@ -157,6 +163,10 @@ export async function runPositionMonitorCycle(): Promise<{ monitored: number; er
       errors++;
       await logEvent({ type: "WORKER_ERROR", source: "monitor", level: "ERROR", userId: pos.userId, message: `Monitoring ${token.symbol} failed: ${safeMessage(err)}`, data: { positionId: pos._id } });
     }
+  }
+  // bot wallets: close the empty token accounts left by what has been sold, to get their deposits back (looks only when a position has closed)
+  if (botWalletsConfigured()) {
+    for (const w of await (await collections.botWallets()).find({ family: "solana" }, { projection: { userId: 1 } }).toArray()) await sweepBotDeposits(w.userId).catch(() => {});
   }
   // the monitor is its own cron job, so it still runs (and can say so) when the scan job has died
   await checkScannerHealth().catch(() => {});

@@ -13,7 +13,7 @@ import { sellCheckInconclusive } from "../simFailure";
 import { getJson } from "../http";
 import type { DexAdapter, PreflightResult, QuoteRequest, SwapSimulation, TransactionStatus } from "../interfaces";
 import { preflightEvm } from "./affordability";
-import { evmOnChain, nativeUsd, sellAmountRaw, tokenDecimals, ZeroXDexAdapter } from "./evmProviders";
+import { evmOnChain, nativeUsd, sellAmountRaw, tokenAllowanceRaw, tokenDecimals, ZeroXDexAdapter } from "./evmProviders";
 
 interface RouteInput {
   chain: ChainId;
@@ -219,8 +219,10 @@ export class MultiEvmDexAdapter implements DexAdapter {
     const input: RouteInput = { chain: quote.chain, sellToken: raw.sellToken, buyToken: raw.buyToken, sellAmount: BigInt(raw.sellAmount), sellDecimals: raw.sellDecimals, buyDecimals: raw.buyDecimals, slippageBps: raw.slippageBps };
     const out: RouteOutput = { buyAmount: BigInt(raw.buyAmount), networkFeeUsd: raw.networkFeeUsd, route: raw.route, payload: raw.payload };
     const tx = await agg.build(input, out, userAddress);
+    // an approval only when the aggregator's contract can't already move this much (it was an approval on every sale before: a second wallet prompt and its gas each time)
+    const allowance = tx.spender && raw.sellToken.toLowerCase() !== NATIVE_EVM.toLowerCase() ? await tokenAllowanceRaw(quote.chain, raw.sellToken, userAddress, tx.spender) : null;
     const approval =
-      tx.spender && raw.sellToken.toLowerCase() !== NATIVE_EVM.toLowerCase()
+      tx.spender && raw.sellToken.toLowerCase() !== NATIVE_EVM.toLowerCase() && !(allowance !== null && allowance >= BigInt(raw.sellAmount))
         ? { to: raw.sellToken, data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [getAddress(tx.spender), BigInt(raw.sellAmount)] }), value: "0x0" }
         : undefined;
     const payload = {

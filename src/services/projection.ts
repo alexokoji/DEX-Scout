@@ -45,6 +45,17 @@ export async function projectedTargets(chain: ChainId, address: string, userLadd
   return suggestLadder(h, userLadder.map((t) => t.sellPct), "typical");
 }
 
+/**
+ * Targets for a scalp: the shortest window the token's history supports (an hour), at the cautious preset (rises reached in most of the
+ * token's own past windows, so they are likely to fill), keeping the user's sell shares. null when there isn't enough history.
+ */
+export async function scalpTargets(chain: ChainId, address: string, userLadder: ProfitTargetConfig[]): Promise<ProfitTargetConfig[] | null> {
+  const p = await projectionFor(chain, address);
+  const h = p?.horizons[0]; // horizons are in ascending order: the first is the shortest
+  if (!h) return null;
+  return suggestLadder(h, userLadder.map((t) => t.sellPct), "cautious");
+}
+
 /** For tests. */
 export function resetProjectionCache() {
   cache.clear();

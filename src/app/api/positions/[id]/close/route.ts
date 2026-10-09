@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ApiError, parseBody, protectedRoute, serialize } from "@/lib/api";
 import { collections } from "@/lib/db";
+import { botSell, isBotPosition } from "@/services/autonomous";
 import { prepareLiveSell } from "@/services/trading";
 
 const body = z.object({
@@ -17,6 +18,12 @@ export const POST = protectedRoute<{ id: string }>(
     const pos = await positions.findOne({ _id: params.id, userId: user.id });
     if (!pos || pos.status === "CLOSED") throw new ApiError("Position not found or already closed", 404);
     const amount = pos.amount * (percent / 100);
+    // a position held in the bot wallet is sold by the server: there is no signature for the user's own wallet to give
+    if (await isBotPosition(user.id, pos)) {
+      const r = await botSell(user.id, pos._id, amount, "MANUAL_EXIT", `Manual close (${percent}%)`);
+      if (!r.ok && r.status === "FAILED") return serialize({ ok: false, reason: r.reason ?? "The sale could not be sent" });
+      return serialize({ ok: true, awaitingSignature: false, sentByBot: true });
+    }
     const r = await prepareLiveSell(user.id, pos._id, amount, "MANUAL_EXIT", `Manual close (${percent}%)`, undefined, wallet);
     return serialize({ ok: true, awaitingSignature: true, tradeId: r.trade.id });
   },

@@ -73,7 +73,7 @@ export function AuthForm({ mode }: { mode: "login" | "register" }) {
         )}
       </p>
       <p className="mt-4 text-[11px] leading-relaxed text-muted">
-        DEX Scout never asks for seed phrases or private keys. Trading is non-custodial: your wallet signs every live transaction.
+        DEX Scout never asks for your wallet&apos;s seed phrase or private keys. Trading from your own wallet is non-custodial: it signs every transaction. The optional bot wallet is a separate wallet the server holds, funded only with what you choose.
       </p>
     </div>
   );

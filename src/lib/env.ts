@@ -13,6 +13,8 @@ const schema = z.object({
   AUTH_SECRET: z.string().min(16).default("dev-only-insecure-secret-change-me-please"),
   MOCK_PROVIDER: bool,
   LIVE_TRADING_ENABLED: bool,
+  /** 32 random bytes, base64: seals the bot wallets' keys at rest (see core/botwallet/crypto.ts). Without it unattended trading can't be switched on. */
+  BOT_WALLET_KEY: z.string().optional(),
   SOLANA_RPC_URL: z.string().default("https://solana-rpc.publicnode.com"),
   SOLANA_WS_URL: z.string().optional(),
   DEX_PROVIDER_URL: z.string().default("https://lite-api.jup.ag/swap/v1"),

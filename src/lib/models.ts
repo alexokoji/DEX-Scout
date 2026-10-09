@@ -24,6 +24,7 @@ import type {
 } from "@/core/types";
 import type { Projection } from "@/core/analysis/projection";
 import type { WalletChange } from "@/core/trading/walletResult";
+import type { AutonomousSettings } from "@/core/trading/governor";
 import type { AiAnalysis } from "@/core/ai/schema";
 
 export type Json = Record<string, unknown> | unknown[] | string | number | boolean | null;
@@ -60,6 +61,25 @@ export interface WalletDoc {
   label: string | null;
   verifiedAt: Date;
   createdAt: Date;
+}
+
+/**
+ * A wallet the SERVER holds the key of, so the bot can trade without a signature from the user each time. One per user per address family
+ * (one EVM address works on every EVM chain). The user funds it with only what they accept to risk; the secret is sealed with the
+ * operator's master key (AES-256-GCM, see core/botwallet/crypto.ts) and never leaves the server except through the password-checked export.
+ */
+export interface BotWalletDoc {
+  _id: string;
+  userId: string;
+  family: "solana" | "evm";
+  address: string;
+  /** the sealed secret key */
+  sealed: { ciphertext: string; iv: string; tag: string };
+  createdAt: Date;
+  /** when the user last exported the key (a record, not a restriction) */
+  exportedAt: Date | null;
+  /** Solana: when the empty token accounts the bot left behind were last closed to get their deposits back */
+  sweptAt?: Date | null;
 }
 
 export interface TradingAccountDoc {
@@ -99,6 +119,8 @@ export interface TradingSettingsDoc {
   weights: ScoreWeights;
   targets: ProfitTargetConfig[];
   activeStrategyId: string | null;
+  /** unattended trading and its daily target; absent on accounts from before it existed (they get the defaults) */
+  autonomous?: AutonomousSettings;
   /** Bumped when default gate values change; see migrateSettings in services/settings.ts. */
   settingsVersion?: number;
   updatedAt: Date;
@@ -365,6 +387,10 @@ export interface TradeDoc {
   realizedPnlUsd: number | null;
   /** what this trade did to the wallet's own balance, read from the confirmed transaction (fee and any token-account deposit included); absent on older trades and on sales a venue filled */
   walletChange?: WalletChange | null;
+  /** the bot wallet's trades are signed by the server: set when a run has taken this trade to sign it (so two runs can never sign it twice); cleared if it had to wait */
+  botClaimedAt?: Date | null;
+  /** the hash of the token approval the bot sent for this trade, while it waits to be mined (the swap follows once it is) */
+  botApprovalHash?: string | null;
   quote: Json;
   failureReason: string | null;
   expiresAt: Date | null;

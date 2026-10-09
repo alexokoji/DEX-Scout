@@ -9,6 +9,7 @@ import {
 import { TRUST_BAR } from "@/core/analysis/trust";
 import type { ProfitTargetConfig, ScannerFilters, ScoreWeights, TrustTier } from "@/core/types";
 import { validateTargets } from "@/core/trading/targets";
+import type { AutonomousSettings } from "@/core/trading/governor";
 import { collections, newId, withId } from "@/lib/db";
 import { logEvent } from "@/lib/events";
 import type { Environment, RiskLevel, TargetsMode, TradingSettingsDoc } from "@/lib/models";
@@ -78,7 +79,24 @@ export interface UserSettings {
   filters: ScannerFilters;
   weights: ScoreWeights;
   targets: ProfitTargetConfig[];
+  /** unattended trading and its daily target */
+  autonomous: AutonomousSettings;
 }
+
+/** What unattended trading starts with: off, with a modest target inside a smaller loss limit. All of it is the user's to change. */
+export const DEFAULT_AUTONOMOUS: AutonomousSettings = { enabled: false, dailyTargetUsd: 5, dailyLossLimitUsd: 3, givebackPct: 30, maxConsecutiveLosses: 3, cooldownMinutes: 30, dayOffsetMinutes: 0 };
+
+export const autonomousInput = z
+  .object({
+    enabled: z.boolean(),
+    dailyTargetUsd: z.number().positive().max(1_000_000),
+    dailyLossLimitUsd: z.number().positive().max(1_000_000),
+    givebackPct: z.number().min(0).max(100),
+    maxConsecutiveLosses: z.number().int().min(0).max(50),
+    cooldownMinutes: z.number().int().min(1).max(1440),
+    dayOffsetMinutes: z.number().int().min(-720).max(840),
+  })
+  .strict();
 
 function hydrate(row: TradingSettingsDoc): UserSettings {
   const targets = [...(row.targets ?? [])].sort((a, b) => a.level - b.level);
@@ -89,6 +107,7 @@ function hydrate(row: TradingSettingsDoc): UserSettings {
     ...rest,
     minTrust: row.minTrust ?? DEFAULT_MIN_TRUST,
     targetsSource: row.targetsSource ?? "FIXED",
+    autonomous: { ...DEFAULT_AUTONOMOUS, ...(row.autonomous ?? {}) },
     filters: scannerFiltersSchema.parse(row.filters ?? {}),
     weights: scoreWeightsSchema.parse(row.weights ?? {}),
     targets: targets.length ? targets : row.targetsMode === "SINGLE" ? DEFAULT_TARGETS_SINGLE : DEFAULT_TARGETS_MULTI,
@@ -98,7 +117,7 @@ function hydrate(row: TradingSettingsDoc): UserSettings {
 /** The bot buys nothing below this: no red flags AND depth, history and checks that cleared (see core/analysis/trust.ts). */
 export const DEFAULT_MIN_TRUST: TrustTier = "TRUSTED";
 
-export const SETTINGS_VERSION = 6;
+export const SETTINGS_VERSION = 7;
 
 /** True when `chains` holds exactly the six chains this app originally scanned (any order). */
 export function isOriginalChainSet(chains: readonly string[] | undefined): boolean {
@@ -135,6 +154,7 @@ export function defaultSettingsDoc(userId: string, now = new Date()): TradingSet
     weights: scoreWeightsSchema.parse({}),
     targets: DEFAULT_TARGETS_MULTI,
     activeStrategyId: null,
+    autonomous: DEFAULT_AUTONOMOUS,
     settingsVersion: SETTINGS_VERSION,
     updatedAt: now,
   };
@@ -180,6 +200,8 @@ async function migrateSettings(row: TradingSettingsDoc): Promise<TradingSettings
   }
   // v6: each position can have its own targets. Existing accounts keep their one ladder as the default for new positions.
   if (version < 6 && !row.targetsSource) set.targetsSource = "FIXED";
+  // v7: unattended trading and its daily target (off by default)
+  if (version < 7 && !row.autonomous) set.autonomous = DEFAULT_AUTONOMOUS;
   const legacy = row as TradingSettingsDoc & { capitalUsd?: number };
   const unset: Record<string, ""> = {};
   if (version < 4) {
@@ -216,6 +238,17 @@ export async function updateSettings(userId: string, input: TradingSettingsInput
   const row = await col.findOne({ userId });
   if (!row) throw new Error("Trading settings disappeared during update");
   await logEvent({ type: "SETTINGS_UPDATED", source: "settings", userId, message: "Trading settings updated", data: { environment: input.environment, autoTradingEnabled: input.autoTradingEnabled } });
+  return hydrate(row);
+}
+
+/** Saves the unattended-trading settings (the daily target and its limits). Switching it on is checked by the caller (see services/autonomous.ts). */
+export async function updateAutonomous(userId: string, input: z.infer<typeof autonomousInput>): Promise<UserSettings> {
+  await getSettings(userId);
+  const col = await collections.tradingSettings();
+  await col.updateOne({ userId }, { $set: { autonomous: input, updatedAt: new Date() } });
+  const row = await col.findOne({ userId });
+  if (!row) throw new Error("Trading settings disappeared during update");
+  await logEvent({ type: "SETTINGS_UPDATED", source: "settings", userId, message: `Autonomous trading settings updated (${input.enabled ? "on" : "off"})`, data: { enabled: input.enabled, dailyTargetUsd: input.dailyTargetUsd, dailyLossLimitUsd: input.dailyLossLimitUsd } });
   return hydrate(row);
 }
 

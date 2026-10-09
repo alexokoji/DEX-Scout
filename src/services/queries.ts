@@ -176,6 +176,7 @@ export async function positionViews(userId: string, environment?: Environment, i
   const signalById = new Map(signals.map((s) => [s._id, { id: s._id, type: s.type, score: s.score, createdAt: s.createdAt }]));
 
   const autoSells = await autoSellsFor(withToken.map((p) => p.id));
+  const botAddrs = (await (await collections.botWallets()).find({ userId }, { projection: { address: 1 } }).toArray()).map((w) => w.address.toLowerCase());
   const ids = withToken.map((p) => p.id);
   const tradeRows = ids.length ? await (await collections.trades()).find({ positionId: { $in: ids }, status: "CONFIRMED" }, { projection: { positionId: 1, walletChange: 1 } }).toArray() : [];
   const reclaims = ids.length ? await (await collections.positionEvents()).find({ positionId: { $in: ids }, type: "DEPOSIT_RECLAIMED" }, { projection: { positionId: 1, data: 1 } }).toArray() : [];
@@ -193,7 +194,7 @@ export async function positionViews(userId: string, environment?: Environment, i
       p.currentPriceUsd,
       targets,
     );
-    return { ...p, autoSells: (autoSells.get(p.id) ?? []).map(({ _id, ...o }) => ({ id: _id, ...o })), targets, signal: p.sourceSignalId ? (signalById.get(p.sourceSignalId) ?? null) : null, metrics: m, wallet: walletResult(tradesBy.get(p.id) ?? [], reclaimedUsd.get(p.id) ?? 0) };
+    return { ...p, autoSells: (autoSells.get(p.id) ?? []).map(({ _id, ...o }) => ({ id: _id, ...o })), targets, signal: p.sourceSignalId ? (signalById.get(p.sourceSignalId) ?? null) : null, metrics: m, botManaged: !!p.walletAddress && botAddrs.includes(p.walletAddress.toLowerCase()), wallet: walletResult(tradesBy.get(p.id) ?? [], reclaimedUsd.get(p.id) ?? 0) };
   });
 }
 

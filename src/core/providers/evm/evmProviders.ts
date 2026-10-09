@@ -203,6 +203,16 @@ export async function tokenBalanceRaw(chain: ChainId, token: string, owner: stri
   }
 }
 
+/** How much of a token `spender` may move for `owner` right now; null when the node can't say (callers then include an approval, as before). */
+export async function tokenAllowanceRaw(chain: ChainId, token: string, owner: string, spender: string): Promise<bigint | null> {
+  try {
+    const pad = (a: string) => a.slice(2).toLowerCase().padStart(64, "0");
+    return BigInt(await evmRpc<string>(chain, "eth_call", [{ to: token, data: "0xdd62ed3e" + pad(owner) + pad(spender) }, "latest"], 6_000));
+  } catch {
+    return null;
+  }
+}
+
 /** The integer amount of a token a sell quote asks for: what was asked, but never more than the wallet holds (see sellRaw). */
 export async function sellAmountRaw(chain: ChainId, token: string, tokenAmount: number, decimals: number, wallet?: string): Promise<bigint> {
   const raw = sellRaw(tokenAmount, decimals, wallet ? await tokenBalanceRaw(chain, token, wallet) : null);
@@ -297,7 +307,8 @@ export class ZeroXDexAdapter implements DexAdapter {
     const q = await this.fetch0x("quote", quote.chain, { sellToken: raw.sellToken, buyToken: raw.buyToken, sellAmount: raw.sellAmount, taker: userAddress, slippageBps: String(quote.slippageBps) });
     if (!q.transaction) throw new Error("Aggregator returned no transaction");
     const spender = q.issues?.allowance?.spender;
-    const approval = spender && raw.sellToken.toLowerCase() !== NATIVE_EVM.toLowerCase()
+    const allowance = spender && raw.sellToken.toLowerCase() !== NATIVE_EVM.toLowerCase() ? await tokenAllowanceRaw(quote.chain, raw.sellToken, userAddress, spender) : null;
+    const approval = spender && raw.sellToken.toLowerCase() !== NATIVE_EVM.toLowerCase() && !(allowance !== null && allowance >= BigInt(raw.sellAmount))
       ? { to: raw.sellToken, data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [getAddress(spender), BigInt(raw.sellAmount)] }), value: "0x0" }
       : undefined;
     const payload = {

@@ -24,6 +24,7 @@ import type {
   UserDoc,
   VolumeSnapshotDoc,
   WalletDoc,
+  BotWalletDoc,
   WorkerStateDoc,
   NotificationDoc,
   AutoSellOrderDoc,
@@ -62,6 +63,7 @@ function col<T extends { _id: string }>(name: string): { (): Promise<Collection<
 export const collections = {
   users: col<UserDoc>("users"),
   wallets: col<WalletDoc>("wallets"),
+  botWallets: col<BotWalletDoc>("botWallets"),
   tradingAccounts: col<TradingAccountDoc>("tradingAccounts"),
   tradingSettings: col<TradingSettingsDoc>("tradingSettings"),
   strategies: col<StrategyDoc>("strategies"),
@@ -155,6 +157,7 @@ export async function ensureIndexes(): Promise<void> {
       { key: { tokenId: 1, status: 1 }, name: "tokenId_status" },
     ]),
     idx("bots", [{ key: { userId: 1 }, unique: true, name: "userId_unique" }]),
+    idx("botWallets", [{ key: { userId: 1, family: 1 }, unique: true, name: "userId_family_unique" }, { key: { address: 1 }, name: "address" }]),
     idx("botRuns", [{ key: { botId: 1, startedAt: 1 }, name: "botId_startedAt" }]),
     idx("positions", [
       { key: { userId: 1, status: 1 }, name: "userId_status" },

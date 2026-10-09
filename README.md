@@ -5,7 +5,7 @@ Multi-chain low-cap DEX scanner, signal engine and live trading platform. Suppor
 - **Scanner** continuously discovers tokens (default band **$250K-$25M market cap**, fully configurable, no cap on results).
 - **Safety + market + on-chain analysis** produce a 0-100 *opportunity score* (an analytical ranking, **not** a probability of profit) and lower/moderate/high/critical **risk levels** (never "safe").
 - **Signals** (BUY / WATCH) with entry zone, three targets, reasons, warnings, expiry and a Zod-validated AI interpretation.
-- **Wallets**: Solana (Phantom, Solflare, Backpack via Wallet Standard) and EVM (MetaMask, Rabby, Coinbase Wallet, any injected wallet) - both signature-verified, non-custodial.
+- **Wallets**: Solana (Phantom, Solflare, Backpack via Wallet Standard) and EVM (MetaMask, Rabby, Coinbase Wallet, any injected wallet) - both signature-verified, non-custodial. Optional unattended trading uses a separate bot wallet the server holds (see TRADING_ENGINE.md).
 - **Manual mode**: browse signals, charts, analysis and trade from the token page.
 - **Auto mode**: a bot executes rule-approved BUY signals within server-enforced capital limits, monitors positions and **takes profit at configured targets. There is no stop loss.** Optional *emergency protection* only reacts to catastrophic conditions.
 - **Environments**: `MANUAL` (signals only, bot never trades) or `LIVE` (real swaps, wallet-signed, off by default until `LIVE_TRADING_ENABLED=true` with real providers). Mock/simulated data is labelled `MOCK`.
