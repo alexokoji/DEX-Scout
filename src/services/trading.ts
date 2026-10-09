@@ -627,15 +627,19 @@ export async function reconcileUserPending(userId: string): Promise<void> {
 }
 
 /**
- * A position whose sale has booked (it has a close time) is closed, whatever its status field says. The position monitor reads a position,
- * spends a few seconds on the market data, then writes its status back: if a sale booked in those seconds the write used to undo the
- * closing, leaving a sold position (nothing left in it) in the open list. The monitor no longer writes to a closed position; this puts
- * right any that were already caught that way.
+ * A position that is really over is closed, whatever its status field says. The position monitor reads a position, spends a few seconds
+ * on the market data, then writes its status back: if a sale booked in those seconds the write used to undo the closing, leaving a sold
+ * position (nothing left in it, or a close time already set) in the open list. The monitor no longer writes to a closed position; this
+ * puts right any that were already caught that way, and any with nothing left in them.
  */
 export async function healClosedPositions(userId?: string): Promise<number> {
   const positions = await collections.positions();
-  const r = await positions.updateMany({ ...(userId ? { userId } : {}), status: { $ne: "CLOSED" }, closedAt: { $ne: null } }, { $set: { status: "CLOSED" } });
-  return r.modifiedCount;
+  const open = { ...(userId ? { userId } : {}), status: { $ne: "CLOSED" as const } };
+  const closed = await positions.updateMany({ ...open, closedAt: { $ne: null } }, { $set: { status: "CLOSED", amount: 0, costBasisUsd: 0 } });
+  // nothing left in it: no tokens, or only the rounding remainder of a sale (a millionth of what was bought)
+  const now = new Date();
+  const empty = await positions.updateMany({ ...open, closedAt: null, $expr: { $lte: ["$amount", { $multiply: ["$initialAmount", 1e-6] }] } }, { $set: { status: "CLOSED", amount: 0, costBasisUsd: 0, closedAt: now, updatedAt: now } });
+  return closed.modifiedCount + empty.modifiedCount;
 }
 
 /** Prepare an unsigned LIVE sell that waits in the user's approval queue (no keys are held server-side). */

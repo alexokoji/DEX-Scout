@@ -341,6 +341,22 @@ const E18 = BigInt("1000000000000000000");
     expect((await positions.findOne({ _id: open._id }))!.status).toBe("OPEN"); // an open one is left alone
   });
 
+  it("a position with nothing left in it (no close time was set) is closed too, and one with a real holding is not", async () => {
+    const { healClosedPositions } = await import("@/services/trading");
+    const token = await makeToken("base", 0.01);
+    const sold = await makePosition(token, { status: "OPEN", amount: 0, closedAt: null });
+    const dust = await makePosition(token, { status: "PROFITABLE", amount: 0.001, initialAmount: 10_000, closedAt: null }); // under a millionth of what was bought
+    const holding = await makePosition(token, { status: "OPEN", amount: 9_000, closedAt: null });
+    await healClosedPositions(userId);
+    const positions = await collections.positions();
+    for (const p of [sold, dust]) {
+      const now = (await positions.findOne({ _id: p._id }))!;
+      expect(now.status).toBe("CLOSED");
+      expect(now.closedAt).toBeInstanceOf(Date);
+    }
+    expect((await positions.findOne({ _id: holding._id }))!.status).toBe("OPEN");
+  });
+
   it("cancelling: EVM takes one signature for all orders; Solana one transaction per order", async () => {
     const { prepareCancelEvm, confirmCancelEvm, prepareCancelSolana, confirmCancelSolana } = await import("@/services/autoSell");
     const token = await makeToken("base", 0.0108);

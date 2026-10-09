@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { CHAINS } from "@/core/chains";
+import type { ChainId } from "@/core/types";
 import { EnvBadge, HealthBadge, PnL, SignalBadge, Badge } from "@/components/ui/badges";
 import { EmptyState } from "@/components/ui/card";
 import { age, price, tokens, usd, usdPnl } from "@/lib/format";
@@ -48,13 +50,14 @@ export function PositionsView({ positions, actions = true }: { positions: PV[]; 
               <div>
                 <div className="flex flex-wrap items-center gap-2">
                   <Link href={`/tokens/${p.token.address}?chain=${p.token.chain}`} className="text-base font-semibold hover:text-accent">{p.token.symbol}</Link>
+                  <Badge tone="blue">{CHAINS[p.token.chain as ChainId]?.name ?? p.token.chain}</Badge>
                   <EnvBadge env={p.environment} source={p.token.dataSource} />
                   <Badge tone={p.status === "EMERGENCY" ? "red" : p.status.startsWith("TARGET") || p.status === "PROFITABLE" ? "green" : "gray"}>{p.status.replace("_", " ")}</Badge>
                   {!closed && <HealthBadge health={p.health} />}
                   <Badge>{p.origin}</Badge>
                   {p.signal && <span className="flex items-center gap-1 text-[11px] text-muted">opened by <SignalBadge type={p.signal.type} /> {p.signal.score.toFixed(0)}</span>}
                 </div>
-                <div className="mt-1 text-[11px] text-muted">opened {age(p.openedAt)} ago · <PriceAge at={p.priceAt ?? null} label="price" /></div>
+                <div className="mt-1 text-[11px] text-muted">opened {age(p.openedAt)} ago · <PriceAge at={p.priceAt ?? null} label="price" /> · <Link href={`/tokens/${p.token.address}?chain=${p.token.chain}`} className="text-accent hover:underline">token details →</Link></div>
               </div>
               <div className="flex items-center gap-3">
                 {closed ? (

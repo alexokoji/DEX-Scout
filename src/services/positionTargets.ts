@@ -44,7 +44,7 @@ export async function setPositionTargets(userId: string, positionId: string, inp
   }
   const now = new Date();
   const status = deriveStatus({ closed: false, emergency: pos.status === "EMERGENCY", targetsHit: 0, unrealizedPnlUsd: pos.amount * (pos.currentPriceUsd - pos.entryPriceUsd) });
-  await positions.updateOne({ _id: pos._id }, { $set: { targetsSnapshot: ladder, targetsHit: 0, initialAmount: pos.amount, status, updatedAt: now } });
+  await positions.updateOne({ _id: pos._id, status: { $ne: "CLOSED" } }, { $set: { targetsSnapshot: ladder, targetsHit: 0, initialAmount: pos.amount, status, updatedAt: now } });
   await orders.deleteMany({ positionId, userId, status: "SUGGESTED" });
   const events = await collections.positionEvents();
   await events.insertOne({ _id: newId(), positionId, type: "TARGETS_CHANGED", message: `Targets changed. Before: ${describe(pos.targetsSnapshot ?? [])}. Now: ${describe(ladder)}.`, data: { from: pos.targetsSnapshot ?? [], to: ladder }, createdAt: now });

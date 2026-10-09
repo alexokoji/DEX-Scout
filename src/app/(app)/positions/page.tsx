@@ -3,7 +3,10 @@ import { NoStopLossNotice } from "@/components/features/NoStopLossNotice";
 import { PageHeader } from "@/components/features/PageHeader";
 import { PositionsView } from "@/components/features/PositionsView";
 import { ReclaimCard } from "@/components/features/ReclaimCard";
+import Link from "next/link";
 import { Card, CardHeader } from "@/components/ui/card";
+import { CHAINS } from "@/core/chains";
+import type { ChainId } from "@/core/types";
 import { requireUser } from "@/lib/auth";
 import { collections, withIds } from "@/lib/db";
 import { positionViews } from "@/services/queries";
@@ -24,7 +27,7 @@ export default async function PositionsPage() {
     await positionEventsCol.find({ positionId: { $in: [...tokenIdByPosition.keys()] } }).sort({ createdAt: -1 }).limit(15).toArray(),
   );
   const tokenSymbols = new Map(
-    (await tokensCol.find({ _id: { $in: [...new Set(events.map((e) => tokenIdByPosition.get(e.positionId)).filter((x): x is string => !!x))] } }, { projection: { _id: 1, symbol: 1 } }).toArray()).map((t) => [t._id, t.symbol]),
+    (await tokensCol.find({ _id: { $in: [...new Set(events.map((e) => tokenIdByPosition.get(e.positionId)).filter((x): x is string => !!x))] } }, { projection: { _id: 1, symbol: 1, address: 1, chain: 1 } }).toArray()).map((t) => [t._id, t]),
   );
 
   const open = all.filter((p) => p.status !== "CLOSED");
@@ -43,7 +46,12 @@ export default async function PositionsPage() {
         <div className="divide-y divide-border">
           {events.map((e) => (
             <div key={e.id} className="flex items-center justify-between gap-3 px-4 py-2 text-xs">
-              <span><span className="font-medium">{tokenSymbols.get(tokenIdByPosition.get(e.positionId) ?? "") ?? "?"}</span> · {e.message}</span>
+              <span>
+                {(() => {
+                  const t = tokenSymbols.get(tokenIdByPosition.get(e.positionId) ?? "");
+                  return t ? <><Link href={`/tokens/${t.address}?chain=${t.chain}`} className="font-medium hover:text-accent">{t.symbol}</Link> <span className="text-muted">({CHAINS[t.chain as ChainId]?.name ?? t.chain})</span></> : <span className="font-medium">?</span>;
+                })()} · {e.message}
+              </span>
               <span className="shrink-0 text-muted">{timeAgo(e.createdAt)}</span>
             </div>
           ))}
