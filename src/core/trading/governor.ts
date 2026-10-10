@@ -29,6 +29,8 @@ export interface AutonomousSettings {
   maxConsecutiveLosses: number;
   /** how long that pause lasts */
   cooldownMinutes: number;
+  /** the bot buys only while the price is in the lowest this-many % of its recent range (and not rising): a dip, not a climb. See core/analysis/entryTiming.ts */
+  entryMaxRangePct: number;
   /** when the day starts, as minutes east of UTC (e.g. 60 = the day starts at 01:00 UTC); 0 = midnight UTC */
   dayOffsetMinutes: number;
 }

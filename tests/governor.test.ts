@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { dayStart, evaluateDay, type AutonomousSettings, type DayEvent } from "@/core/trading/governor";
 
-const S: AutonomousSettings = { enabled: true, dailyTargetUsd: 10, dailyLossLimitUsd: 5, givebackPct: 30, maxConsecutiveLosses: 3, cooldownMinutes: 30, dayOffsetMinutes: 0 };
+const S: AutonomousSettings = { enabled: true, dailyTargetUsd: 10, dailyLossLimitUsd: 5, givebackPct: 30, maxConsecutiveLosses: 3, cooldownMinutes: 30, entryMaxRangePct: 35, dayOffsetMinutes: 0 };
 const T0 = new Date("2026-10-10T08:00:00Z").getTime();
 const at = (min: number) => new Date(T0 + min * 60_000);
 const win = (min: number, netUsd: number): DayEvent => ({ at: at(min), netUsd, closed: true });

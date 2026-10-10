@@ -15,6 +15,7 @@ import { activeAutoSellLevels, syncAutoSells, unfilledPastTarget } from "./autoS
 import { healClosedPositions, prepareLiveSell } from "./trading";
 import { botSell, isBotPosition } from "./autonomous";
 import { botWalletsConfigured, sweepBotDeposits } from "./botWallet";
+import { checkSellNet, noteFeesWait } from "./netProfit";
 import { touchWorker } from "./workerState";
 
 interface HealthNotes {
@@ -40,7 +41,19 @@ export async function monitorPosition(pos: PositionDoc, token: TokenDoc): Promis
 
   // A position held in the bot wallet is sold by the bot itself (the server signs); any other waits for the user's wallet to sign.
   const botManaged = await isBotPosition(pos.userId, pos);
-  const queueSell = (amount: number, kind: TradeKind, reason: string, level?: number) => (botManaged ? botSell(pos.userId, pos._id, amount, kind, reason, level) : prepareLiveSell(pos.userId, pos._id, amount, kind, reason, level));
+  const queueSell = async (amount: number, kind: TradeKind, reason: string, level?: number) => {
+    if (!botManaged) return prepareLiveSell(pos.userId, pos._id, amount, kind, reason, level);
+    // A target reached on price is only a win if the sale is still a profit after the fee paid to buy and the fee to sell. If it isn't (a small
+    // slice, or a gain thinner than the fees), it waits for a higher price; later targets then sell together, so their fees are shared.
+    if (kind === "TARGET_EXIT") {
+      const check = await checkSellNet(pos.userId, pos, Math.min(amount, pos.amount));
+      if (!check || !check.pays) {
+        await noteFeesWait(pos, reason, check);
+        return null;
+      }
+    }
+    return botSell(pos.userId, pos._id, amount, kind, reason, level);
+  };
 
   const snap = await p.data.getSnapshot(token.chain as ChainId, token.address).catch(() => null);
   const raw = snap ? await p.data.getOnChain(token.chain as ChainId, token.address, snap).catch(() => null) : null;

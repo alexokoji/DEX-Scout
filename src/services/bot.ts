@@ -11,6 +11,8 @@ import { announceDay, autonomousStatus, botAddresses, executeBotTrade, resumeBot
 import { botAddressFor, botWalletsConfigured } from "./botWallet";
 import { CHAINS } from "@/core/chains";
 import { botNeedsFunds } from "./notificationMessages";
+import { entryTiming } from "@/core/analysis/entryTiming";
+import { recentCandles, scalpTargets } from "./projection";
 import { notifyUser } from "./notifications";
 import { touchWorker } from "./workerState";
 
@@ -90,6 +92,16 @@ export async function runBotCycle(): Promise<{ bots: number; executed: number; s
           if (own.score < settings.minOpportunityScore) { skip(`score ${own.score.toFixed(0)} < ${settings.minOpportunityScore}`); continue; }
 
           if (auto) {
+            // Buy a dip, not a climb. First: the signal named a price to buy at; if the market has since run above that zone the move is
+            // already under way. Then the chart: the lowest part of the last four hours' range, not two rising candles in a row, and not
+            // already up by about what the first target is for.
+            const px = analysis.snapshot.priceUsd;
+            if (sig.entryMax > 0 && px > sig.entryMax) { skip(`the price has climbed above the signal's entry zone (${px.toPrecision(4)} > ${sig.entryMax.toPrecision(4)}): it started moving before the buy`); continue; }
+            const ladder = await scalpTargets(token.chain as ChainId, token.address, settings.targets).catch(() => null);
+            const candles = await recentCandles(token.chain as ChainId, token.address);
+            const timing = candles ? entryTiming(candles, px, settings.autonomous.entryMaxRangePct, (ladder ?? settings.targets)[0]?.gainPct) : null;
+            if (!timing) { skip("no chart to judge the entry by right now"); continue; }
+            if (!timing.ok) { skip(timing.reason); continue; }
             // signed by the server with the user's bot wallet: no approval queue
             if (Date.now() - cycleStart > ENTRY_BUDGET_MS) { skip("out of time this cycle; next one"); break; }
             const addr = await botAddressFor(bot.userId, token.chain);

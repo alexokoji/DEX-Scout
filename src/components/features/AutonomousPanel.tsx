@@ -17,6 +17,7 @@ interface Settings {
   givebackPct: number;
   maxConsecutiveLosses: number;
   cooldownMinutes: number;
+  entryMaxRangePct: number;
   dayOffsetMinutes: number;
 }
 interface Overview {
@@ -192,12 +193,14 @@ export function AutonomousPanel() {
             <div><Label hint="% of the target">Give back after target</Label><Input type="number" min="0" max="100" step="any" value={form.givebackPct} onChange={num("givebackPct")} /></div>
             <div><Label hint="0 = never pause">Pause after losing closes</Label><Input type="number" min="0" step="1" value={form.maxConsecutiveLosses} onChange={num("maxConsecutiveLosses")} /></div>
             <div><Label hint="minutes">Pause for</Label><Input type="number" min="1" step="1" value={form.cooldownMinutes} onChange={num("cooldownMinutes")} /></div>
+            <div><Label hint="% of its recent range">Buy only in the lowest</Label><Input type="number" min="1" max="100" step="1" value={form.entryMaxRangePct} onChange={num("entryMaxRangePct")} /></div>
             <div><Label hint="minutes east of UTC">Day starts at offset</Label><Input type="number" step="30" value={form.dayOffsetMinutes} onChange={num("dayOffsetMinutes")} /></div>
           </div>
           <ul className="space-y-1 text-[11px] leading-relaxed text-muted">
             <li>• <span className="text-foreground">Target:</span> what the bot works toward each day. Once reached it keeps going and may go beyond it, but if the day&apos;s profit falls back from its peak by more than the give-back share of the target, it stops for the day (0 = stop as soon as the target is reached).</li>
             <li>• <span className="text-foreground">Loss limit:</span> when today&apos;s banked result plus what open positions are down reaches this, no new trades until tomorrow.</li>
-            <li>• Entries are skipped when fees and price impact would eat the first profit target, so small trades on expensive chains aren&apos;t opened.</li>
+            <li>• <span className="text-foreground">Buying a dip:</span> before every entry the bot reads the token&apos;s last four hours of chart and buys only while the price is in the lowest part of that range (the setting above), not after two rising candles in a row, and not if it has already climbed from its low by about what the first target aims for.</li>
+            <li>• <span className="text-foreground">Fees:</span> after buying, a target is sold only if the sale is still a profit after the fee paid to buy and the fee to sell (from the chain&apos;s quote for it); otherwise it waits for a higher price. Entries are skipped when fees and price impact would eat the first profit target, so small trades on expensive chains aren&apos;t opened.</li>
           </ul>
           <div className="flex flex-wrap gap-2">
             {data.settings.enabled ? (

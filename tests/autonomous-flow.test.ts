@@ -331,6 +331,8 @@ const HASH = (c: string) => "0x" + c.repeat(32);
       stubSolana();
       const { monitorPosition } = await import("@/services/positionMonitor");
       vi.spyOn(providers().dex, "executeSwap").mockResolvedValue({ signature: "x" });
+      // selling 1,000 tokens bought at $0.01 ($10) would bring $11.10: well clear of the fees
+      vi.spyOn(providers().dex, "getQuote").mockImplementation(async (r) => ({ ...quote(r.chain), outputAmount: 11.1 }) as never);
       const snap = (token: TokenDoc) => vi.spyOn(providers().data, "getSnapshot").mockImplementation(async () => ({ ...template, chain: token.chain, address: token.address, priceUsd: 0.0111, liquidityUsd: 900_000, liquidity1hAgoUsd: 900_000, poolCreatedAt: new Date(), observedAt: new Date() }) as never);
       const t1 = await makeToken("solana", 0.0111);
       snap(t1);
@@ -349,11 +351,43 @@ const HASH = (c: string) => "0x" + c.repeat(32);
     });
   });
 
+  describe("a target is only sold if it is still a profit after the fee to buy and the fee to sell", () => {
+    it("a gain thinner than the fees waits, and says why on the position; a real one sells", async () => {
+      stubSolana();
+      const { monitorPosition } = await import("@/services/positionMonitor");
+      vi.spyOn(providers().dex, "executeSwap").mockResolvedValue({ signature: "x" });
+      const token = await makeToken("solana", 0.0111);
+      vi.spyOn(providers().data, "getSnapshot").mockImplementation(async () => ({ ...template, chain: token.chain, address: token.address, priceUsd: 0.0111, liquidityUsd: 900_000, liquidity1hAgoUsd: 900_000, poolCreatedAt: new Date(), observedAt: new Date() }) as never);
+      const pos = await makePosition(token, botSol); // cost $10; the price target (+3%) has been reached
+      // the buy that opened it paid $0.30 in fees, and the sale would bring $10.30 less a $0.30 fee: the price gain is eaten
+      await (await collections.trades()).insertOne({
+        _id: newId(), userId, accountId, tokenId: token._id, positionId: pos._id, side: "BUY", kind: "AUTO_ENTRY", environment: "LIVE", dataSource: "LIVE", status: "CONFIRMED", inputUsd: 10, tokenAmount: 1000, priceUsd: 0.01,
+        priceImpactPct: 0, slippageBps: 100, feesUsd: 0, networkFeeUsd: 0.3, realizedPnlUsd: null, quote: { wallet: botSol }, failureReason: null, expiresAt: null, createdAt: new Date(), executedAt: new Date(), transaction: null,
+      } as never);
+      const send = vi.spyOn(providers().dex, "getQuote").mockImplementation(async (r) => ({ ...quote(r.chain), outputAmount: 10.3, networkFeeUsd: 0.3 }) as never);
+      const sells = async () => (await collections.trades()).countDocuments({ positionId: pos._id, side: "SELL" });
+      await monitorPosition(pos, token);
+      expect(await sells()).toBe(0); // up 3% on price, down after $0.60 of fees
+      const waitEvent = await (await collections.positionEvents()).findOne({ positionId: pos._id, type: "FEES_WAIT" });
+      expect(waitEvent!.message).toMatch(/waiting for a higher price/);
+      expect(waitEvent!.message).toMatch(/to sell/);
+      // asked again straight away: it doesn't pile up another note
+      await monitorPosition((await (await collections.positions()).findOne({ _id: pos._id }))!, token);
+      expect(await (await collections.positionEvents()).countDocuments({ positionId: pos._id, type: "FEES_WAIT" })).toBe(1);
+
+      // the price has climbed: the sale now brings $11.00, comfortably more than the cost and both fees
+      send.mockImplementation(async (r) => ({ ...quote(r.chain), outputAmount: 11, networkFeeUsd: 0.3 }) as never);
+      await monitorPosition((await (await collections.positions()).findOne({ _id: pos._id }))!, token);
+      expect(await sells()).toBe(1);
+      await (await collections.trades()).deleteMany({ positionId: pos._id, side: "BUY" }); // not part of the day's tally in the governor tests below
+    });
+  });
+
   describe("the daily governor", () => {
     it("adds up what the bot wallet did today, net of fees, and stops the bot opening trades when the loss limit is reached", async () => {
       const { autonomousStatus, dayEventsFor } = await import("@/services/autonomous");
       const { getSettings, updateAutonomous } = await import("@/services/settings");
-      await updateAutonomous(userId, { enabled: true, dailyTargetUsd: 5, dailyLossLimitUsd: 1, givebackPct: 30, maxConsecutiveLosses: 3, cooldownMinutes: 30, dayOffsetMinutes: 0 });
+      await updateAutonomous(userId, { enabled: true, dailyTargetUsd: 5, dailyLossLimitUsd: 1, givebackPct: 30, maxConsecutiveLosses: 3, cooldownMinutes: 30, entryMaxRangePct: 35, dayOffsetMinutes: 0 });
       const token = await makeToken("solana");
       const pos = await makePosition(token, botSol, { status: "CLOSED", amount: 0, closedAt: new Date() });
       const now = new Date();
@@ -390,7 +424,7 @@ const HASH = (c: string) => "0x" + c.repeat(32);
   describe("switching it on and off", () => {
     it("on needs a bot wallet and puts the bot in LIVE and running; off pauses it, so it doesn't fall back to asking for approvals", async () => {
       const { setAutonomous } = await import("@/services/autonomous");
-      const input = { enabled: true, dailyTargetUsd: 5, dailyLossLimitUsd: 3, givebackPct: 30, maxConsecutiveLosses: 3, cooldownMinutes: 30, dayOffsetMinutes: 0 };
+      const input = { enabled: true, dailyTargetUsd: 5, dailyLossLimitUsd: 3, givebackPct: 30, maxConsecutiveLosses: 3, cooldownMinutes: 30, entryMaxRangePct: 35, dayOffsetMinutes: 0 };
       await setAutonomous(userId, input);
       expect((await (await collections.bots()).findOne({ userId }))!.status).toBe("ACTIVE");
       expect((await (await collections.tradingSettings()).findOne({ userId }))!.environment).toBe("LIVE");
@@ -400,7 +434,7 @@ const HASH = (c: string) => "0x" + c.repeat(32);
     });
     it("says when Unattended is on but nothing is trading, because the other switches are separate: auto trading, the environment, the bot being started", async () => {
       const { setAutonomous, autonomousStatus } = await import("@/services/autonomous");
-      const input = { enabled: true, dailyTargetUsd: 5, dailyLossLimitUsd: 3, givebackPct: 30, maxConsecutiveLosses: 3, cooldownMinutes: 30, dayOffsetMinutes: 0 };
+      const input = { enabled: true, dailyTargetUsd: 5, dailyLossLimitUsd: 3, givebackPct: 30, maxConsecutiveLosses: 3, cooldownMinutes: 30, entryMaxRangePct: 35, dayOffsetMinutes: 0 };
       await setAutonomous(userId, input);
       expect(await autonomousStatus(userId)).toMatchObject({ running: true, blockedBy: null });
       const settings = await collections.tradingSettings();
@@ -415,7 +449,7 @@ const HASH = (c: string) => "0x" + c.repeat(32);
     it("on without a bot wallet is refused", async () => {
       const { setAutonomous } = await import("@/services/autonomous");
       const other = newId();
-      await expect(setAutonomous(other, { enabled: true, dailyTargetUsd: 5, dailyLossLimitUsd: 3, givebackPct: 30, maxConsecutiveLosses: 3, cooldownMinutes: 30, dayOffsetMinutes: 0 })).rejects.toMatchObject({ status: 409 });
+      await expect(setAutonomous(other, { enabled: true, dailyTargetUsd: 5, dailyLossLimitUsd: 3, givebackPct: 30, maxConsecutiveLosses: 3, cooldownMinutes: 30, entryMaxRangePct: 35, dayOffsetMinutes: 0 })).rejects.toMatchObject({ status: 409 });
       await (await collections.tradingSettings()).deleteMany({ userId: other });
     });
   });

@@ -1,7 +1,7 @@
 import { defaultHorizon, projectRise, suggestLadder, type Projection } from "@/core/analysis/projection";
 import { withTimeout } from "@/core/providers/http";
 import { providers } from "@/core/providers/registry";
-import type { ChainId, ProfitTargetConfig } from "@/core/types";
+import type { Candle, ChainId, ProfitTargetConfig } from "@/core/types";
 
 /**
  * A token's projected rises, from its own recent price history (see core/analysis/projection.ts). History comes from the market data
@@ -54,6 +54,25 @@ export async function scalpTargets(chain: ChainId, address: string, userLadder: 
   const h = p?.horizons[0]; // horizons are in ascending order: the first is the shortest
   if (!h) return null;
   return suggestLadder(h, userLadder.map((t) => t.sellPct), "cautious");
+}
+
+const candleCache = new Map<string, { at: number; candles: Candle[] }>();
+/**
+ * The token's recent chart for judging an entry: five-minute candles covering the last four hours (the window the dip is judged over:
+ * four times the one-hour scalp horizon). Kept for a minute, because the bot looks at several signals each cycle.
+ */
+export async function recentCandles(chain: ChainId, address: string): Promise<Candle[] | null> {
+  const key = `${chain}:${address.toLowerCase()}`;
+  const hit = candleCache.get(key);
+  if (hit && Date.now() - hit.at < 60_000) return hit.candles;
+  try {
+    const candles = await withTimeout(providers().data.getCandles(chain, address, "5m", 48), 12_000, "recent chart");
+    if (candleCache.size > 200) candleCache.clear();
+    candleCache.set(key, { at: Date.now(), candles });
+    return candles;
+  } catch {
+    return null;
+  }
 }
 
 /** For tests. */

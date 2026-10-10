@@ -84,7 +84,7 @@ export interface UserSettings {
 }
 
 /** What unattended trading starts with: off, with a modest target inside a smaller loss limit. All of it is the user's to change. */
-export const DEFAULT_AUTONOMOUS: AutonomousSettings = { enabled: false, dailyTargetUsd: 5, dailyLossLimitUsd: 3, givebackPct: 30, maxConsecutiveLosses: 3, cooldownMinutes: 30, dayOffsetMinutes: 0 };
+export const DEFAULT_AUTONOMOUS: AutonomousSettings = { enabled: false, dailyTargetUsd: 5, dailyLossLimitUsd: 3, givebackPct: 30, maxConsecutiveLosses: 3, cooldownMinutes: 30, entryMaxRangePct: 35, dayOffsetMinutes: 0 };
 
 export const autonomousInput = z
   .object({
@@ -94,6 +94,7 @@ export const autonomousInput = z
     givebackPct: z.number().min(0).max(100),
     maxConsecutiveLosses: z.number().int().min(0).max(50),
     cooldownMinutes: z.number().int().min(1).max(1440),
+    entryMaxRangePct: z.number().min(1).max(100),
     dayOffsetMinutes: z.number().int().min(-720).max(840),
   })
   .strict();
