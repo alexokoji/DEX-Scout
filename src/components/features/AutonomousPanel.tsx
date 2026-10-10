@@ -22,7 +22,7 @@ interface Settings {
 interface Overview {
   settings: Settings;
   wallets: { configured: boolean; wallets: { family: Family; address: string; exportedAt: string | null; balances: { chain: string; name: string; symbol: string; amount: number | null; usd: number | null }[] }[] };
-  status: { decision: { state: string; canOpen: boolean; reason: string; realizedUsd: number; openDrawdownUsd: number; peakUsd: number; floorUsd: number | null; targetUsd: number; lossLimitUsd: number; consecutiveLosses: number }; openPositions: number; deployedUsd: number };
+  status: { running: boolean; blockedBy: string | null; decision: { state: string; canOpen: boolean; reason: string; realizedUsd: number; openDrawdownUsd: number; peakUsd: number; floorUsd: number | null; targetUsd: number; lossLimitUsd: number; consecutiveLosses: number }; openPositions: number; deployedUsd: number };
 }
 
 async function api<T>(path: string, body?: object): Promise<T> {
@@ -99,6 +99,20 @@ export function AutonomousPanel() {
           <p>The daily target is a goal, not a promise: every rule below limits risk. When the loss limit is used up, or after the target if profit falls back to its floor, the bot stops <em>opening</em> trades for the day. It never sells a position just for being down: open positions keep their sell targets.</p>
         </CardBody>
       </Card>
+
+      {data.settings.enabled && status.blockedBy && (
+        <Card className="border-warn/40">
+          <CardBody className="text-xs text-warn">Unattended trading is switched on, but nothing is trading because {status.blockedBy}. Unattended, &quot;auto trading&quot; in Trading settings, and the Start button on the Bot page are separate switches, and all of them have to be on.</CardBody>
+        </Card>
+      )}
+
+      {!data.settings.enabled && (
+        <Card>
+          <CardBody className="space-y-1 text-xs text-muted">
+            <p><span className="text-foreground">Why does this say off when auto trading is on?</span> They are two different things. <span className="text-foreground">Auto trading</span> (Trading settings) lets the bot pick trades, but each one still waits for you to sign it in your wallet. <span className="text-foreground">Unattended trading</span> (this page) is what lets it sign for itself with its own wallet, and it needs a bot wallet first. Switching Unattended on also turns the rest on for you.</p>
+          </CardBody>
+        </Card>
+      )}
 
       {!wallets.configured && (
         <Card className="border-warn/40">
@@ -194,6 +208,9 @@ export function AutonomousPanel() {
             {data.settings.enabled && <Button disabled={busy === "save"} onClick={() => save(true)}>Save changes</Button>}
             {!data.settings.enabled && <Button variant="outline" disabled={busy === "save"} onClick={() => save(false)}>Save only</Button>}
           </div>
+          {!data.settings.enabled && (!wallets.configured || wallets.wallets.length === 0) && (
+            <p className="text-[11px] text-warn">{!wallets.configured ? "Switch on is unavailable until the server has a BOT_WALLET_KEY (see above)." : "Switch on is unavailable until you create a bot wallet above."}</p>
+          )}
         </CardBody>
       </Card>
 

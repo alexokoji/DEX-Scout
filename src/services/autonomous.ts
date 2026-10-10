@@ -157,6 +157,13 @@ export interface AutonomousStatus {
   configured: boolean;
   decision: GovernorDecision;
   dayStartedAt: Date;
+  /**
+   * Whether the bot is really trading unattended right now: the Unattended switch is on AND the bot is started, in LIVE, with auto trading on.
+   * These are separate switches (Unattended here; "auto trading" in Trading settings and the Start button on the Bot page), so one can be on while
+   * the other is off; `blockedBy` says which, in a sentence, when Unattended is on but nothing is trading.
+   */
+  running: boolean;
+  blockedBy: string | null;
   /** the bot wallets hold exposure of this much in open positions, and these many */
   openPositions: number;
   deployedUsd: number;
@@ -188,7 +195,14 @@ export async function autonomousStatus(userId: string, settings?: UserSettings, 
   const open = addrs.length ? await (await collections.positions()).find({ userId, status: { $ne: "CLOSED" }, walletAddress: { $in: addrs } }).toArray() : [];
   const events = await dayEventsFor(userId, since);
   const decision = evaluateDay(s.autonomous, events, open.map((p) => p.amount * (p.currentPriceUsd - p.entryPriceUsd)), now);
-  return { configured: botWalletsConfigured(), decision, dayStartedAt: since, openPositions: open.length, deployedUsd: open.reduce((sum, p) => sum + p.costBasisUsd, 0) };
+  const bot = await (await collections.bots()).findOne({ userId }, { projection: { status: 1 } });
+  const blockedBy = !s.autonomous.enabled ? null
+    : !botWalletsConfigured() ? "the server has no BOT_WALLET_KEY"
+    : s.environment !== "LIVE" ? "the environment in Trading settings is not LIVE"
+    : !s.autoTradingEnabled ? "auto trading is off in Trading settings"
+    : bot?.status !== "ACTIVE" ? `the bot is ${(bot?.status ?? "not started").toLowerCase()} (start it on the Bot page)`
+    : null;
+  return { configured: botWalletsConfigured(), decision, running: s.autonomous.enabled && blockedBy === null, blockedBy, dayStartedAt: since, openPositions: open.length, deployedUsd: open.reduce((sum, p) => sum + p.costBasisUsd, 0) };
 }
 
 /** Tell the user, once per day per state, when the day's state changes in a way they would want to know. */

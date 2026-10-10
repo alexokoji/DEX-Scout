@@ -396,6 +396,20 @@ const HASH = (c: string) => "0x" + c.repeat(32);
       expect((await (await collections.bots()).findOne({ userId }))!.status).toBe("PAUSED");
       expect((await (await collections.tradingSettings()).findOne({ userId }))!.autonomous!.enabled).toBe(false);
     });
+    it("says when Unattended is on but nothing is trading, because the other switches are separate: auto trading, the environment, the bot being started", async () => {
+      const { setAutonomous, autonomousStatus } = await import("@/services/autonomous");
+      const input = { enabled: true, dailyTargetUsd: 5, dailyLossLimitUsd: 3, givebackPct: 30, maxConsecutiveLosses: 3, cooldownMinutes: 30, dayOffsetMinutes: 0 };
+      await setAutonomous(userId, input);
+      expect(await autonomousStatus(userId)).toMatchObject({ running: true, blockedBy: null });
+      const settings = await collections.tradingSettings();
+      await settings.updateOne({ userId }, { $set: { autoTradingEnabled: false } }); // switched off in Trading settings afterwards
+      expect((await autonomousStatus(userId)).blockedBy).toMatch(/auto trading is off/);
+      await settings.updateOne({ userId }, { $set: { autoTradingEnabled: true } });
+      await (await collections.bots()).updateOne({ userId }, { $set: { status: "PAUSED" } });
+      expect(await autonomousStatus(userId)).toMatchObject({ running: false, blockedBy: expect.stringMatching(/bot is paused/) });
+      await setAutonomous(userId, { ...input, enabled: false });
+      expect((await autonomousStatus(userId)).blockedBy).toBeNull(); // off is not "blocked"
+    });
     it("on without a bot wallet is refused", async () => {
       const { setAutonomous } = await import("@/services/autonomous");
       const other = newId();

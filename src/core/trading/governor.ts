@@ -90,7 +90,7 @@ export function evaluateDay(s: AutonomousSettings, events: DayEvent[], openUnrea
   const base = { realizedUsd: realized, openDrawdownUsd: openDrawdown, peakUsd: peak, targetUsd: s.dailyTargetUsd, lossLimitUsd: s.dailyLossLimitUsd, consecutiveLosses, floorUsd: null as number | null, cooldownUntil: null as Date | null };
   const stop = (state: GovernorState, reason: string, extra: Partial<typeof base> = {}): GovernorDecision => ({ ...base, ...extra, state, canOpen: false, reason });
 
-  if (!s.enabled) return stop("OFF", "Autonomous trading is switched off.");
+  if (!s.enabled) return stop("OFF", "Unattended trading is switched off.");
 
   // once the target has been reached (at any point today), the day has a floor: the peak less the giveback allowance
   const reached = targetReachedAt >= 0;

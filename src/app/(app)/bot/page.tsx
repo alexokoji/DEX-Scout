@@ -26,7 +26,7 @@ export default async function BotPage() {
         <CardBody className="flex flex-wrap items-center justify-between gap-3 text-sm">
           <div>
             <div className="flex items-center gap-2 font-medium">Unattended trading {auto ? <Badge tone={auto.decision.canOpen ? "green" : "amber"}>{auto.decision.state.replace("_", " ").toLowerCase()}</Badge> : <Badge>off</Badge>}</div>
-            <div className="mt-0.5 text-xs text-muted">{auto ? auto.decision.reason : "The bot asks you to sign each trade. Turn this on to let it trade with its own wallet toward a daily profit target, inside a daily loss limit."}</div>
+            <div className="mt-0.5 text-xs text-muted">{auto ? (auto.blockedBy ? `Switched on, but not running: ${auto.blockedBy}.` : auto.decision.reason) : s.autoTradingEnabled ? "Auto trading is on, but every trade the bot picks still waits for your signature. Turn Unattended trading on to let it sign for itself with its own wallet, toward a daily profit target and inside a daily loss limit." : "The bot asks you to sign each trade. Turn this on to let it trade with its own wallet toward a daily profit target, inside a daily loss limit."}</div>
           </div>
           <Link href="/settings/autonomous" className="text-xs text-accent">{auto ? "Open" : "Set up"}</Link>
         </CardBody>

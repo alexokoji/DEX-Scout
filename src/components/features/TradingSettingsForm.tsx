@@ -66,7 +66,7 @@ export function TradingSettingsForm({ initial, liveEnabled }: { initial: S; live
             <Switch checked={s.autoTradingEnabled} onCheckedChange={(v) => set("autoTradingEnabled", v)} />
             <span className="text-sm">Auto trading {s.autoTradingEnabled ? "ON" : "OFF"}</span>
           </div>
-          <p className="text-[11px] text-muted md:col-span-3">Auto trading also requires the bot to be started on the Bot page. LIVE is available only when the server sets LIVE_TRADING_ENABLED=true with real (non-mock) providers.</p>
+          <p className="text-[11px] text-muted md:col-span-3">Auto trading makes the bot pick trades, but each one waits for you to approve it in your wallet; it also requires the bot to be started on the Bot page. To let the bot sign for itself, with its own wallet, use the separate Unattended trading page (Settings → Unattended). LIVE is available only when the server sets LIVE_TRADING_ENABLED=true with real (non-mock) providers.</p>
         </CardBody>
       </Card>
 
