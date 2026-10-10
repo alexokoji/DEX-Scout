@@ -176,8 +176,10 @@ const HASH = (c: string) => "0x" + c.repeat(32);
       const trade = await (await collections.trades()).findOne({ positionId: pos._id, side: "SELL" });
       expect(trade!.transaction!.signature).toBe(r.signature);
       expect(trade!.botClaimedAt).toBeInstanceOf(Date);
-      // no approval queue, no "sell ready to sign" notification: nobody has to sign
+      // no approval queue, no "sell ready to sign" notification: nobody has to sign. The user is told it has gone out, straight away.
       expect(await notes("SELL_QUEUED")).toHaveLength(0);
+      const sent = await notes("BOT_ACTIVITY");
+      expect(sent.some((n) => n.title === "Bot is selling BOTX" && /Target 1 reached/.test(n.body))).toBe(true);
     });
 
     it("signs a trade at most once, even when asked twice at the same moment", async () => {

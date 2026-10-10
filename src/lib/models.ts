@@ -400,7 +400,7 @@ export interface TradeDoc {
 }
 
 /** An in-app notification (the bell). Also pushed to the user's ntfy/Discord channels if they set any. */
-export type NotificationType = "BUY_QUEUED" | "SELL_QUEUED" | "AUTOSELL_SUGGESTED" | "AUTOSELL_PROBLEM" | "PROFIT_TAKEN" | "TRADE_EXPIRED" | "TRADE_CONFIRMED" | "TRADE_FAILED" | "POSITION_ALERT" | "SYSTEM_ALERT";
+export type NotificationType = "BUY_QUEUED" | "SELL_QUEUED" | "AUTOSELL_SUGGESTED" | "AUTOSELL_PROBLEM" | "PROFIT_TAKEN" | "TRADE_EXPIRED" | "TRADE_CONFIRMED" | "TRADE_FAILED" | "BOT_ACTIVITY" | "POSITION_ALERT" | "SYSTEM_ALERT";
 
 export interface NotificationDoc {
   _id: string;

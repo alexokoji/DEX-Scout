@@ -18,6 +18,7 @@ export const CATEGORY_OF: Record<NotificationType, NotificationCategory> = {
   PROFIT_TAKEN: "results",
   TRADE_CONFIRMED: "results",
   TRADE_FAILED: "results",
+  BOT_ACTIVITY: "results",
   POSITION_ALERT: "positions",
   SYSTEM_ALERT: "system",
 };
@@ -52,6 +53,32 @@ export function sellQueued(kind: TradeKind, symbol: string, chainName: string, r
   };
 }
 
+/** The bot (unattended) has just sent a trade: said straight away, before the chain confirms it. */
+export function botTradeSent(args: { side: "BUY" | "SELL"; symbol: string; chainName: string; usd: number; reason?: string; tradeId: string }): Message {
+  const { side, symbol, chainName, usd, tradeId } = args;
+  return {
+    type: "BOT_ACTIVITY",
+    title: side === "BUY" ? `Bot is buying ${symbol}` : `Bot is selling ${symbol}`,
+    body: side === "BUY" ? `Sent a buy of about ${money(usd)} of ${symbol} on ${chainName} from the bot wallet. You'll be told when it confirms.` : `${args.reason ?? "Selling"}. Sent a sale of about ${money(usd)} of ${symbol} on ${chainName} from the bot wallet. You'll be told when it confirms.`,
+    url: "/positions",
+    tradeId,
+    dedupeKey: `botsent:${tradeId}`,
+  };
+}
+
+/** The bot found something to trade but its wallet can't pay for it: otherwise it would skip silently every minute. */
+export function botNeedsFunds(chainName: string, nativeSymbol: string, address: string): Message {
+  return {
+    type: "SYSTEM_ALERT",
+    title: `Bot wallet needs ${nativeSymbol} on ${chainName}`,
+    body: `The bot found a trade on ${chainName} but its wallet ${address.slice(0, 6)}…${address.slice(-4)} holds none of the chain's coin, so it skipped it and will keep skipping until it is funded. Send some ${nativeSymbol} to that address (it also pays the network fees).`,
+    url: "/settings/autonomous",
+    dedupeKey: `botfunds:${chainName}`,
+    remindAfterMin: 720,
+    priority: "high",
+  };
+}
+
 export function buyQueued(symbol: string, chainName: string, amountUsd: number, impactPct: number, tradeId: string, tokenId: string): Message {
   return {
     type: "BUY_QUEUED",
@@ -75,7 +102,9 @@ export function tradeExpired(kind: TradeKind, side: "BUY" | "SELL", symbol: stri
       : `The bot's ${what} for ${symbol} expired unsigned, so nothing was bought. The bot may queue it again if the signal still qualifies.`,
     url: "/wallet",
     tradeId,
-    dedupeKey: `expired:${tradeId}`,
+    // one per position's trade kind, not one per expired attempt: a sell the user never signs is re-queued every few minutes and would otherwise ping each time
+    dedupeKey: `expired:${side}:${kind}:${symbol}`,
+    remindAfterMin: 360,
     priority: kind === "EMERGENCY_EXIT" ? "urgent" : "default",
   };
 }

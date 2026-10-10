@@ -8,7 +8,8 @@ import { logEvent, safeMessage } from "@/lib/events";
 import type { PositionDoc, TradeDoc, TradeKind } from "@/lib/models";
 import { botEvmAccount, botSolanaKeypair, botWalletsConfigured, getBotWallet } from "./botWallet";
 import { notifyUser } from "./notifications";
-import type { Message } from "./notificationMessages";
+import { botTradeSent, type Message } from "./notificationMessages";
+import { CHAINS } from "@/core/chains";
 import { getSettings, updateAutonomous, type UserSettings } from "./settings";
 import { liveTradingAllowed } from "@/lib/env";
 import { executeTrade, prepareLiveSell, refreshPreparedTrade, TradeError } from "./trading";
@@ -60,6 +61,12 @@ async function failBotTrade(trade: TradeDoc, symbol: string, reason: string): Pr
   return { ok: false, status: "FAILED", reason };
 }
 
+/** Tell the user the bot has sent a trade, now, rather than only when the chain has confirmed it. */
+async function announceSent(trade: TradeDoc, symbol: string, chain: ChainId) {
+  const reason = (trade.quote as { reason?: string } | null)?.reason;
+  await notifyUser(trade.userId, botTradeSent({ side: trade.side, symbol, chainName: CHAINS[chain]?.name ?? chain, usd: trade.inputUsd, reason, tradeId: trade._id }));
+}
+
 /**
  * Sign and send a PREPARED trade with the user's bot wallet. Safe to call again for the same trade: it is signed at most once.
  * Returns once the transaction has been sent; the confirmation is booked the normal way (reconcileLiveTrade).
@@ -92,6 +99,7 @@ export async function executeBotTrade(userId: string, tradeId: string): Promise<
       } catch (err) {
         return failBotTrade(trade, sym, safeMessage(err));
       }
+      await announceSent(trade, token.symbol, chain);
       return { ok: true, status: "SENT", signature: signed.signature };
     }
 
@@ -121,6 +129,7 @@ export async function executeBotTrade(userId: string, tradeId: string): Promise<
       const msg = safeMessage(err);
       if (!/already known|known transaction|already imported/i.test(msg)) return failBotTrade(trade, sym, msg);
     }
+    await announceSent(trade, sym, chain);
     return { ok: true, status: "SENT", signature: signed.hash };
   } catch (err) {
     const reason = err instanceof TradeError && err.violations.length ? err.violations.join("; ") : safeMessage(err);

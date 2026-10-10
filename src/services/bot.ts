@@ -9,6 +9,9 @@ import { capitalState, ensureAnalysis, expirePreparedTrades, prepareTrade, recon
 import { getSettings } from "./settings";
 import { announceDay, autonomousStatus, botAddresses, executeBotTrade, resumeBotTrades, type AutonomousStatus } from "./autonomous";
 import { botAddressFor, botWalletsConfigured } from "./botWallet";
+import { CHAINS } from "@/core/chains";
+import { botNeedsFunds } from "./notificationMessages";
+import { notifyUser } from "./notifications";
 import { touchWorker } from "./workerState";
 
 /** Trade-executor worker: evaluates active BUY signals for every ACTIVE bot and executes eligible ones. */
@@ -94,6 +97,12 @@ export async function runBotCycle(): Promise<{ bots: number; executed: number; s
             const addrs = await botAddresses(bot.userId);
             const state = await capitalState(bot.userId, env, undefined, token.chain as ChainId, addr, addrs);
             const pend = await pendingBuys(bot.userId, addrs, token.chain);
+            // a wallet with none of the chain's coin can't pay for anything there, fees included: say so, once in a while, instead of skipping in silence
+            if (state.walletUsd != null && state.walletUsd <= 0) {
+              await notifyUser(bot.userId, botNeedsFunds(CHAINS[token.chain as ChainId].name, CHAINS[token.chain as ChainId].nativeSymbol, addr));
+              skip(`the bot wallet holds none of ${CHAINS[token.chain as ChainId].nativeSymbol} on ${CHAINS[token.chain as ChainId].name}`);
+              continue;
+            }
             state.deployedUsd += pend.usd;
             state.openPositions += pend.count;
             if (state.walletUsd != null) state.walletUsd = Math.max(0, state.walletUsd - pend.usd);
