@@ -56,7 +56,11 @@ export async function scalpTargets(chain: ChainId, address: string, userLadder: 
   return suggestLadder(h, userLadder.map((t) => t.sellPct), "cautious");
 }
 
-const candleCache = new Map<string, { at: number; candles: Candle[] }>();
+const candleCache = new Map<string, { at: number; candles: Candle[] | null }>();
+/** a chart that was just read is reused for this long (the bot looks at the same tokens every minute); a read that failed is retried sooner */
+const CANDLE_OK_MS = 90_000;
+const CANDLE_MISS_MS = 20_000;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /**
  * The token's recent chart for judging an entry: five-minute candles covering the last four hours (the window the dip is judged over:
  * four times the one-hour scalp horizon). Kept for a minute, because the bot looks at several signals each cycle.
@@ -64,15 +68,23 @@ const candleCache = new Map<string, { at: number; candles: Candle[] }>();
 export async function recentCandles(chain: ChainId, address: string): Promise<Candle[] | null> {
   const key = `${chain}:${address.toLowerCase()}`;
   const hit = candleCache.get(key);
-  if (hit && Date.now() - hit.at < 60_000) return hit.candles;
-  try {
-    const candles = await withTimeout(providers().data.getCandles(chain, address, "5m", 48), 12_000, "recent chart");
-    if (candleCache.size > 200) candleCache.clear();
-    candleCache.set(key, { at: Date.now(), candles });
-    return candles;
-  } catch {
-    return null;
+  if (hit && Date.now() - hit.at < (hit.candles ? CANDLE_OK_MS : CANDLE_MISS_MS)) return hit.candles;
+  // The chart provider is shared with the scanner and rate-limits (429): one more try a few seconds later before giving up on it.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const candles = await withTimeout(providers().data.getCandles(chain, address, "5m", 48), 15_000, "recent chart");
+      if (candles.length) {
+        if (candleCache.size > 200) candleCache.clear();
+        candleCache.set(key, { at: Date.now(), candles });
+        return candles;
+      }
+    } catch {
+      /* try again */
+    }
+    if (attempt === 0) await sleep(3_000);
   }
+  candleCache.set(key, { at: Date.now(), candles: null });
+  return null;
 }
 
 /** For tests. */

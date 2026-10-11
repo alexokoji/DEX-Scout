@@ -10,7 +10,7 @@ import { getSettings } from "./settings";
 import { announceDay, autonomousStatus, botAddresses, executeBotTrade, resumeBotTrades, type AutonomousStatus } from "./autonomous";
 import { botAddressFor, botWalletsConfigured } from "./botWallet";
 import { CHAINS } from "@/core/chains";
-import { botNeedsFunds } from "./notificationMessages";
+import { botCantAfford, botNeedsFunds } from "./notificationMessages";
 import { entryTiming } from "@/core/analysis/entryTiming";
 import { recentCandles, scalpTargets } from "./projection";
 import { notifyUser } from "./notifications";
@@ -66,7 +66,7 @@ export async function runBotCycle(): Promise<{ bots: number; executed: number; s
     }
 
     try {
-      const signals = auto && (!day || !day.decision.canOpen) ? [] : await signalsCol.find({ status: "ACTIVE", type: "BUY", expiresAt: { $gt: new Date() } }).sort({ score: -1 }).toArray();
+      const signals = auto && (!day || !day.decision.canOpen) ? [] : await signalsCol.find({ status: "ACTIVE", type: auto ? { $in: ["BUY", "WATCH"] } : "BUY", expiresAt: { $gt: new Date() } }).sort({ score: -1 }).toArray();
       const tokens = await tokensCol.find({ _id: { $in: [...new Set(signals.map((s) => s.tokenId))] } }).toArray();
       const tokenById = new Map(tokens.map((t) => [t._id, t]));
 
@@ -147,6 +147,8 @@ export async function runBotCycle(): Promise<{ bots: number; executed: number; s
         } catch (err) {
           const msg = err instanceof TradeError && err.violations.length ? err.violations.join("; ") : safeMessage(err);
           skip(msg);
+          // an unattended entry the wallet can't pay for (a Solana buy also needs the token-account deposit, so $0.30 does not fund a $0.15 buy): say so
+          if (auto && /not enough|insufficient/i.test(msg)) await notifyUser(bot.userId, botCantAfford(CHAINS[token.chain as ChainId].name, token.symbol, msg));
           await logEvent({ type: "TRADE_SKIPPED", source: "bot", userId: bot.userId, level: "INFO", message: `Skipped ${token.symbol}: ${msg}`, data: { signalId: sig._id } });
         }
       }

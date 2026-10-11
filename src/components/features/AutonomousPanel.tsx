@@ -23,6 +23,7 @@ interface Settings {
 interface Overview {
   settings: Settings;
   wallets: { configured: boolean; wallets: { family: Family; address: string; exportedAt: string | null; balances: { chain: string; name: string; symbol: string; amount: number | null; usd: number | null }[] }[] };
+  lastRun: { at: string; evaluated: number; executed: number; reasons: Record<string, string> } | null;
   status: { running: boolean; blockedBy: string | null; decision: { state: string; canOpen: boolean; reason: string; realizedUsd: number; openDrawdownUsd: number; peakUsd: number; floorUsd: number | null; targetUsd: number; lossLimitUsd: number; consecutiveLosses: number }; openPositions: number; deployedUsd: number };
 }
 
@@ -144,6 +145,21 @@ export function AutonomousPanel() {
           <p className="text-[11px] text-muted">{status.openPositions} open position{status.openPositions === 1 ? "" : "s"} in the bot wallet, {usd(status.deployedUsd)} deployed. Position size, how many at once, and the filters are the ones in <Link href="/settings/trading" className="text-accent">Trading settings</Link>.</p>
         </CardBody>
       </Card>
+
+      {data.lastRun && (
+        <Card>
+          <CardHeader title="What the bot decided on its last check" sub={`${new Date(data.lastRun.at).toLocaleTimeString()}: ${data.lastRun.evaluated} signal(s) looked at, ${data.lastRun.executed} traded`} />
+          <CardBody className="space-y-1 text-xs">
+            {Object.keys(data.lastRun.reasons).length === 0 ? (
+              <p className="text-muted">{data.lastRun.evaluated === 0 ? "There were no signals to look at." : "Everything it looked at was traded."}</p>
+            ) : (
+              Object.entries(data.lastRun.reasons).map(([k, v]) => (
+                <div key={k} className="flex flex-wrap gap-x-2"><span className="font-medium">{k}</span><span className="text-muted">{v}</span></div>
+              ))
+            )}
+          </CardBody>
+        </Card>
+      )}
 
       <Card>
         <CardHeader title="Bot wallet" sub="Send funds to these addresses from your own wallet. One Solana address, and one EVM address that works on every EVM chain (each chain needs its own coin for fees)." />

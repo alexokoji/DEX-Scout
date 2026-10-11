@@ -39,6 +39,16 @@ describe("buy a dip, not a climb", () => {
     expect(t.reason).toMatch(/started to climb/);
   });
 
+  it("a candle that has just made a new low is still falling: it waits for it to hold, even though it is at the bottom of its range", () => {
+    const falling = [1.1, 1.08, 1.05, 1.02, 1.0, 0.97]; // the last candle goes below every earlier low
+    const t = entryTiming(chart(falling), 0.97, 60)!;
+    expect(t.makingNewLow).toBe(true);
+    expect(t).toMatchObject({ ok: false });
+    expect(t.reason).toMatch(/still falling/);
+    // the same low, held for a candle: that is a base, and it can be bought
+    expect(entryTiming(chart([1.1, 1.08, 1.05, 1.0, 1.0]), 1.0, 60)!.ok).toBe(true);
+  });
+
   it("one up candle is a bounce, not yet a climb", () => {
     const t = entryTiming(chart([1.1, 1.06, 1.03, 1.0, 1.01]), 1.01, 35)!;
     expect(t.risingStreak).toBe(1);

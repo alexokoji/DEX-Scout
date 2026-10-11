@@ -79,6 +79,19 @@ export function botNeedsFunds(chainName: string, nativeSymbol: string, address: 
   };
 }
 
+/** The bot wanted a trade the wallet can't pay for in full (amount, fees and, on Solana, the token-account deposit). */
+export function botCantAfford(chainName: string, symbol: string, why: string): Message {
+  return {
+    type: "SYSTEM_ALERT",
+    title: `Bot can't afford a trade on ${chainName}`,
+    body: `It wanted to buy ${symbol} but the bot wallet can't cover it: ${why.slice(0, 220)} Add funds to the bot wallet, or lower the position size in Trading settings.`,
+    url: "/settings/autonomous",
+    dedupeKey: `botafford:${chainName}`,
+    remindAfterMin: 720,
+    priority: "high",
+  };
+}
+
 export function buyQueued(symbol: string, chainName: string, amountUsd: number, impactPct: number, tradeId: string, tokenId: string): Message {
   return {
     type: "BUY_QUEUED",
