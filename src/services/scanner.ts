@@ -9,7 +9,7 @@ import type { ChainId, ScannerFilters, TokenSnapshot } from "@/core/types";
 import { collections, newId } from "@/lib/db";
 import { env } from "@/lib/env";
 import { logEvent, safeMessage } from "@/lib/events";
-import type { LiquidityPoolDoc, TokenDoc, TokenMetricDoc, TokenStage, PriceSnapshotDoc, VolumeSnapshotDoc } from "@/lib/models";
+import type { TokenDoc, TokenMetricDoc, TokenStage } from "@/lib/models";
 import { allUserFilters } from "./settings";
 import { touchWorker } from "./workerState";
 
@@ -149,8 +149,6 @@ export async function runScanCycle(opts: { chainsPerTick?: number } = {}): Promi
     let passed = 0;
     const tokenIdByAddress = new Map<string, string>();
     const metricRows: TokenMetricDoc[] = [];
-    const priceRows: PriceSnapshotDoc[] = [];
-    const volRows: VolumeSnapshotDoc[] = [];
     const ops: AnyBulkWriteOperation<TokenDoc>[] = [];
 
     for (const s of snaps) {
@@ -193,37 +191,14 @@ export async function runScanCycle(opts: { chainsPerTick?: number } = {}): Promi
           volume5m: s.volume5m, volume15m: s.volume15m, volume30m: s.volume30m, volume1h: s.volume1h, volume24h: s.volume24h,
           buys5m: s.buys5m, sells5m: s.sells5m, buys1h: s.buys1h, sells1h: s.sells1h, holders: Math.max(0, s.holders), pairCount: s.pairCount,
         });
-        priceRows.push({ _id: newId(), tokenId: id, ts: now, priceUsd: s.priceUsd, liquidityUsd: s.liquidityUsd });
-        volRows.push({ _id: newId(), tokenId: id, ts: now, volume5m: s.volume5m, volume1h: s.volume1h, volume24h: s.volume24h, buys5m: s.buys5m, sells5m: s.sells5m });
       }
     }
 
     for (let i = 0; i < ops.length; i += 500) await tokens.bulkWrite(ops.slice(i, i + 500), { ordered: false });
 
-    const [metrics, prices, volumes, pools] = await Promise.all([collections.tokenMetrics(), collections.priceSnapshots(), collections.volumeSnapshots(), collections.liquidityPools()]);
-    await Promise.all([
-      metricRows.length ? metrics.insertMany(metricRows, { ordered: false }) : null,
-      priceRows.length ? prices.insertMany(priceRows, { ordered: false }) : null,
-      volRows.length ? volumes.insertMany(volRows, { ordered: false }) : null,
-    ]);
-
-    // pool records (one per token/pool)
-    const poolOps: AnyBulkWriteOperation<LiquidityPoolDoc>[] = [];
-    for (const s of snaps) {
-      const tokenId = tokenIdByAddress.get(`${s.chain}:${s.address}`);
-      if (!tokenId || !s.poolAddress) continue;
-      poolOps.push({
-        updateOne: {
-          filter: { chain: s.chain, address: s.poolAddress },
-          update: {
-            $set: { liquidityUsd: s.liquidityUsd, updatedAt: now },
-            $setOnInsert: { _id: newId(), tokenId, dex: s.dex, quoteSymbol: "SOL", createdAtChain: s.poolCreatedAt },
-          },
-          upsert: true,
-        },
-      });
-    }
-    for (let i = 0; i < poolOps.length; i += 500) await pools.bulkWrite(poolOps.slice(i, i + 500), { ordered: false });
+    // Only token metrics are kept (they feed a token page's holders/liquidity history). Price snapshots, volume snapshots and liquidity pool
+    // records used to be written here as well, but nothing reads them, and the database has a fixed size: they were most of what filled it.
+    if (metricRows.length) await (await collections.tokenMetrics()).insertMany(metricRows, { ordered: false });
 
     if (newTokens > 0) {
       await logEvent({ type: "TOKEN_DISCOVERED", source: "scanner", message: `${newTokens} new token(s) discovered`, data: { newTokens } });
