@@ -102,3 +102,11 @@ the cron-job.org jobs / GitHub Actions workflow.
 - [ ] Atlas backups enabled
 - [ ] Vercel deployment protection / custom domain configured
 - [ ] Reviewed SECURITY.md and the capital limits in Settings -> Trading before enabling `LIVE_TRADING_ENABLED` — there is no paper/simulated mode to rehearse in first; the first trade is real
+
+## Moving to another Vercel account
+
+1. **Save the bot wallet keys first.** `BOT_WALLET_KEY` is stored on Vercel as a hidden value and cannot be read back. On the current site open **Unattended → Export key** for each bot wallet (account password), import the keys into a wallet app and withdraw the funds. On the new deployment create fresh bot wallets under a new `BOT_WALLET_KEY` and keep a copy.
+2. **Collect the variables.** Variables that Vercel shows (the ones not marked Sensitive: the RPC URLs, `ZEROX_API_KEY`, `DEX_PROVIDER_*`, `MARKET_DATA_API_KEY`, `BIRDEYE_API_KEY`, `AI_*`, `UPSTASH_*`, the interval settings, `LIVE_TRADING_ENABLED`) can be copied from the old project's Settings → Environment Variables. The hidden ones come from your local `.env` (`MONGODB_URI`, `AUTH_SECRET` (keep it, so logins survive), `CRON_SECRET`, `CRONJOB_ORG_API_KEY`) or are new (`BOT_WALLET_KEY`, `NEXT_PUBLIC_APP_URL`, `APP_URL` = the new address, `MOCK_PROVIDER=false`).
+3. **Deploy on the new account.** Either import the GitHub repo (Add New → Project → pick `DEX-Scout`; paste the variables with "Import .env"), or from this folder: `npx vercel login` (new account), `npx vercel link`, add the variables (dashboard or `npx vercel env add NAME production`), then `npx vercel --prod`.
+4. **Repoint the scheduler.** Put the new address in `APP_URL` in `.env`, then `npm run cron:setup` (it updates the three cron-job.org jobs in place). Do it promptly: while the jobs still point at the old site, the old deployment is the one running the bot.
+5. **Check** MongoDB Atlas → Network Access allows the new host, open the new site, log in, and confirm Bot → "last run" moves every minute.
