@@ -110,3 +110,6 @@ the cron-job.org jobs / GitHub Actions workflow.
 3. **Deploy on the new account.** Either import the GitHub repo (Add New → Project → pick `DEX-Scout`; paste the variables with "Import .env"), or from this folder: `npx vercel login` (new account), `npx vercel link`, add the variables (dashboard or `npx vercel env add NAME production`), then `npx vercel --prod`.
 4. **Repoint the scheduler.** Put the new address in `APP_URL` in `.env`, then `npm run cron:setup` (it updates the three cron-job.org jobs in place). Do it promptly: while the jobs still point at the old site, the old deployment is the one running the bot.
 5. **Check** MongoDB Atlas → Network Access allows the new host, open the new site, log in, and confirm Bot → "last run" moves every minute.
+
+## Staying inside the free plan
+The scheduler's jobs are billed by how long they run. They are set to the monitor (profit targets) every minute, the bot's entries every two minutes and the scan every five; the pages refresh no faster than every 30 seconds, and only while the tab is open. cron-job.org's free plan gives up on a request after 30 seconds, so a job that runs longer shows as failed there even though it finishes. If that is still too much for the free plan, run the loops on a machine of your own instead: see WORKER.md.

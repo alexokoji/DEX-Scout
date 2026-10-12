@@ -39,11 +39,16 @@ if (!/^https:\/\//.test(appUrl)) {
 const EVERY = [-1]; // cron-job.org's "every hour/day/month/weekday" sentinel
 const everyNMinutes = (n) => Array.from({ length: Math.ceil(60 / n) }, (_, i) => i * n).filter((m) => m < 60);
 
+// How often each job runs. A serverless host bills for the time these run, so they are as sparse as the work allows: the monitor (profit
+// targets) every minute, the bot's entries every two, and the scan (token discovery) every five.
 const JOBS = [
-  { title: "dexscout-scan", path: "/api/cron/scan", minutes: everyNMinutes(2) },
+  { title: "dexscout-scan", path: "/api/cron/scan", minutes: everyNMinutes(5) },
   { title: "dexscout-monitor", path: "/api/cron/monitor", minutes: EVERY },
-  { title: "dexscout-execute", path: "/api/cron/execute", minutes: EVERY },
+  { title: "dexscout-execute", path: "/api/cron/execute", minutes: everyNMinutes(2) },
 ];
+
+// `--pause` switches the jobs off (for when the workers run on a machine of your own: see WORKER.md); `--resume` is the normal run.
+const pause = process.argv.includes("--pause");
 
 async function api(method, path, body) {
   const res = await fetch(`${API}${path}`, {
@@ -59,12 +64,12 @@ async function api(method, path, body) {
 
 function jobPayload(j) {
   return {
-    enabled: true,
+    enabled: !pause,
     title: j.title,
     saveResponses: true,
     url: `${appUrl}${j.path}`,
     requestMethod: 0, // GET
-    requestTimeout: 90,
+    requestTimeout: 30, // cron-job.org's free plan gives up on a request after 30 seconds, whatever is set here
     notification: { onFailure: true, onFailureCount: 1, onSuccess: true, onDisable: true },
     extendedData: { headers: { Authorization: `Bearer ${cronSecret}` } },
     schedule: { timezone: "UTC", expiresAt: 0, hours: EVERY, mdays: EVERY, minutes: j.minutes, months: EVERY, wdays: EVERY },
@@ -72,7 +77,7 @@ function jobPayload(j) {
 }
 
 async function main() {
-  console.log(`Wiring up cron-job.org jobs for ${appUrl} ...`);
+  console.log(`${pause ? "Pausing" : "Wiring up"} cron-job.org jobs for ${appUrl} ...`);
   const { jobs: existing } = await api("GET", "/jobs");
   for (const j of JOBS) {
     const payload = jobPayload(j);

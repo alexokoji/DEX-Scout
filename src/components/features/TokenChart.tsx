@@ -63,7 +63,7 @@ export function TokenChart({ address, chain }: { address: string; chain: string 
       }
     };
     void load();
-    const id = setInterval(() => document.visibilityState === "visible" && void load(), 20_000);
+    const id = setInterval(() => document.visibilityState === "visible" && void load(), 30_000);
     return () => {
       cancelled = true;
       clearInterval(id);

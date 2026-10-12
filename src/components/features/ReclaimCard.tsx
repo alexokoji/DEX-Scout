@@ -47,7 +47,7 @@ export function ReclaimCard() {
   }, [wallet, tick]);
 
   useEffect(() => {
-    const t = setInterval(() => setTick((n) => n + 1), 30_000);
+    const t = setInterval(() => document.visibilityState === "visible" && setTick((n) => n + 1), 60_000);
     return () => clearInterval(t);
   }, []);
 

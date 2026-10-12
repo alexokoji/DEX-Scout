@@ -90,7 +90,16 @@ export async function botEvmAccount(userId: string) {
 }
 
 /** What the bot wallet holds on each chain of its family, in the chain's own coin and in USD: what the user has funded it with. */
+const overviewCache = new Map<string, { at: number; value: Awaited<ReturnType<typeof computeOverview>> }>();
 export async function botWalletOverview(userId: string) {
+  const hit = overviewCache.get(userId);
+  if (hit && Date.now() - hit.at < 30_000) return hit.value;
+  const value = await computeOverview(userId);
+  overviewCache.set(userId, { at: Date.now(), value });
+  return value;
+}
+
+async function computeOverview(userId: string) {
   const out: { family: Family; address: string; createdAt: Date; exportedAt: Date | null; balances: { chain: ChainId; name: string; symbol: string; amount: number | null; usd: number | null }[] }[] = [];
   for (const family of ["solana", "evm"] as const) {
     const w = await getBotWallet(userId, family);

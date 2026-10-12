@@ -41,7 +41,7 @@ const JOBS: Record<string, () => Promise<unknown>> = {
     // Time-budgeted rather than guessed: one chunk always runs; another only starts if it can still finish
     // (worst case PER_TOKEN_DEADLINE_MS) plus the signal cycle inside Hobby's 60s. Observed live ticks of
     // 44-52s with a fixed batch left almost no margin; this adapts to however long discovery took.
-    const analysis = await runAnalysisCycle(SERVERLESS_ANALYSIS_BATCH, { startNoChunkAfter: jobStart + 24_000 });
+    const analysis = await runAnalysisCycle(SERVERLESS_ANALYSIS_BATCH, { startNoChunkAfter: jobStart + 8_000 });
     const signals = await runSignalCycle();
     const pruned = new Date().getUTCMinutes() === 0 ? await pruneOldData().catch(() => -1) : null;
     return { scan, analysis, signals, pruned };

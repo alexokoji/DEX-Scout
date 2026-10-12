@@ -37,7 +37,7 @@ export function PendingApprovals() {
       if (r?.ok && !stop) setItems(await r.json());
     };
     void load();
-    const id = setInterval(() => document.visibilityState === "visible" && void load(), 10_000);
+    const id = setInterval(() => document.visibilityState === "visible" && void load(), 30_000);
     return () => {
       stop = true;
       clearInterval(id);

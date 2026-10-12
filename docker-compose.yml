@@ -1,0 +1,9 @@
+# Runs the background workers on a machine that stays on. See WORKER.md.
+#   docker compose up -d --build     start (or update after `git pull`)
+#   docker compose logs -f           watch it
+#   docker compose down              stop
+services:
+  workers:
+    build: .
+    restart: unless-stopped
+    env_file: .env.worker

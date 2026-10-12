@@ -383,6 +383,53 @@ const HASH = (c: string) => "0x" + c.repeat(32);
     });
   });
 
+  describe("keeping the monitor's running time down", () => {
+    const snapAt = (token: TokenDoc, price: number) => vi.spyOn(providers().data, "getSnapshot").mockImplementation(async () => ({ ...template, chain: token.chain, address: token.address, priceUsd: price, liquidityUsd: 900_000, liquidity1hAgoUsd: 900_000, poolCreatedAt: new Date(), observedAt: new Date() }) as never);
+
+    it("a check between full analyses reads only the price: the slow on-chain read waits until it is due, and the price and targets are still looked at", async () => {
+      const { monitorPosition } = await import("@/services/positionMonitor");
+      const token = await makeToken("solana", 0.0104);
+      snapAt(token, 0.0104); // +4% on 0.01: nothing to sell yet if the target is +50%
+      const onChain = vi.spyOn(providers().data, "getOnChain");
+      const fresh = await makePosition(token, OWN_SOL, { targetsSnapshot: [{ level: 1, gainPct: 50, sellPct: 100 }], lastAnalysisAt: new Date(), health: "HOLD" });
+      await monitorPosition(fresh, token);
+      expect(onChain).not.toHaveBeenCalled();
+      const after = (await (await collections.positions()).findOne({ _id: fresh._id }))!;
+      expect(after.currentPriceUsd).toBe(0.0104); // the price was refreshed
+      expect(after.health).toBe("HOLD"); // its health is left until the next full analysis
+
+      const stale = await makePosition(token, OWN_SOL, { targetsSnapshot: [{ level: 1, gainPct: 50, sellPct: 100 }], lastAnalysisAt: new Date(Date.now() - 6 * 60_000) });
+      await monitorPosition(stale, token);
+      expect(onChain).toHaveBeenCalledTimes(1); // due: a full analysis
+    });
+
+    it("a target is still acted on between analyses", async () => {
+      stubSolana();
+      const { monitorPosition } = await import("@/services/positionMonitor");
+      vi.spyOn(providers().dex, "executeSwap").mockResolvedValue({ signature: "x" });
+      vi.spyOn(providers().dex, "getQuote").mockImplementation(async (r) => ({ ...quote(r.chain), outputAmount: 11.1 }) as never);
+      const token = await makeToken("solana", 0.0111);
+      snapAt(token, 0.0111);
+      const pos = await makePosition(token, botSol, { lastAnalysisAt: new Date() }); // analysed a moment ago, and +11% is past the +3% target
+      await monitorPosition(pos, token);
+      expect(await (await collections.trades()).countDocuments({ positionId: pos._id, side: "SELL", status: "PENDING" })).toBe(1);
+    });
+
+    it("a position the chain says is no longer in the wallet is closed rather than failing every minute; a brand-new one is given time to appear", async () => {
+      const { runPositionMonitorCycle } = await import("@/services/positionMonitor");
+      vi.spyOn(providers().dex, "getQuote").mockRejectedValue(new Error("The wallet holds none of this token, so there is nothing to sell"));
+      const token = await makeToken("solana", 0.0111);
+      snapAt(token, 0.0111);
+      const old = await makePosition(token, OWN_SOL, { openedAt: new Date(Date.now() - 30 * 60_000) });
+      const brandNew = await makePosition(token, OWN_SOL, { openedAt: new Date() });
+      await runPositionMonitorCycle();
+      const positions = await collections.positions();
+      expect((await positions.findOne({ _id: old._id }))!.status).toBe("CLOSED");
+      expect(await (await collections.positionEvents()).countDocuments({ positionId: old._id, type: "CLEANUP_CLOSED" })).toBe(1);
+      expect((await positions.findOne({ _id: brandNew._id }))!.status).not.toBe("CLOSED");
+    });
+  });
+
   describe("the daily governor", () => {
     it("adds up what the bot wallet did today, net of fees, and stops the bot opening trades when the loss limit is reached", async () => {
       const { autonomousStatus, dayEventsFor } = await import("@/services/autonomous");

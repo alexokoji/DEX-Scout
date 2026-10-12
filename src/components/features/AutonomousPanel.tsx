@@ -64,7 +64,7 @@ export function AutonomousPanel() {
     };
   }, [tick]);
   useEffect(() => {
-    const t = setInterval(() => document.visibilityState === "visible" && setTick((n) => n + 1), 20_000);
+    const t = setInterval(() => document.visibilityState === "visible" && setTick((n) => n + 1), 60_000);
     return () => clearInterval(t);
   }, []);
   const refresh = useCallback(() => setTick((n) => n + 1), []);

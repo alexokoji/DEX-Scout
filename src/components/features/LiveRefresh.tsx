@@ -9,7 +9,11 @@ import { cn } from "@/lib/utils";
  * Re-runs the server component data fetch on an interval while the tab is visible. This only refreshes the view;
  * scanning, monitoring and trading run in background workers and never depend on this component.
  */
-export function LiveRefresh({ seconds = 15 }: { seconds?: number }) {
+/** A page refresh re-runs the server work behind it, which a serverless host bills for: never faster than this, however short a page asks for. */
+const MIN_SECONDS = 30;
+
+export function LiveRefresh({ seconds: asked = 15 }: { seconds?: number }) {
+  const seconds = Math.max(asked, MIN_SECONDS);
   const router = useRouter();
   const [on, setOn] = useState(true);
   const [spin, setSpin] = useState(false);

@@ -68,7 +68,7 @@ export function NotificationBell() {
       writeSeen(newest !== null && (seen === null || newest > seen) ? newest : (seen ?? Date.now()));
     };
     void load();
-    const id = setInterval(() => document.visibilityState === "visible" && void load(), 15_000);
+    const id = setInterval(() => document.visibilityState === "visible" && void load(), 30_000);
     const onVisible = () => document.visibilityState === "visible" && void load();
     document.addEventListener("visibilitychange", onVisible);
     return () => {

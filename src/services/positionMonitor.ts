@@ -32,6 +32,12 @@ interface HealthNotes {
  *
  * A position that is merely losing is never sold here — there is no stop-loss code path.
  */
+/**
+ * The full re-analysis (on-chain read, safety, health) is the slow, costly part of a check and moves slowly: it is done this often. A check in
+ * between only refreshes the price and acts on the profit targets, which is what has to be quick.
+ */
+export const ANALYSIS_EVERY_MS = 5 * 60_000;
+
 export async function monitorPosition(pos: PositionDoc, token: TokenDoc): Promise<void> {
   const p = providers();
   const settings = await getSettings(pos.userId);
@@ -55,12 +61,13 @@ export async function monitorPosition(pos: PositionDoc, token: TokenDoc): Promis
     return botSell(pos.userId, pos._id, amount, kind, reason, level);
   };
 
+  const analysisDue = !pos.lastAnalysisAt || Date.now() - pos.lastAnalysisAt.getTime() >= ANALYSIS_EVERY_MS || pos.health === "EMERGENCY";
   const snap = await p.data.getSnapshot(token.chain as ChainId, token.address).catch(() => null);
-  const raw = snap ? await p.data.getOnChain(token.chain as ChainId, token.address, snap).catch(() => null) : null;
+  const raw = snap && analysisDue ? await p.data.getOnChain(token.chain as ChainId, token.address, snap).catch(() => null) : null;
   const analysis = snap && raw ? await analyzeSnapshot(snap, raw) : null;
 
   const price = snap?.priceUsd ?? pos.currentPriceUsd;
-  const assessment = assessPosition(
+  const assessment = analysisDue ? assessPosition(
     {
       snapshot: snap,
       raw,
@@ -71,29 +78,33 @@ export async function monitorPosition(pos: PositionDoc, token: TokenDoc): Promis
       positionValueUsd: pos.amount * price,
     },
     { enabled: pos.emergencyEnabled, liquidityDropPct: settings.emergencyLiquidityDropPct },
-  );
+  ) : null;
 
   const unrealized = pos.amount * price - pos.costBasisUsd;
   // "profitable" is judged on price, the way the targets and the headline P&L are; `unrealized` (after buy fees) is what a sale would net
-  const status = deriveStatus({ closed: false, emergency: assessment.health === "EMERGENCY", targetsHit: pos.targetsHit, unrealizedPnlUsd: pos.amount * (price - pos.entryPriceUsd) });
+  const status = deriveStatus({ closed: false, emergency: (assessment?.health ?? pos.health) === "EMERGENCY", targetsHit: pos.targetsHit, unrealizedPnlUsd: pos.amount * (price - pos.entryPriceUsd) });
 
   // Not for a position that closed while this check was running (the analysis above takes seconds, a sale can book in that time):
   // writing the status back would bring a sold position back into the open list.
   await positions.updateOne(
     { _id: pos._id, status: { $ne: "CLOSED" } },
     {
-      $set: {
-        currentPriceUsd: price,
-        ...(snap ? { priceAt: new Date() } : {}),
-        health: assessment.health,
-        status,
-        lastAnalysisAt: new Date(),
-        healthNotes: { ...notes, positives: assessment.positives, negatives: assessment.negatives, emergencyReasons: assessment.emergencyReasons },
-      },
+      $set: assessment
+        ? {
+            currentPriceUsd: price,
+            ...(snap ? { priceAt: new Date() } : {}),
+            health: assessment.health,
+            status,
+            lastAnalysisAt: new Date(),
+            healthNotes: { ...notes, positives: assessment.positives, negatives: assessment.negatives, emergencyReasons: assessment.emergencyReasons },
+          }
+        : { currentPriceUsd: price, ...(snap ? { priceAt: new Date() } : {}), status }, // between full analyses: the price only
     },
   );
 
-  if (assessment.health !== pos.health && (assessment.health === "WARNING" || assessment.health === "EMERGENCY")) {
+  if (!assessment) {
+    /* nothing to say about its health until the next full analysis */
+  } else if (assessment.health !== pos.health && (assessment.health === "WARNING" || assessment.health === "EMERGENCY")) {
     const why = [...assessment.emergencyReasons, ...assessment.negatives].join("; ");
     await positionEvents.insertOne({ _id: newId(), positionId: pos._id, type: "HEALTH_" + assessment.health, message: `Health → ${assessment.health}: ${why}`, data: null, createdAt: new Date() });
     await logEvent({ type: "EMERGENCY_WARNING", source: "monitor", userId: pos.userId, level: "WARN", message: `${token.symbol} health ${assessment.health}: ${why}`, data: { positionId: pos._id } });
@@ -103,7 +114,7 @@ export async function monitorPosition(pos: PositionDoc, token: TokenDoc): Promis
   }
 
   // ── Emergency exit (separate from profit-taking; opt-in) ──
-  if (assessment.emergency && pos.emergencyAutoExit) {
+  if (assessment && assessment.emergency && pos.emergencyAutoExit) {
     const reason = `Emergency exit: ${assessment.emergencyReasons.join("; ")}`;
     if (liveTradingAllowed()) await queueSell(pos.amount, "EMERGENCY_EXIT", reason);
     return;
@@ -150,10 +161,32 @@ export async function monitorPosition(pos: PositionDoc, token: TokenDoc): Promis
       await positionEvents.insertOne({ _id: newId(), positionId: pos._id, type: "MAX_AGE", message: "Maximum age reached but position is not in profit — holding (no automatic stop loss)", data: null, createdAt: new Date() });
       await positions.updateOne(
         { _id: pos._id, status: { $ne: "CLOSED" } },
-        { $set: { healthNotes: { ...notes, positives: assessment.positives, negatives: assessment.negatives, emergencyReasons: assessment.emergencyReasons, maxAgeNoted: true } } },
+        { $set: { healthNotes: { ...notes, ...(assessment ? { positives: assessment.positives, negatives: assessment.negatives, emergencyReasons: assessment.emergencyReasons } : {}), maxAgeNoted: true } } },
       );
     }
   }
+}
+
+/** How many positions are checked at once. */
+const MONITOR_CONCURRENCY = 4;
+/** A new position's balance may not have reached the node yet: it isn't judged gone before this long. */
+const GONE_AFTER_MS = 10 * 60_000;
+
+async function inPool<T>(items: T[], size: number, fn: (x: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(size, items.length) }, async () => {
+      while (next < items.length) await fn(items[next++]);
+    }),
+  );
+}
+
+async function closeGone(pos: PositionDoc, symbol: string): Promise<void> {
+  const now = new Date();
+  const r = await (await collections.positions()).updateOne({ _id: pos._id, status: { $ne: "CLOSED" } }, { $set: { status: "CLOSED", amount: 0, costBasisUsd: 0, closedAt: now, updatedAt: now } });
+  if (!r.modifiedCount) return;
+  await (await collections.positionEvents()).insertOne({ _id: newId(), positionId: pos._id, type: "CLEANUP_CLOSED", message: "Closed: the wallet holds none of it any more (sold outside the app). No proceeds recorded, realised P&L unchanged.", data: null, createdAt: now });
+  await logEvent({ type: "POSITION_CLOSED", source: "monitor", userId: pos.userId, message: `Position closed: ${symbol} is no longer in the wallet`, data: { positionId: pos._id } });
 }
 
 export async function runPositionMonitorCycle(): Promise<{ monitored: number; errors: number }> {
@@ -167,16 +200,23 @@ export async function runPositionMonitorCycle(): Promise<{ monitored: number; er
   const tokenById = new Map(tokens.map((t) => [t._id, t]));
 
   let errors = 0;
-  for (const pos of positions) {
+  // a few positions at a time: each check is mostly waiting on the network, so this cuts the run's wall-clock time (which is what a serverless host bills for)
+  await inPool(positions, MONITOR_CONCURRENCY, async (pos) => {
     const token = tokenById.get(pos.tokenId);
-    if (!token) continue; // token record missing — nothing sensible to do until the scanner sees it again
+    if (!token) return; // token record missing — nothing sensible to do until the scanner sees it again
     try {
       await monitorPosition(pos, token);
     } catch (err) {
+      const msg = safeMessage(err);
+      // the chain says the wallet holds none of it (found when a sale was being priced): it was sold from the wallet app, so the position is over
+      if (/holds none of this token/i.test(msg) && Date.now() - pos.openedAt.getTime() > GONE_AFTER_MS) {
+        await closeGone(pos, token.symbol);
+        return;
+      }
       errors++;
-      await logEvent({ type: "WORKER_ERROR", source: "monitor", level: "ERROR", userId: pos.userId, message: `Monitoring ${token.symbol} failed: ${safeMessage(err)}`, data: { positionId: pos._id } });
+      await logEvent({ type: "WORKER_ERROR", source: "monitor", level: "ERROR", userId: pos.userId, message: `Monitoring ${token.symbol} failed: ${msg}`, data: { positionId: pos._id } });
     }
-  }
+  });
   // bot wallets: close the empty token accounts left by what has been sold, to get their deposits back (looks only when a position has closed)
   if (botWalletsConfigured()) {
     for (const w of await (await collections.botWallets()).find({ family: "solana" }, { projection: { userId: 1 } }).toArray()) await sweepBotDeposits(w.userId).catch(() => {});
